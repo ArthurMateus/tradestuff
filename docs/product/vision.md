@@ -23,4 +23,4 @@
 10. Ops: monitoring, alerting, deployment.
 
 ## Non-negotiables
-See `CLAUDE.md` and `docs/sdlc/implicit-requirements.md`. Real-money trading needs the PO's written go.
+See `CLAUDE.md` and `.claude/knowledge/trading-invariants.md`. Real-money trading needs the PO's written go.

@@ -1,0 +1,7 @@
+qa-artifacts/
+research/data/
+.env
+.env.*
+__pycache__/
+*.pyc
+.venv/
