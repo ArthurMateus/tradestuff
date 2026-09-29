@@ -24,3 +24,19 @@ Format: `YYYY-MM-DD | decision | reason | epic`
 2026-09-29 | Exit authority: whichever of our SL/TP or the trader's exit happens first. | PO decision. | copytrade-v1
 2026-09-29 | Build v1 fully refined before the paper run; the 1-month clock starts at the paper run. | PO decision. | copytrade-v1
 2026-09-29 | Report in USD; BRL conversion and tax exports deferred to the real-money epic. | PO decision. | copytrade-v1
+2026-09-29 | Research gate: PROCEED to spec, expecting month one may be INCONCLUSIVE. | Audit INCONCLUSIVE (no real data); the build is needed to gather evidence. | copytrade-v1
+2026-09-29 | Fewer than 300 trades by day 30: extend up to 60 days with the same frozen config, one evaluation. | Feasibility estimate is 100-300 trades per month. | copytrade-v1
+2026-09-29 | Paper risk per trade 0.5% (ceiling stays 1%). | Cuts false FAIL on drawdown for a real edge from 7-16% to <1%. | copytrade-v1
+2026-09-29 | PASS also requires net USD P&L > 0 and beating a direction-matched random-time baseline; CI clustered by UTC day. | Mean R can be positive while losing dollars; beta in a trending month is not skill (BT-4, BT-7). | copytrade-v1
+2026-09-29 | R = P&L / initial risk (gate); R on max committed risk also reported. | Adds make initial-risk R flattering. | copytrade-v1
+2026-09-29 | Sample = first 300 opened trades, evaluated once after all have closed; max 2 paper runs; any config change mid-run restarts it and counts as a run; PO sees trades and P&L during the run. | Prevent optional stopping (BT-5, BT-14). | copytrade-v1
+2026-09-29 | Mirrored partial exit below the $10 minimum: skip and log; if the remainder would fall below $10, close it all. | Exchange minimum order value. | copytrade-v1
+2026-09-29 | Follow at most 9 wallets at steady state (1 WebSocket user slot reserved for swaps); 12-24h incremental candidate backfill before following. | Hyperliquid limits: 10 WS users, 1,200 REST weight per minute per IP. | copytrade-v1
+2026-09-29 | Crypto perps only (allowed_dexes = core); exclude HIP-3 stock/commodity/FX perps from trading in v1, but record their data from day 1 for a later epic. | ~2x fees, oracle-lagged off-hours prices, few eligible traders, CVM securities exposure. | copytrade-v1
+2026-09-29 | Record L2 books, mids, mark/oracle, funding, OI and hourly leaderboard snapshots from day 1. | No historical L2 via API; enables honest replay. | copytrade-v1
+2026-09-29 | Event blackouts block new entries and adds only, never exits; minor releases ignored; trades around events count toward the sample. | Exits must never be blocked. | copytrade-v1
+2026-09-29 | Hyperliquid access degraded or geo-blocked: alert and pause new entries. | BCB deadline 2026-10-30. | copytrade-v1
+2026-09-29 | Funding charged hourly from real funding history and included in R; delisting settlements count as normal trades. | Honest costs. | copytrade-v1
+2026-09-29 | No paid S3 historical data for now. | Budget. | copytrade-v1
+2026-09-29 | PO home connection is fixed broadband (full REST budget); PO will run the fixed hl_sample.py once from their PC. | Replace synthetic priors with real numbers. | copytrade-v1
+2026-09-29 | Paper wallet $300; live starts at >= $300 (never smaller than the paper-tested size). | Results at $300 do not transfer to $100 because of the $10 minimum. | copytrade-v1
