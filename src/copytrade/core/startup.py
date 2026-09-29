@@ -11,8 +11,6 @@
 4. Check every engine module file (``copytrade`` and ``copytrade.*`` modules) is covered, relative
    to ``code_root`` (else ``EnginePathError`` naming the module file).
 5. Load secrets from ``env`` only.
-
-Interface stub written by the test designer. The developer owns the implementation.
 """
 
 from __future__ import annotations
@@ -21,9 +19,14 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from copytrade.core.config import Config
-from copytrade.core.manifest import EnginePathSet
-from copytrade.core.secrets import Secrets
+from copytrade.core.config import Config, load_config
+from copytrade.core.errors import EnginePathError
+from copytrade.core.manifest import MANIFEST_FILE_NAME, EnginePathSet, PathGuard
+from copytrade.core.secrets import Secrets, load_secrets
+
+CONFIG_DIR_NAME = "config"
+# Config keys that name a data-input file, relative to the root. Each must be inside the engine path set.
+DATA_INPUT_KEYS: tuple[str, ...] = ("calendar.file",)
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,18 @@ class StartupResult:
     config: Config
     secrets: Secrets
     path_set: EnginePathSet
+
+
+def _check_engine_modules(path_set: EnginePathSet, code_root: Path, module_files: Iterable[Path]) -> None:
+    root = code_root.resolve()
+    for module_file in module_files:
+        resolved = module_file.resolve()
+        try:
+            relative = resolved.relative_to(root)
+        except ValueError:
+            raise EnginePathError("engine module outside the code root", path=resolved.as_posix()) from None
+        if not path_set.covers(relative):
+            raise EnginePathError("engine module outside the engine path set", path=relative.as_posix())
 
 
 def startup(
@@ -41,4 +56,10 @@ def startup(
     engine_module_files: Iterable[Path],
 ) -> StartupResult:
     """Run the startup checks. See the module docstring for order and errors."""
-    raise NotImplementedError
+    path_set = EnginePathSet.from_file(root / MANIFEST_FILE_NAME)
+    guard = PathGuard(path_set, root)
+    config = load_config(root / CONFIG_DIR_NAME, guard=guard)
+    for key in DATA_INPUT_KEYS:
+        guard.check(root / config[key])
+    _check_engine_modules(path_set, code_root, engine_module_files)
+    return StartupResult(config=config, secrets=load_secrets(env), path_set=path_set)
