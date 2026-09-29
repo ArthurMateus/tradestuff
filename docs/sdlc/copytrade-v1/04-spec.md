@@ -4,7 +4,7 @@ Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendmen
 
 ## Amendment 5 (2026-09-29, PO)
 
-- **F1.AC5:** the secret-key check `(?i)(token|secret|api_key|pin)` exempts keys whose §3 type is a number or a timing (`telegram.pin_max_attempts`, `telegram.pin_lockout_min`, `hl.ws_ping_interval_s`, `llm.price_usd_per_1k_tokens.*`). The nine env var names are fixed in the F1 table below. F1 also ships the project tooling (uv, pytest, ruff, type check); mutation testing runs only on the money-path modules (risk, paper, positions, evaluation, baselines).
+- **F1.AC5:** the secret-key check `(?i)(token|secret|api_key|pin)` exempts keys whose §3 type is a number or a timing (`telegram.pin_max_attempts`, `telegram.pin_lockout_min`, `hl.ws_ping_interval_s`, `llm.price_usd_per_1k_tokens.*`) and the fixed boolean `eval.run_worktree_pinned`. **Calendar windows:** the §3.5 defaults "−30 / +60" (`calendar.window_fomc_min`) and "−15 / +30" (`calendar.window_tier1_min`) are written as non-negative before/after minutes, 30 / 60 and 15 / 30, since Min is 0. The nine env var names are fixed in the F1 table below. F1 also ships the project tooling (uv, pytest, ruff, type check); mutation testing runs only on the money-path modules (risk, paper, positions, evaluation, baselines).
 
 ## Amendment 4 (2026-09-29)
 

@@ -1,11 +1,11 @@
 epic: copytrade-v1
 branch: epic/copytrade-v1
-gate_passed: tests
+gate_passed: build (F1 only)
 touches_money_path: yes
 touches_strategy: yes
 has_ui: no
-features: F1=build (F1.tests_commit=75c3221), F2=queued, F3=queued, F4=queued, F5=queued, F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
-loops: tests=0 build=0 review=0 qa=0
+features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=queued, F3=queued, F4=queued, F5=queued, F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
+loops: tests=0 build=1 review=0 qa=0
 escalations_open: none
 updated: 2026-09-29T20:00:00Z
 
@@ -56,4 +56,4 @@ The test-reviewer, the 3–8 reviewer panel and the architect run only when some
 Pending outside the pipeline: the PO runs hl_sample.py once and sends back summary.json. It feeds the VAL-S config keys.
 
 Spec approved by the PO on 2026-09-29 (including the change that daily/weekly reports show no USD P&L while a run is active). Feature branches feat/copytrade-v1/<Fn>-<name> exist for stage 1.
-Next: F1 build (developer, senior-dev) on feat/copytrade-v1/F1-core; then /onboard; then F2, F3, F5 in parallel. Amendment 5 in 04-spec.md. Mutation testing only on risk, paper, positions, evaluation, baselines.
+Next: F2, F3, F5 in parallel (lean loop). Wave 0 (F1) done. Queued small F1 follow-up: A2 explicit exempt list + test rename, A4 ClockSync immutable pair, A5 atr_candle_interval 1h only + allowed_user_id > 0. /onboard done.
