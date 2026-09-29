@@ -23,7 +23,8 @@ class HlHttpError(HlError):
     status: int
 
     def __init__(self, message: str, *, status: int) -> None:
-        raise NotImplementedError
+        super().__init__(message)
+        self.status = status
 
 
 class HlRateLimitedError(HlError):
@@ -32,6 +33,10 @@ class HlRateLimitedError(HlError):
 
 class HlTimeoutError(HlError):
     """The request timed out on the first attempt and on every one of ``hl.retry_max`` retries."""
+
+
+class HlConnectionError(HlError):
+    """The connection failed (not a timeout) on the first attempt and on every one of ``hl.retry_max`` retries."""
 
 
 class HlBudgetError(HlError):
@@ -50,7 +55,9 @@ class HlSchemaError(HlError):
     field: str
 
     def __init__(self, message: str, *, endpoint: str, field: str) -> None:
-        raise NotImplementedError
+        super().__init__(f"{endpoint}: {message}" + (f" (field: {field})" if field else ""))
+        self.endpoint = endpoint
+        self.field = field
 
 
 class WsUserLimitError(HlError):
