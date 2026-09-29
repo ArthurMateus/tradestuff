@@ -27,6 +27,9 @@ PO acknowledgements: section 14 items 1-10, with the corrected wording of 9-10 p
 - **Rulebook audits:** none after the A4 check, unless the verdict logic changes.
 - **F22:** dropped.
 
+## Follow-ups before run 1 (not blocking the build)
+- BT5-1, BT5-2 and BT5-3 (`research/backtest-audit-r5.md`, VALID): fix them in a short Addendum A5 while building F18, with no new audit (token-economy rule). Correct item 9's wording for BT5-1, and have the PO confirm it.
+
 Pending outside the pipeline: the PO runs hl_sample.py once and sends back summary.json. It feeds the VAL-S config keys.
 
 Next: commit A4 and run a light audit of A4, then have the PM align the spec with A4, then get PO approval of the spec, then /tests.
