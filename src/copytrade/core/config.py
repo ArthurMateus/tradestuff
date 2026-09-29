@@ -298,6 +298,8 @@ class _Ordering:
     other: str
 
 
+_WEIGHT_SUM_TOLERANCE = Decimal("1e-9")  # F5.AC5: the six score weights sum to 1 within this
+
 _ORDERINGS: tuple[_Ordering, ...] = (
     _Ordering("gate.min_positive_blocks", operator.le, "at most", "gate.n_blocks"),
     _Ordering("select.min_followed", operator.le, "at most", "select.max_followed"),
@@ -320,7 +322,7 @@ def _check_cross_keys(values: Mapping[str, Any], files: Mapping[str, str]) -> No
         if values[mode] == ENFORCE and values[threshold] == UNSET:
             raise ConfigError(f"must be set while {mode} is {ENFORCE}", key=threshold, file=files[threshold])
     weights = [values[f"score.weights.{name}"] for name in SCORE_COMPONENTS]
-    if sum(weights) != 1:
+    if abs(sum(weights) - 1) > _WEIGHT_SUM_TOLERANCE:
         raise ConfigError("the six weights must sum to 1", key="score.weights", file=files["score.weights.dsr_excess"])
     for name in SCORE_COMPONENTS:
         if values[f"score.anchors.{name}.lo"] == values[f"score.anchors.{name}.hi"]:
