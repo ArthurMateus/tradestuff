@@ -2,6 +2,10 @@
 
 Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 and 2 applied
 
+## Amendment 3 (2026-09-29, CTO, on PO decision)
+- **F22 (OKX recorder) is removed from this epic** and moved to out-of-scope. The PO chose to cut cost (`decisions.md`, 2026-09-29). F22's ACs, config keys and ownership rows below are void for this epic. DoD item 1 is read as covering F1–F21 and F23.
+- **Run 2 is refused while any run-1 missed exit has no resolution record** (F17.AC9) is confirmed as the PO's decision. It resolves open point 5 of Amendment 2.
+
 ## Amendment 2 (2026-09-29)
 
 **Source.** Edge-hypothesis Addendum A3 (`research/edge-hypothesis.md` §5.12, marks `(A3.n)`, tests 21–24) and `research/scripts/eval_reference.py` v3 (E15), both now committed. A3 is normative. This amendment aligns the spec with A3 and ends the "provisional" status that Amendment 1 gave F12.AC6, F12.AC9, F14.AC6, F14.AC9, F18.AC7 and F18.AC11. /tests takes their vectors from A3 tests 21–24 and from the E15 golden literals quoted in the ACs below.
@@ -1740,6 +1744,8 @@ The default is **fail closed for opens and adds, never for exits**.
 ---
 
 ## 8. Out of scope
+
+- F22, the OKX lead-trader recorder. It was removed by Amendment 3 to cut cost, and a later epic may bring it back.
 
 - Real-money execution, live keys, the Hyperliquid testnet, and exchange-side SL/TP placement (D9 applies when live).
 - Running the paper runs themselves, and their verdicts. They start after /ship, on the PO's go, and are tracked in the run register (A11).
