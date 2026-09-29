@@ -60,7 +60,7 @@ Files: `tests/ledger/test_chain.py` (C), `test_payload.py` (P), `test_decisions.
 No shared file was edited. The ledger sink is registered from `tests/ledger/conftest.py` via the public `SECRET_SINKS` dict, so no CTO-serialized commit is needed. If the CTO prefers registering it in `tests/conftest.py`, it is a two-line change.
 
 ## Round 2 (mutation-driven additions)
-New files only: `tests/ledger/test_canonical_form.py` (AC1) and `tests/ledger/test_exactness_and_failures.py` (AC4, AC5, AC6). 78 new tests: 69 pass on 4680d36, **9 fail on purpose** until the developer fixes three defects:
+New files only: `tests/ledger/test_canonical_form.py` (AC1) and `tests/ledger/test_exactness_and_failures.py` (AC4, AC5, AC6). 77 new tests: 68 pass on 4680d36, **9 fail on purpose** until the developer fixes three defects:
 - 5x AC5 `aggregate_trades` on pathological Decimals (`1E+2000` + 1, overflow, span wider than the 1000-digit context) leaks a raw `decimal.Rounded`/`Inexact`; must be a `LedgerError`.
 - 1x AC6 `_write_durably` spins forever if `os.write` returns 0; must raise `OSError` (surfaced as `LedgerWriteError`, ledger failed). The test caps retries at 100 and fails instead of hanging.
 - 3x AC4 CLI `export fills` with an instant whose UTC conversion leaves years 1..9999 (`0001-01-01T00:00:00+05:00`, `9999-12-31T23:59:59-05:00`) raises `OverflowError`; must be an argparse error (exit 2, no traceback).
