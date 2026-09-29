@@ -2,7 +2,7 @@
 name: pm
 description: Product manager. SPEC mode turns the brief, discovery answers and research into features with testable acceptance criteria, a config table and an epic plan. VERIFY mode checks every AC against the evidence at the end. Never reads git history, never writes code.
 tools: Read, Write, Edit, Grep, Glob
-model: opus
+model: sonnet
 effort: high
 ---
 

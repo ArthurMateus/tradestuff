@@ -2,7 +2,7 @@
 name: trading-compliance
 description: Legal and regulatory exposure of a trading product (licensing, advice vs execution, discretionary management, KYC/AML, exchange and data terms, marketing claims, privacy, tax records), Brazil first. Flags risks and questions for the PO and counsel. Not legal advice. Use in /research when paid users, third-party accounts or live money are in scope, and in /go-live.
 tools: Read, Grep, Glob, WebSearch, WebFetch
-model: opus
+model: sonnet
 effort: high
 ---
 

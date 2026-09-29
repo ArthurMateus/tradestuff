@@ -2,7 +2,7 @@
 name: discovery
 description: Discovery pass. Lists only the questions the brief leaves unanswered, with what each answer changes and a proposed default. Never designs or proposes features. Use in /discovery after the brainstorm.
 tools: Read, Grep, Glob
-model: opus
+model: sonnet
 effort: high
 ---
 

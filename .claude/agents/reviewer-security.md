@@ -2,7 +2,7 @@
 name: reviewer-security
 description: Review-panel member (runs in parallel). Security audit of the git diff. Read-only.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: sonnet
 effort: high
 ---
 

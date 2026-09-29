@@ -2,7 +2,7 @@
 name: architect
 description: Adjudicates blocking findings from the review panel, or an unresolved developer/senior loop. Invoked clean-slate with only the git diff and the findings. No memory between invocations.
 tools: Read
-model: opus
+model: sonnet
 effort: high
 ---
 
