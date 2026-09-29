@@ -4,7 +4,7 @@ gate_passed: build (F1 only)
 touches_money_path: yes
 touches_strategy: yes
 has_ui: no
-features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=approved+merged (tests_commit=6ba583c; round-2 tests a6340a7; build loops=2), F3=build (tests_commit=364d97b), F4=queued, F5=approved+merged (tests_commit=651812a; round-2 tests 490d783; build loops=2), F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
+features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=approved+merged (tests_commit=6ba583c; round-2 tests a6340a7; build loops=2), F3=build, PAUSED at round-1 CHANGES REQUIRED (tests_commit=364d97b; impl 506ba0f..006ba87; test fix b8c2f94; branch pushed, NOT merged), F4=queued, F5=approved+merged (tests_commit=651812a; round-2 tests 490d783; build loops=2), F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
 loops: tests=0 build=2 review=0 qa=0
 escalations_open: none
 updated: 2026-09-29T20:00:00Z
@@ -65,3 +65,14 @@ Next: F2 senior-dev, F3 and F5 developers in progress (worktrees in ../wt/F2, F3
 - F3 adapter contract: Fill.liquidation is set by F3 (also `"iquidat" in dir`); F3 must map isSnapshot and liquidation into F5's Fill.
 - F3: no concrete WsConnector (dependency decision for F21); success-rate trigger has no min-sample key; F1 cross-key check ping interval < feed.stale_after_s.
 - Brazil: on/off-ramp, tax, and HL geo status unverified; check before /go-live (BCB deadline 2026-10-30).
+
+## PAUSED (PO decision: pause after F3, token budget). Resume here.
+Merged into epic: F1, F2, F5. F3 is on origin/feat/copytrade-v1/F3-hl-client (worktree ../wt/F3 may be gone; re-create from the branch and merge epic in).
+F3 senior-dev round 1 = CHANGES REQUIRED:
+- BLOCKING 1 (code bug): a malformed WS fill message is dropped without opening a gap or resync (ws.py _handle_message, HlSchemaError and unreadable-frame paths). Fix: open a gap for the wallet (or every wallet on the connection if unidentifiable) and resync via userFillsByTime. Needs a new test first (test-designer), then developer.
+- BLOCKING 2 (test gap + semantics): stale-timer boundary in ws.py tick and is_stale (`>` vs `>=`); pin 1 ms before / exactly / 1 ms after. Spec says "no message or pong for feed.stale_after_s"; if stale at exactly N s, change to `>=`.
+- BLOCKING 3 (test gap): access thresholds: RECOVERY_MIN_SUCCESS_PERCENT 95, `>=` at the 95% bucket, access-error window expiry, 403/451 count window boundary.
+- Advisory: ws timing boundaries and untested ping clamp (3/4 of stale_after_s); schema 10-min window and alert-episode reset; budget `weight > budget`; pass isSnapshot to the sink; paginate userFillsByTime past ~2000 fills or refuse to close the gap; cap seen_tids and held; resync blocks tick (D8); late item weight; min-sample rule for access_degraded (spec amendment); host allow-list; sink failure after record_downtime re-writes data_gap.
+Route: test-designer (items 1-3 tests plus advisory boundaries), then developer, then senior-dev re-review (round 2 of 3). Then merge F3 into epic.
+Next after F3: F6, F7, F4 (then F10, F11, F12, F14). Cost so far about 0.5M subagent tokens per feature; consider batching all test gaps into one round and limiting mutant runs to money-path modules.
+Other open follow-ups are listed above.
