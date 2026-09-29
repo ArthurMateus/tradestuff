@@ -129,9 +129,13 @@ def test_F5_AC3_thresholds_come_from_config_not_from_code(tmp_path: Path) -> Non
     from tests.scoring.helpers import make_cfg
 
     strict = make_cfg(tmp_path, **{"gate.min_round_trips": 300, "gate.max_drawdown": "0.05", "gate.min_profit_factor": "2.5"})
-    assert gates(strict, n_rt=299) == ("G2",) and gates(strict, n_rt=300) == ()
-    assert gates(strict, max_dd=D("0.0501")) == ("G5",) and gates(strict, max_dd=D("0.05")) == ()
-    assert gates(strict, profit_factor=D("2.49")) == ("G6",) and gates(strict, profit_factor=D("2.5")) == ()
+    # passing_metrics has max_dd 0.10 and PF 2.0, which the strict config (0.05 / 2.5) rejects, so every case sets both
+    ok = {"max_dd": D("0.05"), "profit_factor": D("2.5")}
+    assert gates(strict, **{**ok, "n_rt": 299}) == ("G2",) and gates(strict, **{**ok, "n_rt": 300}) == ()
+    assert gates(strict, **{**ok, "max_dd": D("0.0501")}) == ("G5",) and gates(strict, **ok) == ()
+    assert gates(strict, **{**ok, "profit_factor": D("2.49")}) == ("G6",)
+    # the defaults would accept the base metrics, so the strict config alone is what rejects them
+    assert gates(strict) == ("G5", "G6")
 
 
 def test_F5_AC3_G4_uses_the_configured_block_requirement(tmp_path: Path) -> None:
