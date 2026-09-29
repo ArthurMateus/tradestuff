@@ -1,6 +1,10 @@
 """EXPLORATORY - SURVIVORSHIP-BIASED (today's leaderboard) - NOT VALIDATION.
 
-hl_sample.py v2 (2026-09-29). Rewritten after the backtest audit (BT-1, BT-2, BT-3, BT-16).
+hl_sample.py v2.1 (2026-09-29). Rewritten after the backtest audit (BT-1, BT-2, BT-3, BT-16);
+v2.1 adds the round-2 diagnostics (BT2-6, BT2-7): per-wallet fetch metadata (first and last fill
+ms, pages, full pages, returned rows, unique aggregated fills, ascending-order check), a second
+truncation rule, cursor = max time with deduplication, fail-closed handling of unknown account
+roles, and a log of the leaderboard's month P&L next to the portfolio's month P&L change.
 
 Pulls a small sample from Hyperliquid's PUBLIC info endpoints (no keys, read-only, no
 orders) and estimates, per wallet AND as a cross-wallet dispersion (not only pooled):
@@ -26,9 +30,18 @@ Look-ahead controls:
     points and fills with time <= t_sel. Every reported statistic is measured only on
     positions OPENED in [t_sel, end]. Leader win rate and P&L are therefore
     forward, post-selection numbers; they are still survivorship-biased (see below).
+  * The pool ranks on leaderboard allTime - month P&L. That is pre-t_sel only if the leaderboard
+    "month" window is a rolling 30 days (unconfirmed). Every pool wallet therefore logs the
+    leaderboard month P&L next to the portfolio perpMonth (and month) P&L change and that
+    window's first timestamp, so the assumption can be checked on the real run (BT2-7).
   * The leader's account value at a past open is the latest portfolio point at or
     before that open (BT-3). There is NO fallback to the current account value.
     Opens with no earlier point are excluded from size statistics and counted.
+  * History truncation by the 10,000-fill cap (BT-1, BT2-6) is suspected when EITHER >= 9,000
+    rows came back, OR at least one page was full (2,000 rows) and the first fill is more than
+    1 day after the requested start (the cap counts raw fills, the script sees aggregated ones).
+  * Account roles (BT2-6c): only "user" and "subAccount" pass. vault/agent/missing are excluded,
+    and any other answer (an error, an unexpected shape) is "unknown": excluded and counted.
   * Cheap product gates applied at t_sel (BT-16): not HLP, not a vault/agent account,
     account value >= $10k, account age >= 180 d, positive P&L in the selection
     window, maker share <= 0.70, median hold >= 15 min, >= 25 closed round trips in
@@ -77,7 +90,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-SCRIPT_VERSION = "2.0.0"
+SCRIPT_VERSION = "2.1.0"
 INFO_URL = "https://api.hyperliquid.xyz/info"
 LEADERBOARD_URL = "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"
 HLP_VAULT = "0xdfc24b077bc1425ad1dea75bcb6f8158e10df303"
@@ -86,6 +99,9 @@ DAY_MS = 86_400_000
 MIN_MS = 60_000
 FILL_CAP = 10_000             # only the 10,000 most recent fills exist per wallet
 TRUNC_FLAG_FILLS = 9_000      # >= this many fills returned: history may be cut by the cap
+PAGE_SIZE = 2_000             # userFillsByTime returns at most 2,000 rows per call
+TRUNC_GAP_MS = 86_400_000     # full page + first fill > requested start + 1 day: suspect truncation
+MAX_PAGES = 50                # safety stop for pagination (10,000 fills need ~5-6 pages)
 MIN_ORDER_USD = 10.0          # Hyperliquid minimum order value
 WALLET_USD = 300.0            # PO: paper wallet
 RISK = 0.005                  # PO 2026-09-29: 0.5% risk per trade
@@ -204,30 +220,78 @@ class HttpClient:
         return dict(self._info({"type": "portfolio", "user": user}, 20))
 
     def user_role(self, user: str) -> str:
+        """The role string, or "unknown" on an error or an unexpected response shape.
+        "unknown" never passes the role gate (fail closed, BT2-6c)."""
         try:
             r = self._info({"type": "userRole", "user": user}, 60)
             return str(r.get("role", "unknown")) if isinstance(r, dict) else "unknown"
         except urllib.error.HTTPError:
             return "unknown"
 
-    def fills(self, user: str, start_ms: int, end_ms: int) -> tuple[list[dict], int]:
-        """Paginate forward; <= 2,000 fills per call; only the 10,000 most recent exist.
-        Returns (deduplicated fills sorted by time, raw count returned by the API)."""
-        out: list[dict] = []
-        cursor = start_ms
-        while True:
-            batch = self._info({"type": "userFillsByTime", "user": user, "startTime": cursor,
-                                "endTime": end_ms, "aggregateByTime": True}, 20, per_items=20)
-            if not batch:
-                break
-            out.extend(batch)
-            if len(batch) < 2000:
-                break
-            nxt = max(int(f["time"]) for f in batch) + 1
-            if nxt <= cursor:
-                break
-            cursor = nxt
-        return dedupe_fills(out), len(out)
+    def fills(self, user: str, start_ms: int, end_ms: int) -> tuple[list[dict], dict]:
+        """Returns (deduplicated fills sorted by time, fetch metadata); see paginate_fills."""
+        def page(cursor: int, end: int) -> list[dict]:
+            return self._info({"type": "userFillsByTime", "user": user, "startTime": cursor,
+                               "endTime": end, "aggregateByTime": True}, 20, per_items=20) or []
+        return paginate_fills(page, start_ms, end_ms)
+
+
+def paginate_fills(fetch_page: Callable[[int, int], list[dict]], start_ms: int, end_ms: int,
+                   page_size: int = PAGE_SIZE, max_pages: int = MAX_PAGES) -> tuple[list[dict], dict]:
+    """Paginate forward from start_ms. The next cursor is the page's MAX time (not max + 1),
+    so fills that share the boundary millisecond are fetched again and then deduplicated
+    instead of being skipped (BT2-6b). A full page that cannot advance the cursor (all rows in
+    one millisecond) stops pagination and is flagged. Every page is checked for ascending time
+    order and for rows earlier than the cursor that requested it (BT2-6d)."""
+    rows: list[dict] = []
+    pages = full_pages = 0
+    ascending = True
+    stuck = hit_max_pages = False
+    cursor = start_ms
+    while True:
+        batch = list(fetch_page(cursor, end_ms) or [])
+        pages += 1
+        if not batch:
+            break
+        ts = [int(f["time"]) for f in batch]
+        if ts[0] < cursor or any(b < a for a, b in zip(ts, ts[1:])):
+            ascending = False
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        full_pages += 1
+        nxt = max(ts)
+        if nxt <= cursor:
+            stuck = True
+            break
+        if pages >= max_pages:
+            hit_max_pages = True
+            break
+        cursor = nxt
+    uniq = dedupe_fills(rows)
+    meta = {"requested_start_ms": start_ms, "requested_end_ms": end_ms,
+            "pages": pages, "full_pages": full_pages, "returned_rows": len(rows),
+            "unique_aggregated_fills": len(uniq), "duplicates_dropped": len(rows) - len(uniq),
+            "first_fill_ms": int(uniq[0]["time"]) if uniq else None,
+            "last_fill_ms": int(uniq[-1]["time"]) if uniq else None,
+            "ascending_order_ok": ascending, "pagination_stuck_same_ms": stuck,
+            "pagination_hit_max_pages": hit_max_pages}
+    meta["first_fill_utc"] = _iso(meta["first_fill_ms"]) if uniq else None
+    meta["last_fill_utc"] = _iso(meta["last_fill_ms"]) if uniq else None
+    return uniq, meta
+
+
+def truncation_suspected(meta: dict) -> tuple[bool, list[str]]:
+    """BT-1 / BT2-6a. The 10,000 cap counts raw fills but the API returns aggregated ones, so
+    the row count alone can miss a cut. Suspect truncation when >= 9,000 rows came back, or
+    when a page was full and the first fill is more than 1 day after the requested start."""
+    why = []
+    if meta["returned_rows"] >= TRUNC_FLAG_FILLS:
+        why.append("returned_rows_ge_9000")
+    first = meta.get("first_fill_ms")
+    if meta["full_pages"] > 0 and first is not None and first > meta["requested_start_ms"] + TRUNC_GAP_MS:
+        why.append("full_page_and_first_fill_gt_1d_after_start")
+    return bool(why), why
 
     def candles(self, coin: str, interval: str, start_ms: int, end_ms: int) -> list[dict]:
         data = self._info({"type": "candleSnapshot", "req": {
@@ -514,6 +578,7 @@ class Gates:
     min_median_hold_min: float = 15.0
     min_round_trips: int = 25          # product G2: 150 per 180 d, pro-rated to 30 d
     exclude_roles: tuple[str, ...] = ("vault", "agent", "missing")
+    allowed_roles: tuple[str, ...] = ("user", "subAccount")   # anything else fails closed
 
 
 def stage_a(addr: str, port: dict, sel_start: int, t_sel: int, g: Gates) -> dict:
@@ -544,8 +609,9 @@ def stage_a(addr: str, port: dict, sel_start: int, t_sel: int, g: Gates) -> dict
             "pnl_points_in_selection_window": sum(1 for ts, _ in pnl if sel_start < ts <= t_sel)}
 
 
-def selection_stats(fills: list[dict], n_raw: int, sel_start: int, t_sel: int) -> dict:
-    """Uses only fills with time <= t_sel (what the product could see at t_sel)."""
+def selection_stats(fills: list[dict], possibly_trunc: bool, sel_start: int, t_sel: int) -> dict:
+    """Uses only fills with time <= t_sel (what the product could see at t_sel).
+    possibly_trunc comes from truncation_suspected() on the fetch metadata."""
     known = [f for f in fills if int(f["time"]) <= t_sel]
     closed, _ = reconstruct(known)
     trips = [r for r in closed if r.open_ms >= sel_start]
@@ -559,8 +625,8 @@ def selection_stats(fills: list[dict], n_raw: int, sel_start: int, t_sel: int) -
             "maker_share": round(maker / notional, 4) if notional > 0 else None,
             "liquidation": any(is_liquidation(f) for f in win),
             "realised_pnl_usd": round(sum(r.net_pnl for r in trips), 2),
-            "history_possibly_truncated": n_raw >= TRUNC_FLAG_FILLS,
-            "selection_window_truncated": bool(n_raw >= TRUNC_FLAG_FILLS and first is not None
+            "history_possibly_truncated": bool(possibly_trunc),
+            "selection_window_truncated": bool(possibly_trunc and first is not None
                                                and first > sel_start)}
 
 
@@ -568,6 +634,8 @@ def stage_b_fails(role: str, sel: dict, g: Gates) -> list[str]:
     fails = []
     if role in g.exclude_roles:
         fails.append(f"role_{role}")
+    elif role not in g.allowed_roles:
+        fails.append("role_unknown")                 # error or unexpected answer: fail closed
     if sel["n_round_trips"] < g.min_round_trips:
         fails.append("too_few_round_trips")
     if sel["maker_share"] is None or sel["maker_share"] > g.max_maker_share:
@@ -580,7 +648,7 @@ def stage_b_fails(role: str, sel: dict, g: Gates) -> list[str]:
 
 
 # ================================================================ forward measurement
-def measure_wallet(fills: list[dict], n_raw: int, av_points: list[tuple[int, float]],
+def measure_wallet(fills: list[dict], possibly_trunc: bool, av_points: list[tuple[int, float]],
                    meas_start: int, end: int,
                    stop_for: Callable[[str, int, float], tuple[float, str]]) -> dict:
     """All statistics use positions OPENED in [observation start, end).
@@ -588,7 +656,7 @@ def measure_wallet(fills: list[dict], n_raw: int, av_points: list[tuple[int, flo
     after meas_start, in which case it is the first available fill (flagged; BT-1)."""
     closed, live = reconstruct(fills)
     first = min(int(f["time"]) for f in fills) if fills else None
-    possibly_trunc = n_raw >= TRUNC_FLAG_FILLS
+    possibly_trunc = bool(possibly_trunc)
     obs_start = meas_start
     meas_trunc = False
     if possibly_trunc and first is not None and first > meas_start:
@@ -695,6 +763,49 @@ def _pre_selection_pnl(row: dict) -> float:
     return float((wp.get("allTime") or {}).get("pnl", 0) or 0) - float((wp.get("month") or {}).get("pnl", 0) or 0)
 
 
+def month_pnl_check(row: dict, port: dict, now_ms: int) -> dict:
+    """BT2-7: the leaderboard "month" P&L next to the portfolio's month P&L change and the first
+    timestamp of that portfolio window. If the leaderboard month is a rolling 30 days, the
+    window starts about 30 days before now and the two P&L numbers agree. If not, the pool
+    ranking (allTime - month) may use information from after t_sel."""
+    wp = dict(row.get("windowPerformances") or [])
+
+    def lb(name: str) -> float | None:
+        v = (wp.get(name) or {}).get("pnl")
+        return None if v is None else float(v)
+    out: dict = {"lb_month_pnl": lb("month"), "lb_alltime_pnl": lb("allTime")}
+    for name in ("perpMonth", "month"):
+        w = port.get(name) if isinstance(port.get(name), dict) else {}
+        pts = sorted((int(ts), float(v)) for ts, v in (w.get("pnlHistory") or []))
+        key = "port_" + name
+        if not pts:
+            out[key] = None
+            continue
+        change = pts[-1][1] - pts[0][1]
+        out[key] = {"pnl_change": round(change, 2), "window_start_ms": pts[0][0],
+                    "window_start_utc": _iso(pts[0][0]), "last_point_ms": pts[-1][0],
+                    "window_days_before_now": round((now_ms - pts[0][0]) / DAY_MS, 3),
+                    "points": len(pts),
+                    "lb_month_minus_change": None if out["lb_month_pnl"] is None
+                    else round(out["lb_month_pnl"] - change, 2)}
+    return out
+
+
+def _month_check_summary(checks: list[dict]) -> dict:
+    res: dict = {"note": "If window_days_before_now is about 30 and lb_month_minus_change is about 0, "
+                         "the leaderboard month is a rolling 30 days and the pool ranking is pre-t_sel. "
+                         "Otherwise the pool may use post-t_sel information (D1): report it."}
+    for name in ("port_perpMonth", "port_month"):
+        rs = [c[name] for c in checks if c.get(name) and c[name]["lb_month_minus_change"] is not None]
+        within = sum(abs(r["lb_month_minus_change"]) <= max(1.0, 0.01 * abs(c["lb_month_pnl"]))
+                     for c in checks for r in [c.get(name)]
+                     if r and r["lb_month_minus_change"] is not None)
+        res[name] = {"n": len(rs), "within_1pct_or_1usd": within,
+                     "abs_diff_usd": dispersion([abs(r["lb_month_minus_change"]) for r in rs], 2),
+                     "window_days_before_now": dispersion([r["window_days_before_now"] for r in rs], 3)}
+    return res
+
+
 def script_sha256() -> str:
     try:
         return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
@@ -717,10 +828,12 @@ def run_sample(client, a: argparse.Namespace, now_ms: int, out_dir: Path, log=pr
                  and _pre_selection_pnl(r) > 0]
     pool_rows.sort(key=lambda r: (-_pre_selection_pnl(r), str(r["ethAddress"]).lower()))
     pool = [str(r["ethAddress"]) for r in pool_rows[: a.pool]]
+    row_by_addr = {str(r["ethAddress"]): r for r in pool_rows[: a.pool]}
 
     log(f"[2/5] portfolio gates at t_sel for {len(pool)} candidates")
     errors: list[dict] = []
     a_recs: dict[str, dict] = {}
+    month_checks: dict[str, dict] = {}
     av_by_addr: dict[str, list[tuple[int, float]]] = {}
     for i, addr in enumerate(pool, 1):
         try:
@@ -731,6 +844,7 @@ def run_sample(client, a: argparse.Namespace, now_ms: int, out_dir: Path, log=pr
         _save_gz(raw / f"portfolio_{addr}.json.gz", port)
         av_by_addr[addr] = account_value_points(port)
         a_recs[addr] = stage_a(addr, port, sel_start, t_sel, g)
+        month_checks[addr] = month_pnl_check(row_by_addr[addr], port, end)
         if i % 20 == 0:
             log(f"      {i}/{len(pool)}")
     survivors = sorted((r for r in a_recs.values() if not r["fails"]),
@@ -742,26 +856,29 @@ def run_sample(client, a: argparse.Namespace, now_ms: int, out_dir: Path, log=pr
     fetched = 0
     examined: dict[str, dict] = {}
     selected: list[tuple[str, str]] = []                 # (address, group)
-    fills_by_addr: dict[str, tuple[list[dict], int]] = {}
+    fills_by_addr: dict[str, tuple[list[dict], bool]] = {}
 
     def examine(addr: str) -> bool:
         nonlocal fetched
         fetched += 1
         try:
             role = client.user_role(addr)
-            fills, n_raw = client.fills(addr, sel_start, end)
+            fills, meta = client.fills(addr, sel_start, end)
         except Exception as e:                       # noqa: BLE001
             errors.append({"address": addr, "step": "fills", "error": repr(e)[:300]})
             examined[addr] = {"role": "error", "fails": ["fetch_error"]}
             return False
         _save_gz(raw / f"fills_{addr}.json.gz", fills)
-        sel = selection_stats(fills, n_raw, sel_start, t_sel)
+        trunc, why = truncation_suspected(meta)
+        meta = {**meta, "truncation_suspected": trunc, "truncation_reasons": why}
+        sel = selection_stats(fills, trunc, sel_start, t_sel)
         fails = stage_b_fails(role, sel, g)
-        examined[addr] = {"role": role, "selection": sel, "fails": fails, "raw_fill_count": n_raw}
+        examined[addr] = {"role": role, "selection": sel, "fails": fails, "fetch": meta}
         if not fails:
-            fills_by_addr[addr] = (fills, n_raw)
-        log(f"      {addr} role={role} rt={sel['n_round_trips']} "
-            f"maker={sel['maker_share']} hold={sel['median_hold_min']} -> "
+            fills_by_addr[addr] = (fills, trunc)
+        log(f"      {addr} role={role} pages={meta['pages']} fills={meta['unique_aggregated_fills']} "
+            f"first={meta['first_fill_utc']} asc={meta['ascending_order_ok']} trunc={trunc} "
+            f"rt={sel['n_round_trips']} maker={sel['maker_share']} hold={sel['median_hold_min']} -> "
             f"{'PASS' if not fails else ','.join(fails)}")
         return not fails
 
@@ -798,9 +915,10 @@ def run_sample(client, a: argparse.Namespace, now_ms: int, out_dir: Path, log=pr
 
     wallets_out: dict[str, dict] = {}
     for addr, group in selected:
-        fills, n_raw = fills_by_addr[addr]
-        m = measure_wallet(fills, n_raw, av_by_addr[addr], t_sel, end, stop_for)
+        fills, trunc = fills_by_addr[addr]
+        m = measure_wallet(fills, trunc, av_by_addr[addr], t_sel, end, stop_for)
         wallets_out[addr] = {"group": group, "portfolio_gates": a_recs[addr],
+                             "leaderboard_month_check": month_checks.get(addr),
                              "activity_gates": examined[addr], "forward": m}
 
     log("[5/5] 1m candles for post-open drift")
@@ -827,6 +945,7 @@ def run_sample(client, a: argparse.Namespace, now_ms: int, out_dir: Path, log=pr
     total_days = sum(x["observation_days"] for x in fw)
     fail_a = Counter(f for r in a_recs.values() for f in r["fails"])
     fail_b = Counter(f for r in examined.values() for f in r["fails"])
+    metas = [r["fetch"] for r in examined.values() if "fetch" in r]
     summary = {
         "label": LABEL,
         "script": {"file": "docs/sdlc/copytrade-v1/research/scripts/hl_sample.py",
@@ -843,13 +962,28 @@ def run_sample(client, a: argparse.Namespace, now_ms: int, out_dir: Path, log=pr
                                 f"fallback {FALLBACK_STOP_PCT}",
                         "min_order_usd": MIN_ORDER_USD,
                         "partial_rule": "remainder < $10 -> close all; else cut < $10 -> skip and log",
-                        "truncation_flag_fills": TRUNC_FLAG_FILLS, "gates": vars(g) if hasattr(g, "__dict__") else str(g)},
+                        "truncation_flag_fills": TRUNC_FLAG_FILLS, "page_size": PAGE_SIZE,
+                        "truncation_rules": "returned rows >= 9,000, OR a full page and the first fill "
+                                            "> requested start + 1 day",
+                        "pagination": "cursor = max time of the page, then deduplicate", "gates": vars(g) if hasattr(g, "__dict__") else str(g)},
         "pool": {"leaderboard_rows": len(rows), "pool_size": len(pool),
                  "portfolio_gate_pass": len(survivors), "portfolio_gate_fail_reasons": dict(fail_a),
                  "examined_with_fills": len(examined), "activity_gate_fail_reasons": dict(fail_b),
                  "role_unknown": sum(1 for r in examined.values() if r.get("role") == "unknown"),
+                 "role_unknown_excluded": fail_b.get("role_unknown", 0),
+                 "role_counts": dict(Counter(r.get("role") for r in examined.values())),
                  "selected": len(selected), "selected_top": sum(1 for _, gr in selected if gr.startswith("top")),
                  "selected_random": sum(1 for _, gr in selected if gr.startswith("random"))},
+        "fetch_checks": {"wallets_fetched": len(metas),
+                         "all_pages_ascending": all(m_["ascending_order_ok"] for m_ in metas),
+                         "wallets_not_ascending": sum(not m_["ascending_order_ok"] for m_ in metas),
+                         "wallets_pagination_stuck": sum(m_["pagination_stuck_same_ms"] for m_ in metas),
+                         "wallets_hit_max_pages": sum(m_["pagination_hit_max_pages"] for m_ in metas),
+                         "wallets_truncation_suspected": sum(m_["truncation_suspected"] for m_ in metas),
+                         "truncation_reasons": dict(Counter(w for m_ in metas for w in m_["truncation_reasons"])),
+                         "pages": dispersion([m_["pages"] for m_ in metas], 0),
+                         "duplicates_dropped_total": sum(m_["duplicates_dropped"] for m_ in metas)},
+        "leaderboard_month_check": _month_check_summary(list(month_checks.values())),
         "dispersion_across_wallets": {k: dispersion([x.get(k) for x in fw]) for k in disp_keys},
         "pooled": {"opens": total_opens, "wallet_observation_days": round(total_days, 2),
                    "opens_per_wallet_day": round(total_opens / total_days, 4) if total_days else None,
@@ -858,6 +992,8 @@ def run_sample(client, a: argparse.Namespace, now_ms: int, out_dir: Path, log=pr
                    "censored_open_at_end": sum(x["censored_open_at_end"] for x in fw)},
         "drift_pooled": _drift_summary(pooled_drift),
         "wallets": wallets_out,
+        "examined": examined,
+        "pool_month_check": month_checks,
         "errors": errors,
     }
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -866,10 +1002,11 @@ def run_sample(client, a: argparse.Namespace, now_ms: int, out_dir: Path, log=pr
 
 
 # ================================================================ self-test (offline)
-def _fill(t, coin, side, sz, px, start, pnl=0.0, fee=0.0, crossed=True, liq=False):
+def _fill(t, coin, side, sz, px, start, pnl=0.0, fee=0.0, crossed=True, liq=False, tid=None):
+    tid = t if tid is None else tid
     d = {"time": t, "coin": coin, "side": side, "sz": str(sz), "px": str(px),
-         "startPosition": str(start), "closedPnl": str(pnl), "fee": str(fee), "tid": t,
-         "hash": f"h{t}", "crossed": crossed}
+         "startPosition": str(start), "closedPnl": str(pnl), "fee": str(fee), "tid": tid,
+         "hash": f"h{tid}", "crossed": crossed}
     if liq:
         d["liquidation"] = {"markPx": str(px)}
     return d
@@ -884,8 +1021,9 @@ def _rt(t0, hold_ms, coin="BTC", sz=1.0, px=100.0, crossed=True, win=True):
 class _FakeClient:
     """Offline stand-in for HttpClient with canned, synthetic data."""
 
-    def __init__(self, rows, ports, roles, fills, candles):
+    def __init__(self, rows, ports, roles, fills, candles, page_size=PAGE_SIZE):
         self.rows, self.ports, self.roles, self.f, self.c = rows, ports, roles, fills, candles
+        self.page_size = page_size
         self.requests = 0
 
     def leaderboard(self):
@@ -900,9 +1038,13 @@ class _FakeClient:
         return self.roles.get(user, "unknown")
 
     def fills(self, user, s, e):
-        self.requests += 1
-        fs = [f for f in self.f.get(user, []) if s <= f["time"] <= e]
-        return dedupe_fills(fs), len(fs)
+        """Same pagination as HttpClient: pages of page_size rows, ascending from the cursor."""
+        data = sorted(self.f.get(user, []), key=lambda f: (f["time"], f.get("tid", 0)))
+
+        def page(cursor, end):
+            self.requests += 1
+            return [f for f in data if cursor <= f["time"] <= end][: self.page_size]
+        return paginate_fills(page, s, e, page_size=self.page_size)
 
     def candles(self, coin, interval, s, e):
         self.requests += 1
@@ -941,35 +1083,35 @@ def selftest() -> None:
     #    not 24 per day (the v1 bug divided by the first-to-last-fill span).
     ms0 = 100 * d
     sparse = _rt(ms0 + 5 * d, 60 * m)
-    s = measure_wallet(sparse, len(sparse), av, ms0, ms0 + 30 * d, const_stop)
+    s = measure_wallet(sparse, False, av, ms0, ms0 + 30 * d, const_stop)
     assert s["opens"] == 1 and abs(s["opens_per_day"] - round(1 / 30, 4)) < 1e-9, s
     assert s["observation_days"] == 30.0 and not s["measurement_window_truncated"]
 
     # 3. BT-1: truncation by the fill cap is detected and flagged, then first fill -> end
     busy = _rt(ms0 + 20 * d, 60 * m) + _rt(ms0 + 25 * d, 60 * m)
-    t = measure_wallet(busy, FILL_CAP, av, ms0, ms0 + 30 * d, const_stop)
+    t = measure_wallet(busy, True, av, ms0, ms0 + 30 * d, const_stop)
     assert t["history_possibly_truncated"] and t["measurement_window_truncated"]
     assert t["observation_days"] == 10.0 and abs(t["opens_per_day"] - 0.2) < 1e-9, t
-    nt = measure_wallet(busy, len(busy), av, ms0, ms0 + 30 * d, const_stop)
+    nt = measure_wallet(busy, False, av, ms0, ms0 + 30 * d, const_stop)
     assert not nt["measurement_window_truncated"] and abs(nt["opens_per_day"] - round(2 / 30, 4)) < 1e-9
 
     # 4. BT-3: no account-value point before the open -> excluded and counted, and a
     #    LATER (larger) value is never used for a past open.
     late_av = [(ms0 + 6 * d, 1_000_000.0)]
-    u = measure_wallet(sparse, len(sparse), late_av, ms0, ms0 + 30 * d, const_stop)
+    u = measure_wallet(sparse, False, late_av, ms0, ms0 + 30 * d, const_stop)
     assert u["opens_no_prior_account_value"] == 1 and u["share_open_below_min_raw"] is None, u
     assert value_at([(10, 1.0), (20, 2.0)], 15) == 1.0 and value_at([(10, 1.0)], 5) is None
     two_av = [(0, 1000.0), (ms0 + 6 * d, 1_000_000.0)]         # huge value arrives after the open
-    v = measure_wallet(sparse, len(sparse), two_av, ms0, ms0 + 30 * d, const_stop)
+    v = measure_wallet(sparse, False, two_av, ms0, ms0 + 30 * d, const_stop)
     assert v["frac_median"] == 0.1, v                          # 1 x 100 / 1000, not / 1,000,000
 
     # 5. BT-2: selection sees only fills <= t_sel; measurement counts only opens >= t_sel
     t_sel = ms0
     straddle = [_fill(t_sel - 2 * d, "BTC", "B", 1.0, 100, 0.0),
                 _fill(t_sel + 1 * d, "BTC", "A", 1.0, 101, 1.0, pnl=1.0)]
-    sel = selection_stats(straddle + _rt(t_sel - 10 * d, 30 * m, coin="ETH"), 3, t_sel - 30 * d, t_sel)
+    sel = selection_stats(straddle + _rt(t_sel - 10 * d, 30 * m, coin="ETH"), False, t_sel - 30 * d, t_sel)
     assert sel["n_round_trips"] == 1 and sel["median_hold_min"] == 30.0, sel   # straddler not closed at t_sel
-    fwd = measure_wallet(straddle, 2, av, t_sel, t_sel + 30 * d, const_stop)
+    fwd = measure_wallet(straddle, False, av, t_sel, t_sel + 30 * d, const_stop)
     assert fwd["opens"] == 0, fwd                                                  # opened before t_sel
 
     # 6. BT-16: adds are mirrored; partial sizing uses the position after adds.
@@ -1067,26 +1209,31 @@ def selftest() -> None:
         for k in range(n):
             out += _rt(start + k * d // 2, hold, crossed=crossed)
         return out
-    A, B, C, D_, E, F, G = (f"0x{c * 40}" for c in "abcdef1")
+    A, B, C, D_, E, F, G, H = (f"0x{c * 40}" for c in "abcdef12")
     rows = [lb_row(A, 60_000, 9_000), lb_row(B, 60_000, 8_000), lb_row(C, 60_000, 7_000),
             lb_row(D_, 5_000_000, 6_000), lb_row(E, 60_000, 5_000), lb_row(F, 60_000, 4_000),
-            lb_row(G, 60_000, 3_000), lb_row(HLP_VAULT, 1e8, 1e7)]
-    # B and C rank above A on selection P&L, so the top phase examines B (vault), C (maker)
-    # and then A; the random phase is left with G only (deterministic, seed-independent).
-    ports = {A: port(good_av, [(0, 0.0), (sel0, 0.0), (t_sel2, 9_000.0)]),
+            lb_row(G, 60_000, 3_000), lb_row(H, 60_000, 2_000), lb_row(HLP_VAULT, 1e8, 1e7)]
+    # B, C and H rank above A on selection P&L, so the top phase examines B (vault), C (maker),
+    # H (role unknown: fails closed) and then A; the random phase is left with G only
+    # (deterministic, seed-independent).
+    port_a = port(good_av, [(0, 0.0), (sel0, 0.0), (t_sel2, 9_000.0)])
+    port_a["perpMonth"] = {"accountValueHistory": [], "pnlHistory": [[end - 30 * d, "500"], [end, "1500"]]}
+    ports = {A: port_a,
              B: port(good_av, [(0, 0.0), (sel0, 0.0), (t_sel2, 20_000.0)]),
              C: port(good_av, [(0, 0.0), (sel0, 0.0), (t_sel2, 15_000.0)]),
              D_: port([(0, 5_000.0), (end - d, 5_000_000.0)], good_pnl),      # big NOW, small at t_sel
              E: port([(end - 100 * d, 50_000.0)], [(end - 100 * d, 0.0), (t_sel2, 5_000.0)]),  # young
              F: port(good_av, [(0, 0.0), (sel0, 5_000.0), (t_sel2, 4_000.0)]),                # lost in window
-             G: port(good_av, [(0, 0.0), (sel0, 0.0), (t_sel2, 2_000.0)])}
-    roles = {A: "user", B: "vault", C: "user", G: "user"}
+             G: port(good_av, [(0, 0.0), (sel0, 0.0), (t_sel2, 2_000.0)]),
+             H: port(good_av, [(0, 0.0), (sel0, 0.0), (t_sel2, 12_000.0)])}
+    roles = {A: "user", B: "vault", C: "user", G: "user"}          # H: no answer -> "unknown"
     fl = {A: active(sel0, 30) + _rt(t_sel2 + 2 * d, 60 * m) + _rt(end - d, 30 * m),
-          B: active(sel0, 30), C: active(sel0, 30, crossed=False), G: active(sel0, 30) + _rt(t_sel2 + d, 90 * m)}
+          B: active(sel0, 30), C: active(sel0, 30, crossed=False), G: active(sel0, 30) + _rt(t_sel2 + d, 90 * m),
+          H: active(sel0, 30)}
     c1h = [{"t": t_sel2 - 3 * d + i * 3_600_000, "T": t_sel2 - 3 * d + (i + 1) * 3_600_000 - 1,
             "o": "100", "h": "101", "l": "99", "c": "100"} for i in range(34 * 24)]
     c1m = [{"t": end - 3 * d + i * m, "T": end - 3 * d + (i + 1) * m - 1, "c": "100.5"} for i in range(3 * 1440)]
-    fake = _FakeClient(rows, ports, roles, fl, {("BTC", "1h"): c1h, ("BTC", "1m"): c1m})
+    fake = _FakeClient(rows, ports, roles, fl, {("BTC", "1h"): c1h, ("BTC", "1m"): c1m}, page_size=25)
     ns = argparse.Namespace(wallets=2, pool=20, max_fetch=10, seed=3, select_days=30, measure_days=30,
                             min_round_trips=25)
     tmp = Path(tempfile.mkdtemp(prefix="hl_selftest_"))
@@ -1106,9 +1253,74 @@ def selftest() -> None:
         assert wa["drift"]["+1min"]["n"] == 1 and abs(wa["drift"]["+1min"]["median_bps"] - 50.0) < 1e-6
         assert summ["dispersion_across_wallets"]["opens_per_day"]["n"] == 2
         assert HLP_VAULT not in summ["wallets"]
+
+        # 17. BT2-6c: an unknown role (no answer, error, unexpected shape) is excluded and counted
+        assert fb.get("role_unknown") == 1 and summ["pool"]["role_unknown_excluded"] == 1, fb
+        assert summ["examined"][H]["role"] == "unknown" and H not in summ["wallets"]
+        assert summ["pool"]["role_counts"].get("unknown") == 1
+
+        # 18. BT2-6d / BT2-7: per-wallet fetch metadata and the leaderboard month check are in
+        #     summary.json. A has 64 fills in pages of 25: each full page re-fetches its boundary
+        #     fill (cursor = max time), and deduplication removes exactly those rows.
+        meta_a = summ["examined"][A]["fetch"]
+        times_a = sorted(f["time"] for f in fl[A])
+        assert meta_a["first_fill_ms"] == times_a[0] and meta_a["last_fill_ms"] == times_a[-1], meta_a
+        assert meta_a["unique_aggregated_fills"] == 64 and meta_a["pages"] >= 3, meta_a
+        assert meta_a["duplicates_dropped"] == meta_a["full_pages"] and meta_a["ascending_order_ok"], meta_a
+        assert not meta_a["truncation_suspected"], meta_a             # first fill = requested start
+        fc = summ["fetch_checks"]
+        assert fc["all_pages_ascending"] and fc["wallets_fetched"] == len(summ["examined"]), fc
+        mc = summ["wallets"][A]["leaderboard_month_check"]
+        assert mc["lb_month_pnl"] == 1000.0 and mc["port_perpMonth"]["pnl_change"] == 1000.0, mc
+        assert mc["port_perpMonth"]["lb_month_minus_change"] == 0.0, mc
+        assert mc["port_perpMonth"]["window_days_before_now"] == 30.0, mc
+        assert mc["port_month"] is None                                 # window absent -> logged as None
+        lmc = summ["leaderboard_month_check"]["port_perpMonth"]
+        assert lmc["n"] == 1 and lmc["within_1pct_or_1usd"] == 1, lmc
+        assert set(summ["pool_month_check"]) == {A, B, C, D_, E, F, G, H}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    print("selftest OK (13 checks)")
+
+    # 14. BT2-6b: cursor = max time + dedupe keeps fills that share the page-boundary millisecond.
+    #     With the v2 cursor (max + 1) the second fill at t = 30 would be skipped.
+    pg = [_fill(10, "BTC", "B", 1, 100, 0, tid=1), _fill(20, "BTC", "B", 1, 100, 1, tid=2),
+          _fill(30, "BTC", "B", 1, 100, 2, tid=3), _fill(30, "BTC", "B", 1, 100, 3, tid=4),
+          _fill(40, "BTC", "A", 4, 100, 4, tid=5)]
+    calls: list[int] = []
+
+    def page3(cur, end_):
+        calls.append(cur)
+        return [f for f in pg if cur <= f["time"] <= end_][:3]
+    got, meta = paginate_fills(page3, 0, 100, page_size=3)
+    assert [f["tid"] for f in got] == [1, 2, 3, 4, 5], got
+    assert calls == [0, 30, 40] and meta["pages"] == 3 and meta["full_pages"] == 2, (calls, meta)
+    assert meta["returned_rows"] == 7 and meta["duplicates_dropped"] == 2 and meta["ascending_order_ok"]
+    assert (meta["first_fill_ms"], meta["last_fill_ms"]) == (10, 40)
+    same_ms = [_fill(50, "BTC", "B", 1, 100, k, tid=10 + k) for k in range(4)]
+    got, meta = paginate_fills(lambda c_, e_: [f for f in same_ms if c_ <= f["time"] <= e_][:3], 0, 100, page_size=3)
+    assert meta["pagination_stuck_same_ms"] and meta["pages"] == 2 and len(got) == 3, meta   # flagged, terminates
+    got, meta = paginate_fills(lambda c_, e_: list(reversed([f for f in pg if c_ <= f["time"] <= e_])), 0, 100,
+                               page_size=3)
+    assert not meta["ascending_order_ok"], meta                     # descending page detected
+    got, meta = paginate_fills(lambda c_, e_: [], 0, 100)
+    assert meta["pages"] == 1 and meta["first_fill_ms"] is None and got == []
+
+    # 15. BT2-6a: second truncation rule (full page and first fill > start + 1 day), even when far
+    #     fewer than 9,000 rows came back; and the first rule on its own.
+    base_meta = {"requested_start_ms": 0, "returned_rows": 2_500, "full_pages": 1, "first_fill_ms": 2 * d}
+    assert truncation_suspected(base_meta) == (True, ["full_page_and_first_fill_gt_1d_after_start"])
+    assert truncation_suspected({**base_meta, "full_pages": 0}) == (False, [])
+    assert truncation_suspected({**base_meta, "first_fill_ms": d}) == (False, [])      # exactly 1 day: not
+    assert truncation_suspected({**base_meta, "returned_rows": 9_000, "full_pages": 0})[1] == ["returned_rows_ge_9000"]
+    sel_t = selection_stats(busy, True, ms0, ms0 + 30 * d)
+    assert sel_t["selection_window_truncated"] and sel_t["history_possibly_truncated"]
+
+    # 16. BT2-6c: role gate fails closed
+    assert stage_b_fails("subAccount", ok, g) == []
+    assert stage_b_fails("unknown", ok, g) == ["role_unknown"]
+    assert stage_b_fails("", ok, g) == ["role_unknown"]
+    assert stage_b_fails("missing", ok, g) == ["role_missing"]
+    print("selftest OK (18 checks)")
 
 
 # ================================================================ main

@@ -8,6 +8,8 @@ Every script here is **exploratory**. Its output is never evidence of an edge un
 | `feasibility_mc.py` | Synthetic Monte Carlo of a paper run: trade count, drawdown, joint P(PASS) | no | stdout (logged under `research/data/`) |
 | `gate_power.py` | Synthetic power and false-PASS rates of the frozen go-live gate | no | stdout (logged under `research/data/`) |
 | `few_clusters.py` | Synthetic: the frozen rule when the 300 trades fall on few UTC days (sets `eval.min_day_clusters`) | no | stdout (logged under `research/data/`) |
+| `b0d_cost_fr6.py` | Synthetic (E11): P2 + P2c at zero net timing value with the corrected vs superseded B0d cost; how often FR6 fires given a pass | no | stdout (logged under `research/data/`) |
+| `eval_reference.py` | Reference implementation of the frozen evaluation keys (addendum A1.3) with test vectors: RNG, bootstrap, percentile index, CIs, merged positions, B0d draws, verdict precedence | no | stdout (logged under `research/data/`) |
 
 `research/data/` is gitignored. Outputs are identified by the sha256 values recorded in `edge-hypothesis.md` section 12.
 
@@ -59,7 +61,7 @@ All commands below run from the repository's top folder, the one that contains `
 ```powershell
 python docs\sdlc\copytrade-v1\research\scripts\hl_sample.py --selftest
 ```
-Expected output: `selftest OK (13 checks)`. If you see anything else, stop and send the full text to the CTO.
+Expected output: `selftest OK (18 checks)`. If you see anything else, stop and send the full text to the CTO.
 
 ### 4. Run it (once)
 - **Before you start:**
@@ -74,7 +76,7 @@ Expected output: `selftest OK (13 checks)`. If you see anything else, stop and s
   - The script paces its own requests (at most 800 of the 1,200 weight units per minute) and waits and retries on its own when rate-limited.
   - Leave the window open.
 - **Progress:**
-  - It prints steps `[1/5]` to `[5/5]`, then one line per wallet it checks (`PASS` or the reason it was excluded).
+  - It prints steps `[1/5]` to `[5/5]`, then one line per wallet it checks: its account role, how many pages and fills it downloaded, the first fill date, and `PASS` or the reason it was excluded.
   - At the end it prints `Send back this file: ...\summary.json`.
 - **Run it only once.** The research plan counts it as a single sample. If it **crashes or is interrupted**, simply run the same command again: an unfinished run doesn't count.
 
@@ -103,7 +105,11 @@ Expected output: `selftest OK (13 checks)`. If you see anything else, stop and s
 Options exist (`--wallets`, `--pool`, `--seed`, and others; see `--help`). **Don't change them** unless the CTO asks: the defaults are what the research plan pre-registered.
 
 ### What happens next
-1. The CTO passes `summary.json` to the quant-researcher.
+1. The CTO passes `summary.json` to the quant-researcher. The first things checked are the data-shape diagnostics, so a surprise in Hyperliquid's API can be diagnosed from this single run:
+   - `fetch_checks`: did every page come back in ascending time order, and was any history cut by the 10,000-fill cap?
+   - the per-wallet `examined.<address>.fetch` records: first and last fill time, pages, fills
+   - `pool.role_counts` and `role_unknown_excluded`: accounts whose role could not be read are excluded and counted
+   - `leaderboard_month_check`: is the leaderboard's "month" a rolling 30 days? If not, the wallet pool may have used information from after the selection date, and the result is reported with that caveat.
 2. Its measured values replace the synthetic priors in `feasibility_mc.py`: trades per day, holding time, position size, share below $10, and partial exits.
 3. The feasibility figures in `edge-hypothesis.md` section 11 are then re-run.
 4. The backtest-auditor reviews the result.
@@ -115,10 +121,12 @@ It remains **exploratory and survivorship-biased**: the candidates come from tod
 ## For agents: reproducing the synthetic outputs
 Run from this folder:
 ```
-python3 hl_sample.py --selftest                                          # offline, 13 checks
+python3 hl_sample.py --selftest                                          # offline, 18 checks
 python3 feasibility_mc.py --runs 2000 --seed 17 > ../../../../../research/data/feasibility_mc_seed17.txt
 python3 gate_power.py --sims 4000 --boot 1000 --seed 23 --jobs 3 > ../../../../../research/data/gate_power_seed23.txt
 python3 few_clusters.py > ../../../../../research/data/few_clusters_seed31.txt              # uses 4 processes
+python3 b0d_cost_fr6.py > ../../../../../research/data/b0d_cost_fr6_seed41.txt              # E11, 2 processes, ~2 min
+python3 eval_reference.py > ../../../../../research/data/eval_reference_vectors.txt         # E13, seconds
 ```
 - `feasibility_mc.py` imports the interval estimators from `gate_power.py`.
 - The `gate_power.py` output doesn't depend on `--jobs`.

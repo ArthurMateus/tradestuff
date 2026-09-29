@@ -3,7 +3,7 @@
 gate_power.py v2 (2026-09-29). Revised after the backtest audit (BT-4, BT-5, BT-6, BT-7,
 BT-11, BT-12).
 
-Statistical properties of the FROZEN go-live gate (edge-hypothesis.md section 5.0):
+Statistical properties of the FROZEN go-live gate (edge-hypothesis.md section 5.3):
   P2   lower bound (LB) of the two-sided CI of mean trade R > 0 over the first 300 OPENED trades,
        LB = min( iid t-interval,
                  UTC-day cluster percentile bootstrap,
