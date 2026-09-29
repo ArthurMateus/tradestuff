@@ -9,7 +9,7 @@ Every script here is **exploratory**. Its output is never evidence of an edge un
 | `gate_power.py` | Synthetic power and false-PASS rates of the frozen go-live gate | no | stdout (logged under `research/data/`) |
 | `few_clusters.py` | Synthetic: the frozen rule when the 300 trades fall on few UTC days (sets `eval.min_day_clusters`) | no | stdout (logged under `research/data/`) |
 | `b0d_cost_fr6.py` | Synthetic (E11): P2 + P2c at zero net timing value with the corrected vs superseded B0d cost; how often FR6 fires given a pass | no | stdout (logged under `research/data/`) |
-| `eval_reference.py` | Reference implementation of the frozen evaluation keys (addenda A1.3, A2 and A3.1) with golden-asserted test vectors (E15, supersedes E14): RNG with rejection, bootstrap, percentile index, CIs, merged positions, `/flatten` shadow exits and `T_eval`, B0d draws, D_i without an admissible window, missed exits (gate R, cost versus the mirror, P4 / F2, evaluation close), verdict precedence | no | stdout (logged under `research/data/`) |
+| `eval_reference.py` | Reference implementation of the frozen evaluation keys (addenda A1.3, A2, A3.1 and A4) with golden-asserted test vectors (E16, supersedes E15): RNG with rejection, bootstrap, percentile index, CIs, merged positions, `/flatten` shadow exits and `T_eval`, B0d draws, D_i without an admissible window, missed exits (gate R, cost versus the mirror, P4 / F2, evaluation close), **A4:** incremental and per-trade missed-exit costs, uncomputable mirrors, fills without a recorded book (1m/1h candle, SL/TP gap-through), the P4 breach time and run end, exit classes (late, orphan, settled after a data gap), B̄ under a discretionary pause; verdict precedence | no | stdout (logged under `research/data/`) |
 
 `research/data/` is gitignored. Outputs are identified by the sha256 values recorded in `edge-hypothesis.md` section 12.
 
@@ -126,7 +126,7 @@ python3 feasibility_mc.py --runs 2000 --seed 17 > ../../../../../research/data/f
 python3 gate_power.py --sims 4000 --boot 1000 --seed 23 --jobs 3 > ../../../../../research/data/gate_power_seed23.txt
 python3 few_clusters.py > ../../../../../research/data/few_clusters_seed31.txt              # uses 4 processes
 python3 b0d_cost_fr6.py > ../../../../../research/data/b0d_cost_fr6_seed41.txt              # E11, 2 processes, ~2 min
-python3 eval_reference.py > ../../../../../research/data/eval_reference_vectors.txt         # E15 (supersedes E14), ~5 s
+python3 eval_reference.py > ../../../../../research/data/eval_reference_vectors.txt         # E16 (supersedes E15), ~5 s
 ```
 - `feasibility_mc.py` imports the interval estimators from `gate_power.py`.
 - The `gate_power.py` output doesn't depend on `--jobs`.

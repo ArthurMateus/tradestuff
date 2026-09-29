@@ -1,8 +1,8 @@
-"""EXPLORATORY - REFERENCE IMPLEMENTATION OF THE FROZEN EVALUATION KEYS - NOT PRODUCTION CODE (E15).
+"""EXPLORATORY - REFERENCE IMPLEMENTATION OF THE FROZEN EVALUATION KEYS - NOT PRODUCTION CODE (E16).
 
-v3 (2026-09-29, addendum A3; supersedes the E14 version). edge-hypothesis.md addenda A1 (BT2-3),
-A2 (BT3-1, BT3-3, BT3-7) and A3 (PO spec-review decision A4, missed exits) pin every choice the
-verdict depends on. This file implements
+v4 (2026-09-29, addendum A4; supersedes the E15 version). edge-hypothesis.md addenda A1 (BT2-3),
+A2 (BT3-1, BT3-3, BT3-7), A3 (PO spec-review decision A4, missed exits) and A4 (BT4-1 to BT4-10)
+pin every choice the verdict depends on. This file implements
 exactly that text so that the test designer, the developer and the backtest-auditor can check an
 implementation against fixed test vectors. If this file and the addendum text disagree, the
 addendum text wins and this file is a bug. Section labels below cite edge-hypothesis.md 5.3 / 6.2
@@ -13,6 +13,17 @@ mirror's ambiguous 1h bars resolved stop-first ("lo"); its cost versus mirroring
 mirror ("hi"); P4 / F2 = more than 3 missed exits, or any cost > 1R after rounding to 1e-6; the
 evaluation close of a missed-exit trade is the later of its real close and its mirror exit. Every
 v2 golden literal is unchanged.
+
+v4 adds (A4): the cost of each missed exit is incremental (mirror M_j fixes missed exits 1..j) and
+is tested next to the per-trade total, with actual R = realised R (A4.3); an uncomputable mirror
+costs more than 1R and has mirrored lo R = actual R (A4.2); a mirror fill without a recorded book
+uses the 1m candle, else the 1h candle, at its worst price + 8 bps (lo) and best price + 2 bps (hi),
+and an SL/TP inside a gap fills at its trigger or at a gapped-through open (A4.2); the P4 breach time
+is the leader event time of the 4th missed exit or the moment a cost is established, capped at
+T_eval, and decides precedence against ABORTED (A4.4); an exit event is classified on time, late,
+orphan, settled after a restart, settled after a data gap (resync + 60 s) or reconstruction failed
+(A4.1, A4.5); a discretionary pause gives B-bar = max(including, excluding the paused starts)
+(A4.6). verdict() is unchanged. Every v3 golden literal is unchanged.
 
   * rng_uint(): SHA-256 counter RNG with rejection sampling (no modulo bias), language-independent.
     The seed is the 32 RAW bytes decoded from the run record's hex string, never the hex text.
@@ -28,6 +39,8 @@ v2 golden literal is unchanged.
   * D_i: R_i - mean(B0d reps); without an admissible window min(R_i, 0, R_i - B_partial) (A2.3 a)
   * the /flatten gate rule: min(realised R, shadow R under the frozen exits)
   * the missed-exit rules (A3.1): gate R, cost versus the mirror, P4 / F2, evaluation close
+  * A4: incremental costs, uncomputable mirrors, gap fills, P4 breach time, run end, exit classes,
+    B-bar under discretionary pauses
   * verdict precedence
   * golden asserts: every printed vector is asserted against its expected literal value (A2.7)
 Usage (from this folder): python3 eval_reference.py > ../../../../../research/data/eval_reference_vectors.txt
@@ -279,14 +292,166 @@ def p4_breach(missed_count: int, costs: list[Decimal]) -> bool:
     return missed_count > MISSED_EXIT_MAX_COUNT or any(c > MISSED_EXIT_MAX_COST_R for c in costs)
 
 
+# ------------------------------------------------------------------ A4 (E16): costs, gaps, breach time, classes, pauses
+UNCOMPUTABLE = Decimal("Infinity")      # cost of an uncomputable mirror: above any threshold (A4.2)
+LAG_MS = 60_000                         # exits.missed_exit_max_lag_s = 60 (A3.1)
+BPS = Decimal("0.0001")
+ALT_HALF_SPREAD_BPS = Decimal("8")      # cost.fallback_half_spread_bps, alt (6.3)
+MAJOR_HALF_SPREAD_BPS = Decimal("2")    # cost.fallback_half_spread_bps, major (6.3)
+
+
+def missed_exit_costs(actual_r: float, mirror_hi_chain: list[float | None]) -> list[Decimal]:
+    """Costs of one share's missed exits 1..k in leader-event order (A4.3). mirror_hi_chain[j-1] is
+    the TP-first ("hi") R of mirror M_j: missed exits 1..j and every other leader event mirrored on
+    time, missed exits j+1..k handled as the engine actually handled them. M_k is the full A3.1
+    mirror. Returns [c_1, ..., c_k, trade cost]: c_j = hi(M_j) - hi(M_(j-1)) with hi(M_0) = actual R,
+    and trade cost = hi(M_k) - actual R, each rounded half-even to 1e-6. actual R is the realised R
+    (a /flatten close included, never the shadow; the marked R for a trade still open at the cap).
+    A None in the chain is an uncomputable mirror: every cost of the share is UNCOMPUTABLE (A4.2)."""
+    if not mirror_hi_chain:
+        raise ValueError("a share with a missed exit has at least one mirror")
+    if any(x is None for x in mirror_hi_chain):
+        return [UNCOMPUTABLE] * (len(mirror_hi_chain) + 1)
+    out, prev = [], actual_r
+    for hi in mirror_hi_chain:
+        out.append(r6(hi - prev))
+        prev = hi
+    out.append(r6(mirror_hi_chain[-1] - actual_r))
+    return out
+
+
+def mirror_lo_for_gate(actual_r: float, mirror_lo_r: float | None) -> float:
+    """Mirrored lo R used by gate_r (A4.2): an uncomputable mirror (None) has lo = actual R."""
+    return actual_r if mirror_lo_r is None else mirror_lo_r
+
+
+def gap_candle(fill_ms: int, candles_1m: set[int], candles_1h: set[int]) -> tuple[str, int] | None:
+    """The candle a mirrored leader action fills on when no book is recorded within 5 s of its fill
+    time (A4.2): the 1m candle containing fill_ms if it is in the hashed candle store, else the 1h
+    candle, else None (uncomputable). The sets hold candle open times in ms."""
+    m1 = fill_ms - fill_ms % 60_000
+    if m1 in candles_1m:
+        return ("1m", m1)
+    h1 = fill_ms - fill_ms % 3_600_000
+    if h1 in candles_1h:
+        return ("1h", h1)
+    return None
+
+
+def _against(px: Decimal, side: int, bps: Decimal) -> Decimal:
+    """Move px against us by bps: up for a buy (side +1), down for a sell (side -1)."""
+    if side not in (1, -1):
+        raise ValueError("side is +1 (buy) or -1 (sell)")
+    return px * (1 + side * bps * BPS)
+
+
+def gap_fill_px(side: int, candle: tuple[Decimal, Decimal, Decimal, Decimal]) -> tuple[Decimal, Decimal]:
+    """(lo, hi) fill prices of a mirrored leader action over the gap candle (o, h, l, c) (A4.2).
+    lo: the candle's worst price for our side (high for a buy, low for a sell) moved against us by
+    the alt half-spread (8 bps). hi: its best price (low for a buy, high for a sell) moved against us
+    by the major half-spread (2 bps). The open and close are never used; no delay term; taker fees
+    are charged separately, as for every fill."""
+    _o, h, l, _c = candle
+    worst, best = (h, l) if side == 1 else (l, h)
+    return _against(worst, side, ALT_HALF_SPREAD_BPS), _against(best, side, MAJOR_HALF_SPREAD_BPS)
+
+
+def gap_trigger_px(side: int, kind: str, trigger: Decimal, bar_open: Decimal) -> tuple[Decimal, Decimal]:
+    """(lo, hi) fill prices of a mirror's or shadow's SL or TP triggered inside a recording gap
+    (A4.2). side is our closing order's side (-1 closes a long, +1 closes a short); kind is "sl" or
+    "tp". The fill is at the trigger, or at the bar's open when the bar opened beyond the trigger
+    (gap-through), moved against us by 8 bps (lo) or 2 bps (hi)."""
+    if kind not in ("sl", "tp"):
+        raise ValueError("kind is sl or tp")
+    falls = (side == -1) == (kind == "sl")           # a long's stop and a short's TP trigger on a fall
+    beyond = bar_open < trigger if falls else bar_open > trigger
+    base = bar_open if beyond else trigger
+    return _against(base, side, ALT_HALF_SPREAD_BPS), _against(base, side, MAJOR_HALF_SPREAD_BPS)
+
+
+@dataclass
+class MissedExit:
+    mid: str                        # missed-exit ID
+    event_ms: int                   # the leader event's exchange timestamp
+    ledgered_ms: int                # when the missed_exit record was written (live, audit or final audit)
+    costs: tuple[Decimal, ...]      # its incremental cost; the share's last one also carries the trade cost
+    established_ms: int             # later of real close and mirror exits; the event time if uncomputable
+
+
+def p4_breach_time(missed: list[MissedExit], t0: int, t_eval: int, audit_gap_ms: int | None = None) -> int | None:
+    """Breach time of P4 / F2 (A4.4), or None. Only missed exits with a leader event in [t0, T_eval]
+    count, whenever they were found. Count: the leader event time of the 4th in event-time order
+    (ties by ID), never the order of ledgering. Cost: the moment a cost above 1R is established,
+    capped at T_eval (a side still open there is marked). An incomplete fill audit (A4.1) breaches at
+    audit_gap_ms. The earliest applies; it always lies in [t0, T_eval]."""
+    inw = sorted((m for m in missed if t0 <= m.event_ms <= t_eval), key=lambda m: (m.event_ms, m.mid))
+    times = []
+    if len(inw) > MISSED_EXIT_MAX_COUNT:
+        times.append(inw[MISSED_EXIT_MAX_COUNT].event_ms)
+    times += [min(m.established_ms, t_eval) for m in inw if any(c > MISSED_EXIT_MAX_COST_R for c in m.costs)]
+    if audit_gap_ms is not None:
+        times.append(audit_gap_ms)
+    return min(times) if times else None
+
+
+def run_end(*, voided: bool, aborted_ms: int | None, f1_ms: int | None, f2_ms: int | None) -> str | None:
+    """Precedence items 1 and 2 with times (A4.4). aborted_ms: the first ABORTED event before
+    T_eval; f1_ms / f2_ms: breach times (both lie in [t0, T_eval]). A voiding ruling always gives
+    ABORTED. Otherwise ABORTED wins only when strictly earlier than every breach; on a tie, FAIL.
+    None: the run reached T_eval without an early end."""
+    if voided:
+        return "ABORTED"
+    breach = min((x for x in (f1_ms, f2_ms) if x is not None), default=None)
+    if aborted_ms is not None and (breach is None or aborted_ms < breach):
+        return "ABORTED"
+    return "FAIL" if breach is not None else None
+
+
+MISSED_CLASSES = ("late", "orphan", "reconstruction_failed")
+
+
+def exit_class(event_ms: int, handled_ms: int | None, found_by: str,
+               process_down: list[tuple[int, int]], data_gaps: list[tuple[int, int]],
+               reconstruction_settled: bool = False) -> str:
+    """Class of a leader exit event on a share we hold (A3.1, A4.1, A4.5). handled_ms: the first
+    ledger time of a mirroring action, a rule-based non-mirror record or the share's full close for
+    it (None: never). found_by: "live", "reconciliation" or "audit". Downtime intervals are
+    half-open [start, end), with end = the restart or the resync. Missed exits are MISSED_CLASSES;
+    "settled_gap" is not a missed exit but counts at min(actual, mirrored lo) (A4.5)."""
+    for a, b in process_down:
+        if a <= event_ms < b:
+            return "settled_restart" if reconstruction_settled else "reconstruction_failed"
+    for a, b in data_gaps:
+        if a <= event_ms < b:
+            return "settled_gap" if handled_ms is not None and handled_ms <= b + LAG_MS else "reconstruction_failed"
+    if handled_ms is not None and handled_ms <= event_ms + LAG_MS:
+        return "on_time"
+    return "late" if found_by == "live" else "orphan"
+
+
+def b_bar_discretionary(starts: list[int], reps_r: list[float], paused: list[tuple[int, int]]) -> float:
+    """B-bar_i under discretionary pauses (A4.6). The replications are drawn (tag b0d) from the
+    admissible set with the discretionary pause intervals NOT excluded. B-bar = max(mean over all,
+    mean over the replications starting outside every discretionary pause); the mean over all when
+    no replication starts inside, or none outside. Without a discretionary pause in the draw range
+    this equals the A3.2 b draw."""
+    everything = statistics.fmean(reps_r)
+    outside = [r for s, r in zip(starts, reps_r) if not any(a <= s < b for a, b in paused)]
+    if not outside or len(outside) == len(reps_r):
+        return everything
+    return max(everything, statistics.fmean(outside))
+
+
 # ------------------------------------------------------------------ verdict precedence (5.3, A1.3 a)
 def verdict(*, aborted: bool, f1: bool, f2: bool, n_opened: int, g: int,
             lb_r: Decimal, ub_r: Decimal, usd_pnl_positive: bool, lb_d: Decimal,
             baseline_missing_share: float, p5: bool, p6: bool) -> str:
-    """aborted: an ABORTED event ended the run before any F1/F2 and before T_eval, or the
-    backtest-auditor voided the run (that ruling overrides FAIL; it can never produce PASS).
-    f1 / f2: the breach happened at or before T_eval and before any ABORTED event (the run ended
-    there). f2 is p4_breach(...) (A3.1): more than 3 missed exits, or one costing > 1R."""
+    """aborted: run_end(...) == "ABORTED": an ABORTED event before T_eval and strictly before every
+    F1/F2 breach time, or the backtest-auditor voided the run (that ruling overrides FAIL; it can
+    never produce PASS). f1 / f2: run_end(...) == "FAIL" with that breach. f2 is true for any P4
+    breach by missed exits with a leader event in [t0, T_eval], whenever it is found before the
+    verdict (A4.4; p4_breach / p4_breach_time): more than 3 missed exits, an incremental or trade
+    cost > 1R, an uncomputable mirror, or an incomplete fill audit."""
     if aborted:
         return "ABORTED"
     if f1 or f2:
@@ -345,6 +510,31 @@ GOLDEN_MISSED = {"gate R actual 0.8, mirror_lo 0.3": 0.3, "gate R actual -1.4, m
 GOLDEN_MISSED_CLOSE = {"T_eval mirror closed (h from d0)": 40, "T_eval mirror open (h from d0)": 198,
                        "hold M (h)": 39, "M marked (mirror open)": True, "M marked (mirror closed)": False,
                        "clusters M/N/O": [0, 0, 1]}
+# A4 (E16). Hand-computed before the first run; the run reproduced every value.
+GOLDEN_A4_COST = {"costs actual 0.2, hi chain [1.5, 1.0]": ["1.300000", "-0.500000", "0.800000"],
+                  "costs actual -1.3, hi chain [-0.2]": ["1.100000", "1.100000"],
+                  "costs actual -0.5, hi chain [0.3, uncomputable]": ["Infinity", "Infinity", "Infinity"],
+                  "P4 2 missed, costs of [1.5, 1.0] from 0.2": True, "P4 on the netted trade cost only": False,
+                  "P4 1 missed, uncomputable": True, "gate R uncomputable mirror, actual 0.7": 0.7}
+GOLDEN_A4_GAP_CANDLE = {"1m and 1h stored": ("1m", 754), "1h only": ("1h", 720), "neither": None}
+GOLDEN_A4_GAP_FILL = {"buy": ["101.0808", "99.0198"], "sell": ["98.9208", "100.9798"],
+                      "long SL 95, open 96": ["94.9240", "94.9810"],
+                      "long SL 95, open 94 (gap-through)": ["93.9248", "93.9812"],
+                      "long TP 110, open 111 (gap-through)": ["110.9112", "110.9778"],
+                      "short SL 105, open 106 (gap-through)": ["106.0848", "106.0212"],
+                      "short TP 90, open 91": ["90.0720", "90.0180"]}
+GOLDEN_A4_BREACH = {"4 in window, found by the audit at 24 h (h from d0)": 9, "3 in window, 4th event after T_eval": None,
+                    "cost 1.2R established after T_eval": 25, "incomplete audit from 11 h": 11}
+GOLDEN_A4_RUN_END = {"aborted 8 h, F2 9 h": "ABORTED", "aborted 9 h, F2 9 h (tie)": "FAIL",
+                     "aborted 10 h, F2 9 h (found later)": "FAIL", "voided, F1 5 h": "ABORTED",
+                     "F1 5 h, aborted 7 h, F2 9 h": "FAIL", "none": None}
+GOLDEN_A4_CLASS = {"handled +60 s": "on_time", "handled +61 s, live": "late",
+                   "handled +61 s, reconciliation": "orphan", "never handled, audit": "orphan",
+                   "process down, settled": "settled_restart", "process down, not settled": "reconstruction_failed",
+                   "data gap, handled at resync + 60 s": "settled_gap",
+                   "data gap, handled at resync + 61 s": "reconstruction_failed",
+                   "data gap, never handled": "reconstruction_failed", "at resync, handled +61 s": "late"}
+GOLDEN_A4_BBAR = {"paused starts high": 0.275, "paused starts low": -0.04, "no pause": 0.275}
 
 
 def fmt_pair(p: tuple[float, float]) -> str:
@@ -362,7 +552,7 @@ def main() -> None:
     seed = hashlib.sha256(b"tradestuff copytrade-v1 A1 test vector").digest()
     assert len(seed) == 32 and seed.hex() == GOLDEN_SEED_HEX
     assert bytes.fromhex(GOLDEN_SEED_HEX) == seed
-    lines = ["EXPLORATORY reference implementation of the frozen evaluation keys (addenda A1, A2 and A3). Test vectors.",
+    lines = ["EXPLORATORY reference implementation of the frozen evaluation keys (addenda A1 to A4). Test vectors.",
              f"seed (hex of the 32 raw bytes the RNG consumes) = {seed.hex()}"]
 
     # RNG
@@ -551,6 +741,106 @@ def main() -> None:
     late_real = Trade("M", "SOL", 1, d0 + 1 * h, d0 + 45 * h, missed_exit=True, mirror_close_ms=d0 + 40 * h)
     assert eval_close_ms(late_real) == d0 + 45 * h                        # the later of the two closes
 
+    # A4.3 incremental and per-trade costs; A4.2 uncomputable mirror
+    ca = missed_exit_costs(0.2, [1.5, 1.0])        # BT4-3: +1.3R then -0.5R; the trade nets 0.8R
+    cb = missed_exit_costs(-1.3, [-0.2])
+    cc = missed_exit_costs(-0.5, [0.3, None])
+    a4c = {"costs actual 0.2, hi chain [1.5, 1.0]": [str(x) for x in ca],
+           "costs actual -1.3, hi chain [-0.2]": [str(x) for x in cb],
+           "costs actual -0.5, hi chain [0.3, uncomputable]": [str(x) for x in cc],
+           "P4 2 missed, costs of [1.5, 1.0] from 0.2": p4_breach(2, ca),
+           "P4 on the netted trade cost only": p4_breach(2, ca[-1:]),
+           "P4 1 missed, uncomputable": p4_breach(1, missed_exit_costs(0.4, [None])),
+           "gate R uncomputable mirror, actual 0.7": gate_r(0.7, mirror_lo_r=mirror_lo_for_gate(0.7, None))}
+    lines.append("missed-exit costs (A4.3, A4.2): " + "; ".join(f"{k} -> {v}" for k, v in a4c.items()))
+    assert a4c == GOLDEN_A4_COST, a4c
+    assert cb[0] == missed_exit_cost(-1.3, -0.5, -0.2) and cb[-1] == cb[0]      # k = 1: the A3.1 cost
+    for act in (-1.7, -0.3, 0.0, 0.9):                                          # increments telescope
+        for chain in ([0.5], [1.1, -0.4], [-2.0, 0.3, 0.8]):
+            cs = missed_exit_costs(act, chain)
+            assert abs(sum(cs[:-1]) - cs[-1]) <= Decimal("0.000001") * len(chain)
+    try:
+        missed_exit_costs(0.1, [])
+        raise AssertionError("a share with a missed exit and no mirror accepted")
+    except ValueError:
+        pass
+
+    # A4.2 fills without a recorded book: candle choice, candle extremes, SL/TP gap-through
+    fill = d0 + 12 * h + 34 * 60_000 + 56_789
+    m1, h1 = fill - fill % 60_000, fill - fill % h
+    cndl = (Decimal("100"), Decimal("101"), Decimal("99"), Decimal("100.5"))
+    gc = {"1m and 1h stored": gap_candle(fill, {m1}, {h1}), "1h only": gap_candle(fill, set(), {h1}),
+          "neither": gap_candle(fill, {m1 - 60_000}, set())}
+    gcr = {k: (None if v is None else (v[0], (v[1] - d0) // 60_000)) for k, v in gc.items()}
+    gf = {"buy": [str(x) for x in gap_fill_px(1, cndl)], "sell": [str(x) for x in gap_fill_px(-1, cndl)],
+          "long SL 95, open 96": [str(x) for x in gap_trigger_px(-1, "sl", Decimal("95"), Decimal("96"))],
+          "long SL 95, open 94 (gap-through)": [str(x) for x in gap_trigger_px(-1, "sl", Decimal("95"), Decimal("94"))],
+          "long TP 110, open 111 (gap-through)": [str(x) for x in gap_trigger_px(-1, "tp", Decimal("110"), Decimal("111"))],
+          "short SL 105, open 106 (gap-through)": [str(x) for x in gap_trigger_px(1, "sl", Decimal("105"), Decimal("106"))],
+          "short TP 90, open 91": [str(x) for x in gap_trigger_px(1, "tp", Decimal("90"), Decimal("91"))]}
+    lines.append("gap fills (A4.2): candle (minutes from d0) " + "; ".join(f"{k} -> {v}" for k, v in gcr.items())
+                 + "; (lo, hi) " + "; ".join(f"{k} -> {v}" for k, v in gf.items()))
+    assert gcr == GOLDEN_A4_GAP_CANDLE, gcr
+    assert gf == GOLDEN_A4_GAP_FILL, gf
+    for s_ in (1, -1):                          # lo is never better than hi for our side
+        lo_, hi_ = gap_fill_px(s_, cndl)
+        assert (lo_ - hi_) * s_ >= 0
+
+    # A4.4 breach time and run end
+    t0b, teb = d0, d0 + 25 * h
+    me4 = [MissedExit("A", d0 + 2 * h, d0 + 24 * h, (Decimal("0.1"),), d0 + 3 * h),
+           MissedExit("B", d0 + 5 * h, d0 + 24 * h, (Decimal("0.2"),), d0 + 6 * h),
+           MissedExit("C", d0 + 7 * h, d0 + 24 * h, (Decimal("0"),), d0 + 8 * h),
+           MissedExit("D", d0 + 9 * h, d0 + 9 * h + 60_000, (Decimal("0.3"),), d0 + 10 * h),
+           MissedExit("E", d0 + 26 * h, d0 + 26 * h, (Decimal("0"),), d0 + 27 * h)]
+    cost_late = [MissedExit("F", d0 + 20 * h, d0 + 20 * h, (Decimal("1.200000"),), d0 + 30 * h)]
+    bt = {"4 in window, found by the audit at 24 h (h from d0)": p4_breach_time(me4, t0b, teb),
+          "3 in window, 4th event after T_eval": p4_breach_time([me4[0], me4[1], me4[3], me4[4]], t0b, teb),
+          "cost 1.2R established after T_eval": p4_breach_time(cost_late, t0b, teb),
+          "incomplete audit from 11 h": p4_breach_time(me4[:2], t0b, teb, d0 + 11 * h)}
+    btr = {k: (None if v is None else (v - d0) // h) for k, v in bt.items()}
+    re_ = {"aborted 8 h, F2 9 h": run_end(voided=False, aborted_ms=d0 + 8 * h, f1_ms=None, f2_ms=d0 + 9 * h),
+           "aborted 9 h, F2 9 h (tie)": run_end(voided=False, aborted_ms=d0 + 9 * h, f1_ms=None, f2_ms=d0 + 9 * h),
+           "aborted 10 h, F2 9 h (found later)": run_end(voided=False, aborted_ms=d0 + 10 * h, f1_ms=None, f2_ms=d0 + 9 * h),
+           "voided, F1 5 h": run_end(voided=True, aborted_ms=None, f1_ms=d0 + 5 * h, f2_ms=None),
+           "F1 5 h, aborted 7 h, F2 9 h": run_end(voided=False, aborted_ms=d0 + 7 * h, f1_ms=d0 + 5 * h, f2_ms=d0 + 9 * h),
+           "none": run_end(voided=False, aborted_ms=None, f1_ms=None, f2_ms=None)}
+    lines.append("P4 breach time (A4.4, h from d0; T_eval 25 h): " + "; ".join(f"{k} -> {v}" for k, v in btr.items())
+                 + "; run end: " + "; ".join(f"{k} -> {v}" for k, v in re_.items()))
+    assert btr == GOLDEN_A4_BREACH, btr
+    assert re_ == GOLDEN_A4_RUN_END, re_
+    for sub in (me4, me4[:3], cost_late, me4[:3] + cost_late):   # breach time exists iff p4_breach
+        inw = [m for m in sub if t0b <= m.event_ms <= teb]
+        assert (p4_breach_time(sub, t0b, teb) is not None) == p4_breach(len(inw), [c for m in inw for c in m.costs])
+
+    # A4.1 / A4.5 exit classes (seconds; data gap [3000 s, 3010 s) resyncs at 3010 s)
+    s = 1_000
+    pd, dg = [(1_000 * s, 2_000 * s)], [(3_000 * s, 3_010 * s)]
+    ec = {"handled +60 s": exit_class(100 * s, 160 * s, "live", pd, dg),
+          "handled +61 s, live": exit_class(100 * s, 161 * s, "live", pd, dg),
+          "handled +61 s, reconciliation": exit_class(100 * s, 161 * s, "reconciliation", pd, dg),
+          "never handled, audit": exit_class(100 * s, None, "audit", pd, dg),
+          "process down, settled": exit_class(1_500 * s, None, "live", pd, dg, reconstruction_settled=True),
+          "process down, not settled": exit_class(1_500 * s, None, "live", pd, dg),
+          "data gap, handled at resync + 60 s": exit_class(3_005 * s, 3_070 * s, "live", pd, dg),
+          "data gap, handled at resync + 61 s": exit_class(3_005 * s, 3_071 * s, "live", pd, dg),
+          "data gap, never handled": exit_class(3_005 * s, None, "audit", pd, dg),
+          "at resync, handled +61 s": exit_class(3_010 * s, 3_071 * s, "live", pd, dg)}
+    lines.append("exit classes (A4.1, A4.5): " + "; ".join(f"{k} -> {v}" for k, v in ec.items()))
+    assert ec == GOLDEN_A4_CLASS, ec
+
+    # A4.6 B-bar under a discretionary pause: draws over [1000, 1010) and [5000, 5005), /pause = [5000, 5005)
+    starts = [b0d_start(seed, 7, rep, adm) for rep in range(8)]
+    up = [0.9, -0.2, 0.1, 0.8, -0.4, 0.3, 0.7, 0.0]      # paused starts did well: including them is higher
+    down = [-0.9, -0.2, 0.1, -0.8, -0.4, 0.3, -0.7, 0.0]  # paused starts did badly: excluding them is higher
+    bb = {"paused starts high": b_bar_discretionary(starts, up, [(5_000, 5_005)]),
+          "paused starts low": b_bar_discretionary(starts, down, [(5_000, 5_005)]),
+          "no pause": b_bar_discretionary(starts, up, [])}
+    lines.append("B-bar under /pause (A4.6): " + "; ".join(f"{k} -> {v:.6f}" for k, v in bb.items()))
+    assert {k: round(v, 6) for k, v in bb.items()} == GOLDEN_A4_BBAR, bb
+    for rs in (up, down):
+        assert b_bar_discretionary(starts, rs, [(5_000, 5_005)]) >= statistics.fmean(rs)
+
     # verdict precedence
     base = dict(aborted=False, f1=False, f2=False, n_opened=300, g=12,
                 lb_r=Decimal("0.01"), ub_r=Decimal("0.3"), usd_pnl_positive=True, lb_d=Decimal("0.02"),
@@ -570,6 +860,11 @@ def main() -> None:
     assert v(f2=p4_breach(3, [cost_b, cost_b, cost_b])) == "PASS"         # 3 missed exits, each <= 1R (A3.1)
     assert v(f2=p4_breach(4, [])) == "FAIL" and v(f2=p4_breach(1, [cost_a])) == "FAIL"
     assert v(aborted=True, f2=p4_breach(4, [])) == "ABORTED" and v(f2=p4_breach(4, []), g=3) == "FAIL"
+    # A4.4: a breach found after T_eval (final audit) is F2; an abort after the breach time is FAIL
+    end = run_end(voided=False, aborted_ms=d0 + 10 * h, f1_ms=None, f2_ms=p4_breach_time(me4, t0b, teb))
+    assert v(aborted=end == "ABORTED", f2=end == "FAIL") == "FAIL"
+    assert v(f2=p4_breach(1, missed_exit_costs(0.4, [None]))) == "FAIL"      # uncomputable mirror (A4.2)
+    assert v(f2=p4_breach(2, ca)) == "FAIL"                                   # incremental cost 1.3R (A4.3)
     lines.append("verdict precedence: ABORTED > F1/F2 > P1 incomplete > G < 5 > F3 > PASS > INCONCLUSIVE (asserted)")
     lines.append("selftest OK (golden vectors asserted)")
     print("\n".join(lines))
