@@ -35,11 +35,11 @@ def _fill_time(tid: int) -> int:
 
 
 def connected_with_history(
-    *tids: int, wallets: tuple[str, ...] = (WALLET_A,), **overrides: Any
+    *tids: int, wallets: tuple[str, ...] = (WALLET_A,), auto_pong: bool = False, **overrides: Any
 ) -> tuple[FeedRig, int]:
     """A feed connected and subscribed, having received ``tids`` live for the first wallet. Returns the rig and the
     local time of the last message received (the moment the link went quiet)."""
-    fr = make_feed(auto_pong=False, **overrides)
+    fr = make_feed(auto_pong=auto_pong, **overrides)
     for w in wallets:
         fr.feed.subscribe_user(w)
     fr.feed.tick()
@@ -143,7 +143,9 @@ def test_F3_AC4_resync_fills_reach_the_consumer_before_any_fill_from_the_new_con
 
 
 def test_F3_AC4_opens_stay_refused_and_nothing_new_is_delivered_until_the_resync_succeeded() -> None:
-    fr, _ = connected_with_history(1, 2, 3, hl__retry_max=0)
+    fr, _ = connected_with_history(1, 2, 3, auto_pong=True, hl__retry_max=0)
+    # auto_pong=True: a healthy link answers pings, so the only reason for refusal is the unresolved gap. With a silent
+    # link the feed legitimately cycles stale/reconnect every ~33 s (F3.AC3) and the final sample is phase-dependent.
     fr.server_fills.extend(fill_json(t) for t in (3, 4, 5))
     fr.rig.http.handler = raising(TimeoutError("rest down"))
 
