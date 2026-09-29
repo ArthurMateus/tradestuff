@@ -1,11 +1,18 @@
-"""EXPLORATORY - REFERENCE IMPLEMENTATION OF THE FROZEN EVALUATION KEYS - NOT PRODUCTION CODE (E14).
+"""EXPLORATORY - REFERENCE IMPLEMENTATION OF THE FROZEN EVALUATION KEYS - NOT PRODUCTION CODE (E15).
 
-v2 (2026-09-29, addendum A2; supersedes the E13 version). edge-hypothesis.md addenda A1 (BT2-3)
-and A2 (BT3-1, BT3-3, BT3-7) pin every choice the verdict depends on. This file implements
+v3 (2026-09-29, addendum A3; supersedes the E14 version). edge-hypothesis.md addenda A1 (BT2-3),
+A2 (BT3-1, BT3-3, BT3-7) and A3 (PO spec-review decision A4, missed exits) pin every choice the
+verdict depends on. This file implements
 exactly that text so that the test designer, the developer and the backtest-auditor can check an
 implementation against fixed test vectors. If this file and the addendum text disagree, the
 addendum text wins and this file is a bug. Section labels below cite edge-hypothesis.md 5.3 / 6.2
 and the addendum item that fixed each rule.
+
+v3 adds (A3.1): a missed-exit trade counts in the gate at min(actual R, mirrored R), with the
+mirror's ambiguous 1h bars resolved stop-first ("lo"); its cost versus mirroring uses the TP-first
+mirror ("hi"); P4 / F2 = more than 3 missed exits, or any cost > 1R after rounding to 1e-6; the
+evaluation close of a missed-exit trade is the later of its real close and its mirror exit. Every
+v2 golden literal is unchanged.
 
   * rng_uint(): SHA-256 counter RNG with rejection sampling (no modulo bias), language-independent.
     The seed is the 32 RAW bytes decoded from the run record's hex string, never the hex text.
@@ -20,6 +27,7 @@ and the addendum item that fixed each rule.
   * B0d start-time draw over an admissible set of half-open ms intervals
   * D_i: R_i - mean(B0d reps); without an admissible window min(R_i, 0, R_i - B_partial) (A2.3 a)
   * the /flatten gate rule: min(realised R, shadow R under the frozen exits)
+  * the missed-exit rules (A3.1): gate R, cost versus the mirror, P4 / F2, evaluation close
   * verdict precedence
   * golden asserts: every printed vector is asserted against its expected literal value (A2.7)
 Usage (from this folder): python3 eval_reference.py > ../../../../../research/data/eval_reference_vectors.txt
@@ -140,12 +148,20 @@ class Trade:
     close_ms: int | None          # None = still open (marked if still open at t300 + 7 d)
     flattened: bool = False       # closed by /flatten (A1.3 d)
     shadow_close_ms: int | None = None   # flattened only: shadow exit; None = shadow still open
+    missed_exit: bool = False     # has at least one ledgered missed exit (A3.1)
+    mirror_close_ms: int | None = None   # missed-exit only: mirror exit; None = mirror still open
 
 
 def eval_close_ms(tr: Trade) -> int | None:
-    """The close used for T_eval, hold_i, merged positions, B0d and P3 (A2.1): the shadow exit
-    for a flattened trade, the real full close otherwise. None = still open."""
-    return tr.shadow_close_ms if tr.flattened else tr.close_ms
+    """The close used for T_eval, hold_i, merged positions, B0d and P3 (A2.1, A3.1): the shadow
+    exit for a flattened trade, the real full close otherwise; for a trade with a missed exit, the
+    later of that and its mirror exit (A3.1). None = still open."""
+    base = tr.shadow_close_ms if tr.flattened else tr.close_ms
+    if not tr.missed_exit:
+        return base
+    if base is None or tr.mirror_close_ms is None:
+        return None
+    return max(base, tr.mirror_close_ms)
 
 
 def t_eval_ms(trades_in_s: list[Trade], t300_ms: int) -> int:
@@ -236,13 +252,41 @@ def gate_r_flattened(realised_r: float, shadow_r: float) -> float:
     return min(realised_r, shadow_r)
 
 
+# ------------------------------------------------------------------ missed exits (5.3 P4 / F2, A3.1)
+MISSED_EXIT_MAX_COUNT = 3               # eval.missed_exit_max_count: FAIL at the 4th
+MISSED_EXIT_MAX_COST_R = Decimal("1")   # eval.missed_exit_max_cost_r: FAIL when cost > 1R
+
+
+def gate_r(realised_r: float, shadow_r: float | None = None, mirror_lo_r: float | None = None) -> float:
+    """Gate R of a trade in S (A1.3 d, A3.1): the minimum of its realised R, its /flatten shadow R
+    (if flattened) and its stop-first mirrored R (if it has a missed exit). Never above realised."""
+    return min(x for x in (realised_r, shadow_r, mirror_lo_r) if x is not None)
+
+
+def missed_exit_cost(actual_r: float, mirror_lo_r: float, mirror_hi_r: float) -> Decimal:
+    """Cost of a missed-exit trade versus mirroring on time, in that trade's R (A3.1): the TP-first
+    mirrored R ("hi") minus the actual R, rounded half-even to 1e-6 like every gate comparison.
+    The stop-first mirror ("lo") feeds the gate R only; it never enters the cost (the two are equal
+    when no ambiguous 1h bar is used)."""
+    if mirror_hi_r < mirror_lo_r:
+        raise ValueError("the TP-first mirror can't be below the stop-first mirror")
+    return r6(mirror_hi_r - actual_r)
+
+
+def p4_breach(missed_count: int, costs: list[Decimal]) -> bool:
+    """P4 fails (F2) when more than 3 missed exits fall in the evaluation window, or any
+    missed-exit trade cost more than 1R versus its mirror (A3.1). costs are missed_exit_cost values."""
+    return missed_count > MISSED_EXIT_MAX_COUNT or any(c > MISSED_EXIT_MAX_COST_R for c in costs)
+
+
 # ------------------------------------------------------------------ verdict precedence (5.3, A1.3 a)
 def verdict(*, aborted: bool, f1: bool, f2: bool, n_opened: int, g: int,
             lb_r: Decimal, ub_r: Decimal, usd_pnl_positive: bool, lb_d: Decimal,
             baseline_missing_share: float, p5: bool, p6: bool) -> str:
     """aborted: an ABORTED event ended the run before any F1/F2 and before T_eval, or the
     backtest-auditor voided the run (that ruling overrides FAIL; it can never produce PASS).
-    f1 / f2: the breach happened before T_eval and before any ABORTED event (the run ended there)."""
+    f1 / f2: the breach happened at or before T_eval and before any ABORTED event (the run ended
+    there). f2 is p4_breach(...) (A3.1): more than 3 missed exits, or one costing > 1R."""
     if aborted:
         return "ABORTED"
     if f1 or f2:
@@ -289,6 +333,18 @@ GOLDEN_D = {"full window R 0.5, reps [0.1, 0.3]": 0.3, "missing, R 0.5, B_partia
             "missing, R 0.5, B_partial 0.2": 0.0, "missing, R -0.4, B_partial -0.3": -0.4,
             "missing, R -0.4, B_partial 0.3": -0.7, "last resort B_partial of [0.4, -0.2, 0.9]": 0.9,
             "last resort B_partial of []": 0.0}
+# A3.1 (E15). Costs are Decimal strings after rounding; -2.003 / -1.003 is a pair of 1e-6 R values
+# whose binary64 difference is 1.0000000000000002, so only the rounded comparison says "not > 1R".
+GOLDEN_MISSED = {"gate R actual 0.8, mirror_lo 0.3": 0.3, "gate R actual -1.4, mirror_lo -0.2": -1.4,
+                 "gate R realised 0.5, shadow 0.2, mirror_lo 0.4": 0.2,
+                 "cost actual -1.3, mirror_hi -0.2 (mirror_lo -0.5)": "1.100000",
+                 "cost actual -2.003, mirror_hi -1.003": "1.000000",
+                 "P4 3 missed, costs 0.200000/1.000000/0.000000": False, "P4 4 missed, costs 0": True,
+                 "P4 1 missed, cost 1.100000": True, "P4 1 missed, cost 1.000000 (-2.003 vs -1.003)": False,
+                 "P4 0 missed": False}
+GOLDEN_MISSED_CLOSE = {"T_eval mirror closed (h from d0)": 40, "T_eval mirror open (h from d0)": 198,
+                       "hold M (h)": 39, "M marked (mirror open)": True, "M marked (mirror closed)": False,
+                       "clusters M/N/O": [0, 0, 1]}
 
 
 def fmt_pair(p: tuple[float, float]) -> str:
@@ -306,7 +362,7 @@ def main() -> None:
     seed = hashlib.sha256(b"tradestuff copytrade-v1 A1 test vector").digest()
     assert len(seed) == 32 and seed.hex() == GOLDEN_SEED_HEX
     assert bytes.fromhex(GOLDEN_SEED_HEX) == seed
-    lines = ["EXPLORATORY reference implementation of the frozen evaluation keys (addenda A1 and A2). Test vectors.",
+    lines = ["EXPLORATORY reference implementation of the frozen evaluation keys (addenda A1, A2 and A3). Test vectors.",
              f"seed (hex of the 32 raw bytes the RNG consumes) = {seed.hex()}"]
 
     # RNG
@@ -450,6 +506,51 @@ def main() -> None:
         assert t_eval_ms(alt, t300) == te2 and day_clusters(alt, te2) == dcf
     assert gate_r_flattened(-0.5, 0.3) == -0.5
 
+    # missed exits (A3.1): gate R, cost versus the mirror, P4 / F2, evaluation close
+    cost_a = missed_exit_cost(-1.3, -0.5, -0.2)
+    cost_b = missed_exit_cost(-2.003, -1.003, -1.003)
+    assert -1.003 - -2.003 > 1.0                  # the unrounded binary64 difference exceeds 1R
+    me = {"gate R actual 0.8, mirror_lo 0.3": gate_r(0.8, mirror_lo_r=0.3),
+          "gate R actual -1.4, mirror_lo -0.2": gate_r(-1.4, mirror_lo_r=-0.2),
+          "gate R realised 0.5, shadow 0.2, mirror_lo 0.4": gate_r(0.5, 0.2, 0.4),
+          "cost actual -1.3, mirror_hi -0.2 (mirror_lo -0.5)": str(cost_a),
+          "cost actual -2.003, mirror_hi -1.003": str(cost_b),
+          "P4 3 missed, costs 0.200000/1.000000/0.000000":
+              p4_breach(3, [missed_exit_cost(-0.4, -0.2, -0.2), missed_exit_cost(-1.2, -0.2, -0.2), missed_exit_cost(0.1, 0.1, 0.1)]),
+          "P4 4 missed, costs 0": p4_breach(4, [Decimal("0")] * 4),
+          "P4 1 missed, cost 1.100000": p4_breach(1, [cost_a]),
+          "P4 1 missed, cost 1.000000 (-2.003 vs -1.003)": p4_breach(1, [cost_b]),
+          "P4 0 missed": p4_breach(0, [])}
+    lines.append("missed exits (A3.1): " + "; ".join(f"{k} -> {v}" for k, v in me.items()))
+    assert me == GOLDEN_MISSED, me
+    for a_ in (-2.0, -0.7, 0.0, 0.4, 1.9):          # the gate R never exceeds actual or mirror
+        for m_ in (-1.5, -0.1, 0.0, 0.6, 3.0):
+            assert gate_r(a_, mirror_lo_r=m_) <= a_ and gate_r(a_, mirror_lo_r=m_) <= m_
+    assert gate_r(1.2) == 1.2 and gate_r(1.2, 0.4) == gate_r_flattened(1.2, 0.4)
+    try:                                                    # hi below lo is a caller bug
+        missed_exit_cost(-1.0, 0.2, 0.1)
+        raise AssertionError("TP-first mirror below stop-first mirror accepted")
+    except ValueError:
+        pass
+    t300m = d0 + 30 * h
+    mt = [Trade("M", "SOL", 1, d0 + 1 * h, d0 + 2 * h, missed_exit=True, mirror_close_ms=d0 + 40 * h),
+          Trade("N", "SOL", 1, d0 + 30 * h, d0 + 32 * h),       # overlaps M's mirror, not its real close
+          Trade("O", "ETH", -1, d0 + 26 * h, d0 + 28 * h)]
+    te_m = t_eval_ms(mt, t300m)
+    mt_open = [Trade("M", "SOL", 1, d0 + 1 * h, d0 + 2 * h, missed_exit=True, mirror_close_ms=None), *mt[1:]]
+    te_mo = t_eval_ms(mt_open, t300m)
+    dcm = day_clusters(mt, te_m)
+    mc = {"T_eval mirror closed (h from d0)": (te_m - d0) // h,
+          "T_eval mirror open (h from d0)": (te_mo - d0) // h,
+          "hold M (h)": hold_ms(mt[0], te_m) // h,
+          "M marked (mirror open)": is_marked(mt_open[0], te_mo),
+          "M marked (mirror closed)": is_marked(mt[0], te_m),
+          "clusters M/N/O": [dcm[x] - 20_000 for x in "MNO"]}
+    lines.append("missed-exit evaluation close (A3.1): " + "; ".join(f"{k} = {v}" for k, v in mc.items()))
+    assert mc == GOLDEN_MISSED_CLOSE, mc
+    late_real = Trade("M", "SOL", 1, d0 + 1 * h, d0 + 45 * h, missed_exit=True, mirror_close_ms=d0 + 40 * h)
+    assert eval_close_ms(late_real) == d0 + 45 * h                        # the later of the two closes
+
     # verdict precedence
     base = dict(aborted=False, f1=False, f2=False, n_opened=300, g=12,
                 lb_r=Decimal("0.01"), ub_r=Decimal("0.3"), usd_pnl_positive=True, lb_d=Decimal("0.02"),
@@ -466,6 +567,9 @@ def main() -> None:
     assert v(baseline_missing_share=0.11) == "INCONCLUSIVE"
     assert v(baseline_missing_share=0.10) == "PASS"                       # 30 of 300 is allowed
     assert v(usd_pnl_positive=False) == "INCONCLUSIVE" and v(p5=False) == "INCONCLUSIVE" and v(p6=False) == "INCONCLUSIVE"
+    assert v(f2=p4_breach(3, [cost_b, cost_b, cost_b])) == "PASS"         # 3 missed exits, each <= 1R (A3.1)
+    assert v(f2=p4_breach(4, [])) == "FAIL" and v(f2=p4_breach(1, [cost_a])) == "FAIL"
+    assert v(aborted=True, f2=p4_breach(4, [])) == "ABORTED" and v(f2=p4_breach(4, []), g=3) == "FAIL"
     lines.append("verdict precedence: ABORTED > F1/F2 > P1 incomplete > G < 5 > F3 > PASS > INCONCLUSIVE (asserted)")
     lines.append("selftest OK (golden vectors asserted)")
     print("\n".join(lines))
