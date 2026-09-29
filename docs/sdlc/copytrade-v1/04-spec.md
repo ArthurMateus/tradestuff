@@ -1,6 +1,55 @@
 # Spec: copytrade-v1 (AI-filtered copy-trading bot, Hyperliquid + Telegram, paper)
 
-Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 and 2 applied
+Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 4 applied
+
+## Amendment 4 (2026-09-29)
+
+**Source.** Edge-hypothesis Addendum A4 (`research/edge-hypothesis.md` §5.13, marks `(A4.1)`–`(A4.12)`) and `research/scripts/eval_reference.py` v4 (E16), now committed. A4 is normative and supersedes A3 where they differ. It settles four open points from Amendment 2: §11 A20 (a) and (b), F9.AC8 against A3.3, and A25. Amendment 3 (F22 dropped) stands.
+
+**Changed ACs** (the old text is replaced in place):
+
+| AC | Change | A4 item |
+|---|---|---|
+| §1 missed exit | "Handled" defined: a mirror action, a rule-based skip record, or the share's full close, within 60 s (a skip recorded later is missed). Class 2 includes a data-gap exit not handled within 60 s after resync; class 3 includes exits found by the fill audit. Settled-gap rule | A4.1, A4.5 |
+| §1 major/alt | An untiered coin is a major for B0d, B0, B0b, B1 and B3, and an alt for paper trades, replays, reconstruction and shadows | A4.7 |
+| F4.AC7 | Stream and transport sha256 per file; a segment record every 5 min with a chain hash; unhashed data is a gap | A4.8 a, b |
+| F9.AC8 | Tier table recomputed every 24 h during a run, ledgered, in force from its ledger time; the table at `t0` goes in the run record | A4.7 |
+| F12.AC5 | Each pass fetches leader fills since the last pass and compares sizes; any mismatch runs the detector | A4.1 |
+| F12.AC6 | Missed-exit definition per A4.1 and A4.5; alert and record fields (how found) | A4.1, A4.5 |
+| F12.AC7 | `/flatten` shadows use lo candle prices inside a gap | A4.2 |
+| F12.AC9 | Candle fill rule; uncomputable after 72 h = cost > 1R, lo = actual, exit = real close (replaces "no verdict while pending"); incremental and trade costs; actual R definition | A4.2, A4.3 |
+| F14.AC6, F14.AC9 | Run-result content before `T_eval` only in `/stats` and each trade's own post; operational content allowed, never with a pass/fail label | A4.11 |
+| F16.AC6 | Untiered coin = alt for paper trades, replays, reconstruction and shadows | A4.7 |
+| F17.AC1, F17.AC4 | The table at `t0` is stored; only a table the rule does not reproduce is ABORTED | A4.7 |
+| F18.AC1 | The oracle is E16 with the `GOLDEN_A4_*` vectors and 31 mutants | A4.12 |
+| F18.AC3, F18.AC11 | The verdict waits for the final fill audit and for recomputation from verified data, bounded at 72 h | A4.1, A4.8 c |
+| F18.AC6 | ABORTED wins only when strictly earlier; a tie goes to FAIL | A4.4 |
+| F18.AC7 | Breach time rules; breach found after `T_eval` is still FAIL | A4.4 |
+| F19.AC2, F19.AC4 | Discretionary pauses are not excluded from B0d draws (B̄ = max rule); non-discretionary downtime stays excluded; the 24 h test excludes all downtime; untiered = major | A4.6, A4.7 |
+| F20.AC1 | Report adds how each missed exit was found, incremental cost, uncomputable mirrors, breach time and when found, audit coverage per leader, settled-gap exits, candle-priced fills; untiered rule for B1 and B3 | A4.1–A4.5, A4.7 |
+| F23.AC1, F23.AC3 | Both hashes verified; reads try local, then every ledgered destination, newest first | A4.8 |
+| F23.AC5 | A destination change is ledgered; it is not a config change or a deploy | A4.8 d |
+| DoD item 11 | Needs the PO's re-acknowledgement of §14 items 9 and 10 as rewritten by A4.9 | A4.9 |
+
+**Added ACs:**
+
+| AC | Content | A4 item |
+|---|---|---|
+| F4.AC9 | Hourly candle store (1m and 1h) for every coin with an open share, shadow or mirror, hashed like recordings | A4.2 |
+| F12.AC10 | Leader-fill audit: every 24 h, a final one up to `T_eval`, 72 h bound, audits continue after `T_eval` | A4.1 |
+
+**Other sections changed:**
+- §3: new frozen keys `eval.fill_audit_interval_h`, `eval.missing_data_retry_max_h`, `recording.segment_hash_minutes`, `eval.missed_exit_cost_rule`, `eval.p4_breach_time`, `eval.settled_gap_rule`, `baseline.dm_discretionary_pause_rule` and `recording.candle_store`; updated `eval.missed_exit_gap_rule`, `cost.fallback_tier_rule`, `eval.recording_integrity`, `baseline.dm_exclude_downtime`, and the wording of `tiers.recompute_interval_h`
+- §4: the fill-audit and candle-store budgets
+- §5: the "cost can't be computed" row becomes F2 after 72 h; new "incomplete fill audit" row; tier and destination rows
+- §7: mappings
+- §9: DoD items 3 and 11
+- §10: ownership of the new ACs
+- §11: A20 is replaced by A4.2, A25 is confirmed, A26 added
+
+**Feature count:** unchanged, 23 (F22 is out of scope by Amendment 3).
+
+---
 
 ## Amendment 3 (2026-09-29, CTO, on PO decision)
 - **F22 (OKX recorder) is removed from this epic** and moved to out-of-scope. The PO chose to cut cost (`decisions.md`, 2026-09-29). F22's ACs, config keys and ownership rows below are void for this epic. DoD item 1 is read as covering F1–F21 and F23.
@@ -130,7 +179,7 @@ Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendmen
 
 **Inputs.**
 - `01-brief.md`, `02-discovery.md` and `03-answers.md`.
-- `research/edge-hypothesis.md` (frozen v2 + A1 + A2 + A3) and `research/scripts/eval_reference.py` v3 (E15).
+- `research/edge-hypothesis.md` (frozen v2 + A1 to A4) and `research/scripts/eval_reference.py` v4 (E16, which supersedes E15).
 - `research/backtest-audit-r3.md` (VALID), `research/run-register.md`, `research/market-context.md` and `research/brainstorm-domain-research.md`.
 - `docs/product/decisions.md` and `.claude/knowledge/trading-invariants.md`.
 
@@ -141,8 +190,8 @@ Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendmen
   - the CI level is 96% for run 1 and 99% for run 2, not 95%
   - leverage is chosen automatically up to 5x alts and 10x BTC, ETH and SOL (Spec review A2), not a 3x default with a BTC/ETH-only 10x tier (D3)
   - liquid Hyperliquid meme perps are tradable when they qualify by liquidity tier (Spec review A6); D4's deferral now covers on-chain memecoins only
-- `edge-hypothesis.md` §5 (the frozen pre-registration) and its addenda, including A3, are **normative** for everything under evaluation. Where this spec paraphrases it, the frozen text wins.
-- `research/scripts/eval_reference.py` v3 (E15, which keeps every E14 literal) is the **conformance oracle**. If it disagrees with the frozen text, the frozen text wins and the oracle is a bug.
+- `edge-hypothesis.md` §5 (the frozen pre-registration) and its addenda, including A3 and A4, are **normative** for everything under evaluation. Where this spec paraphrases it, the frozen text wins.
+- `research/scripts/eval_reference.py` v4 (E16, which keeps every E15 literal) is the **conformance oracle**. If it disagrees with the frozen text, the frozen text wins and the oracle is a bug.
 
 **Notation.**
 - ACs are written `Fn.ACm [tag]`. The tag is one of `unit`, `integration`, `qa-ui` or `simulation`. `simulation` means the AC is run in paper mode or replay against recorded data.
@@ -173,6 +222,7 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
 - The full pipeline runs unattended on the PO's Windows PC in paper mode. It survives restarts without leaving a position open, and without faking results.
 - During a run the PO sees trades, positions and USD P&L. `/stats` shows descriptive figures (P&L, win rate, average R, drawdown, per-trader stats and progress to 300) and operational counters (downtime used against the 2% budget, missed exits with their costs, and pending deploy rulings).
 - Before `T_eval`, the PO never sees, and the system never computes, any of these (edge-hypothesis §5.5, A3.2): the gate CI by any method, B0d, D, P2c, FR1–FR6, K9/S4, P6, G, the cross-day diagnostics, or any verdict preview.
+- **Run-result content** (A4.11) is any figure computed from the outcomes (R, USD P&L, exit prices, exit reasons) of our trades, shadows, mirrors or any baseline. Before `T_eval` it appears only in the `/stats` list and in each trade's own post. Operational content (mode, health, disk, archive, storage cost, followed wallets with score and rank, counts of signals, entries, exits, refusals and skipped mirrors by reason, set and tier changes, latency, and the operational counters) may appear in `/status`, `/traders`, alerts and reports, never with a pass/fail label.
 - At `T_eval` a report states the verdict, every gate value and every go-live blocker.
 - The epic's deliverable is a **run-1-ready system** (see §9). The paper run itself, and its verdict, happen after this epic ships and are tracked in the run register.
 
@@ -180,17 +230,21 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
 - **Trade / share:** one copied position per leader, from our entry fill to fully closed, including adds and partials. Only taken signals count.
 - **Merged position:** every open share on one coin in one direction.
 - **R:** `net_pnl_usd / initial_risk_usd`, where `initial_risk_usd = qty_at_entry × |entry_fill_px − initial_stop_px| + estimated exit fee` (edge-hypothesis §4).
-- **Liquidity tier:** each allowed core coin is assigned automatically, from measured liquidity in our own recordings (F9.AC7), to **tier 1** (most liquid), **tier 2**, or **below floor** (not tradable). There is no hand-written coin list for tiers. The tier table in force at run start is frozen for the run (F9.AC8).
+- **Liquidity tier:** each allowed core coin is assigned automatically, from measured liquidity in our own recordings (F9.AC7), to **tier 1** (most liquid), **tier 2**, or **below floor** (not tradable). There is no hand-written coin list for tiers. The tier table at `t0` is stored in the run record. During a run the table is recomputed every 24 h under the frozen rule and thresholds, ledgered, and in force from its ledger time (F9.AC8, A4.7).
 - **Major / alt** (edge-hypothesis §6.3, A3.3; `cost.fallback_tier_rule`). This applies wherever the edge-hypothesis or this spec says "major" or "alt", which is the fallback costs in F13, F16, F19 and §3.
   - A **major** is a coin in the tightest liquidity tier (tier 1) in the tier assignment in force at the decision time of the trade or replication, read from the ledger's tier records (F9.AC7, F9.AC8).
   - Every other tier, below floor included, is an **alt**.
-  - A coin with **no tier record** at that time is an **alt for copies** and a **major for random-time baselines**. Copies are our trades, replays, restart reconstruction, `/flatten` shadows, B1 and B3. Random-time baselines are B0d and B0. Each choice is the conservative side. Missed-exit mirrors follow F12.AC9.
+  - A coin with **no tier record** at that time (A4.7) is an **alt for paper trades, replays, restart reconstruction and shadows**, and a **major for B0d, B0, B0b, B1 and B3**. Each choice is the conservative side. Missed-exit mirrors and gap fills use the fixed candle constants of F12.AC9 (8 bps lo, 2 bps hi), not the tier rule.
   - The leverage list `risk.high_leverage_coins` is unrelated to majors.
 - **High-leverage coins:** the coins in `risk.high_leverage_coins` (BTC, ETH and SOL), which may use up to 10x. This list is about leverage only and is independent of the liquidity tiers.
 - **Missed exit** (edge-hypothesis §5.3 "Missed-exit rules", A3.1): a leader exit event (a close, a reduce or a flip) on a coin where we hold that leader's open share, which is one of:
-  1. **Late:** the event's exchange timestamp is outside position downtime, and no mirroring ledger action exists within `exits.missed_exit_max_lag_s` (60 s, FROZEN) of it.
-  2. **Reconstruction failed:** the event is inside position downtime, and the restart reconstruction (F13) did not settle it.
-  3. **Orphan:** it is found only by leader reconciliation (F12.AC5), more than `exits.missed_exit_max_lag_s` after its exchange timestamp, outside position downtime.
+  1. **Late:** the event's exchange timestamp is outside position downtime, and it is not **handled** within `exits.missed_exit_max_lag_s` (60 s, FROZEN) of it.
+  2. **Reconstruction failed:** the event is inside position downtime and was not settled. In a `process_down` interval, that means the restart reconstruction (F13) did not settle it. In a `data_gap` before resync, it means it was not handled within 60 s after the resync (A4.5).
+  3. **Orphan:** it is found only by leader reconciliation (F12.AC5) or by the leader-fill audit (F12.AC10), and it was not handled within 60 s of its exchange timestamp, outside position downtime.
+
+  **Handled** (A4.1) means that within 60 s the ledger holds a mirror action for the event, a rule-based skip record for it, or the full close of our share for any reason (our SL/TP included). A skip recorded later than 60 s is missed. A leader exit that our own SL/TP closes more than 60 s later is missed.
+
+  **Settled gap** (A4.5, `eval.settled_gap_rule`): an exit inside a data gap that is handled within 60 s of the resync is not a missed exit and does not count toward P4. Its trade still gets a mirror from that event on and gate R = min(actual, mirrored lo), like a missed-exit trade, with the later evaluation close. It has no cost test.
 
   **Position downtime**, for this definition only, means the ledgered `process_down` intervals plus the `data_gap` intervals before resync: the times the engine could not manage positions.
   - Entry pauses keep exits managed, so a late mirror during one of them **is** a missed exit. The entry pauses are `/pause`, `access_degraded`, `disk_low`, deploy-wait pauses, loss halts and blackouts.
@@ -198,13 +252,14 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
 
   Rule-based non-mirrors are not missed exits: a partial skipped below $10, or a share already closed by our own SL/TP (Assumption A4). Each ledgered `missed_exit` record is one missed exit, and one share can have more than one.
 - **Missed-exit rule** (edge-hypothesis A3.1 is normative; this is a paraphrase):
-  - **Mirror.** Each share with a missed exit gets one mirror, built like the `/flatten` shadow. From its first missed leader event on, that event and every later leader event on the share are mirrored on time (F12.AC9). Over a recording gap, an ambiguous 1h bar is resolved stop-first for the **mirrored lo R** and TP-first for the **mirrored hi R**.
+  - **Mirror.** Each share with a missed exit gets one mirror, built like the `/flatten` shadow. From its first missed leader event on, that event and every later leader event on the share are mirrored on time (F12.AC9). Over a recording gap, an ambiguous bar is resolved stop-first for the **mirrored lo R** and TP-first for the **mirrored hi R**, and fills use the candle rule (F12.AC9).
   - **Gate.** A trade in S with a missed exit counts at **min(actual R, mirrored lo R)**, or at the minimum of realised, shadow and mirrored lo R if it was also flattened. Its USD P&L follows the same choice. A bug can therefore never help the verdict.
   - **Evaluation close.** It is the later of the real close (the shadow exit if flattened) and the mirror exit.
-  - **Cost** per trade = mirrored hi R − actual R, rounded half-even to 1e-6.
-  - **F2.** The run FAILs if either of these holds (F18.AC11):
+  - **Cost** (A4.3): per missed exit and per trade, mirrored hi R rounded half-even to 1e-6. The incremental cost of missed exit j is hi R(M_j) − hi R(M_(j−1)), with hi R(M_0) = actual R; the trade cost is hi R(M_k) − actual R. Actual R is the realised R (the flatten price for a flattened trade, the marked value if still open).
+  - **F2.** The run FAILs if any of these holds (F18.AC11):
     - more than 3 (`eval.missed_exit_max_count`) missed exits have their leader event in `[t0, T_eval]`. They are counted over all trades: in S or not, including trades opened after the 300th and missed exits during entry pauses.
-    - any such trade's cost is > 1R (`eval.missed_exit_max_cost_r`)
+    - any such incremental cost or trade cost is > 1R (`eval.missed_exit_max_cost_r`)
+    - a mirror is uncomputable after 72 h (cost counts as > 1R), or a leader-fill audit stretch is still incomplete after 72 h (F12.AC9, F12.AC10)
 
     One to three missed exits that each cost ≤ 1R leave the run running, and PASS stays possible.
   - **ME and K13.**
@@ -364,11 +419,13 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
     - exits, SL/TP, reconciliation, `/flatten`, ledger appends and archive uploads continue. A fixture at the floor shows a leader close still produces our close within the §4 exit budget.
   - Recording resumes automatically once free space is ≥ `recording.disk_floor_free_gb` + `recording.disk_resume_margin_gb`. The stopped interval is a recorder gap (F4.AC4) and is never back-filled with synthetic data.
 - **F4.AC6 [simulation]** Recording is independent of trading state. With `/pause`, the kill switch, a loss halt or `access_degraded` active, snapshots continue at the configured rates. The only thing that stops recording is the disk floor (F4.AC5).
-- **F4.AC7 [integration]** Compressed storage format and file hashes (edge-hypothesis §6.2 "Recording integrity", A3.4; test 24).
+- **F4.AC7 [integration]** Compressed storage format and file hashes (edge-hypothesis §6.2 "Recording integrity", A3.4, A4.8 a and b; test 24).
   - Recordings and leaderboard snapshots are written compressed, in a columnar format with zstd or an equivalent, partitioned by UTC day (and by coin for market data).
   - **Lossless.** Decompressing any file yields records byte-identical to what the recorder serialised. A 1-hour fixture reads back exactly equal to what was written: Decimal strings, both timestamps and source tags.
   - Files are written atomically (temporary file, then rename). After a force-kill at 20 random points, every file present reads back complete, and no reader ever sees a partial file.
-  - **Hashed at close.** When a file is closed, its sha256, byte count and record count are ledgered as `recording_file_closed` with its path, before any reader can see the file. This applies to every kind of close: normal, day end, disk floor or shutdown. On a 1-day fixture there is exactly one such record per file, and each record matches its file's sha256.
+  - **Two hashes per file (A4.8 a).** Each file has a **stream sha256** (over the records' canonical serialised bytes, independent of the compression) and a **transport sha256** (over the stored file bytes). Both are ledgered. On a fixture, recompressing the same records with another zstd level changes the transport hash and leaves the stream hash unchanged.
+  - **Segment records (A4.8 b).** Every `recording.segment_hash_minutes` (5) the recorder ledgers a segment record for each open stream: the hash of the records written in that segment, chained to the previous segment's hash. Data not covered by a ledgered hash, including the tail of a file after a crash, is a **gap** for every reader. On a fixture with a force-kill mid-segment, the unhashed tail is read as a gap and never used.
+  - **Hashed at close.** When a file is closed, its stream sha256, transport sha256, byte count and record count are ledgered as `recording_file_closed` with its path, before any reader can see the file. This applies to every kind of close: normal, day end, disk floor or shutdown. On a 1-day fixture there is exactly one such record per file, and each record matches its file's sha256.
   - On a representative 1-hour fixture of 250 coins, the compressed bytes are ≤ 25% of the same data as uncompressed JSON lines.
   - A finished UTC day's files are closed and marked `day_complete` within `storage.upload_delay_min` after 00:00 UTC, so F23 can archive them.
 - **F4.AC8 [integration]** Component version record (edge-hypothesis A3.4: the recorder is engine code).
@@ -380,6 +437,13 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - Each of these processes writes a heartbeat with the same identity every `ledger.heartbeat_interval_s`.
   - F17.AC2 and F17.AC3 use these records to hold the recorder and the archive process to the run commit during a run.
   - Starting the recorder from two worktrees at different commits gives two records that differ exactly in commit and path.
+- **F4.AC9 [integration]** Candle store (edge-hypothesis A4.2, A4.8; `recording.candle_store`; test 26).
+  - Every hour during a run (and in dry-run mode), the recorder fetches the exchange 1m and 1h candles of the hour just closed for every coin on which any share, shadow or mirror was open during that hour.
+  - They are stored as recording files under F4.AC7: compressed, lossless, atomic, with both hashes and segment records, each candle carrying its fetch time.
+  - A candle missing from the store may be fetched later, within `eval.missing_data_retry_max_h`. It is then stored and hashed the same way, and a stored candle is never replaced.
+  - Every reader that needs exchange candles (mirrors, `/flatten` shadows, B0d's relaxed set, reconstruction) reads them only through this store. A candle it needs that is not there yet is fetched and hashed first.
+  - Fixture: a share open from 10:20 to 12:40 on coin X and a mirror open on coin Y from 11:00 to 11:30 give 1m and 1h candle files for X at hours 10, 11 and 12, and for Y at hour 11, each with a `recording_file_closed` record. A coin with nothing open in that hour gets none.
+  - Failure case: with the candle endpoint unreachable, the fetch is retried every `storage.retry_interval_min` with one alert per `storage.alert_interval_h`, and recording of everything else continues.
 
 ### F5 Trader scoring (metrics, gates, blow-up detectors, score)
 - **Value:** traders are picked on verified-fill evidence, with luck correction (C1). This is edge-hypothesis §10.1–10.5, exactly.
@@ -537,9 +601,11 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - Load-time check: a tier-1 threshold below its floor counterpart fails config load.
   - The tier code reads no coin-name list; a static test finds no coin symbol literal in the tier module. HIP-3 (`dex:`), spot and non-core coins are never tiered.
   - Each computed table (coin, metrics, tier, coverage, computation time, data window) is ledgered with its sha256. The same inputs give a byte-identical table.
-- **F9.AC8 [unit]** Tier schedule and freeze (A6).
-  - Outside a run, the table is recomputed every `tiers.recompute_interval_h` (± 10 min) and the new table comes into force at once. Changes (coin, old tier, new tier) go into the next daily report.
-  - At run start, the table in force is frozen into the run record with its sha256 (F17.AC1) and used unchanged until the run ends. Recomputations during a run are ledgered as `tiers_candidate` and are never applied.
+- **F9.AC8 [unit]** Tier schedule (A6; edge-hypothesis A4.7).
+  - The table is recomputed every `tiers.recompute_interval_h` (± 10 min), and during a run every 24 h under the frozen rule and thresholds. Each new table is ledgered with its sha256 and comes into force from its ledger time. Changes (coin, old tier, new tier) go into the next daily report.
+  - At run start, the table in force at `t0` is stored in the run record with its sha256 (F17.AC1). A recomputed table during a run is not a config change. Each open, replay and cost decision uses the table in force at its decision time, read from the ledger.
+  - Only a table that the frozen rule does not reproduce from the recorded data (F17.AC4) is a config change.
+  - Fixture: a coin thins below tier 1 on day 3 of a run. Opens on day 4 use tier-2 thresholds and the alt fallback, while opens on day 2 keep their tier-1 decisions.
   - With no table in force, or one older than `tiers.max_age_h` outside a run, every open is refused with `untiered`, and one alert is sent.
   - Meme-perp fixtures: with recordings where DOGE, kPEPE and WIF meet the tier-2 thresholds, their opens pass the tier rule. With WIF below the floor, a WIF open is refused `illiquid_coin`, and DOGE and kPEPE are unaffected.
   - A coin that drops below the floor while a share is open keeps being managed: exits, SL/TP and reconciliation are never refused for tier reasons.
@@ -668,17 +734,22 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - A leader close closes our share.
   - After our SL or TP closes a share, that leader's later adds, reduces and close on that position are ignored until the leader is flat. The leader's next open is a new signal.
   - A leader flip closes our share and emits a new open signal.
-- **F12.AC5 [integration]** Leader reconciliation (C4 and A7 analogue).
+- **F12.AC5 [integration]** Leader reconciliation (C4 and A7 analogue; edge-hypothesis A4.1).
   - It runs every `reconcile.interval_s` and after every resync.
   - For each open share, it reads the leader's `clearinghouseState`. If the leader is flat or reversed on that coin, *then*:
     - our share closes at once with `reconcile_close`
     - an alert is sent
     - F12.AC6 runs
-- **F12.AC6 [unit]** Missed-exit detector (P4 / F2, edge-hypothesis A3.1; test 21).
+  - **Fills and sizes.** Each pass also fetches the leader's fills since the last pass (`userFillsByTime`) and compares the leader's size on each coin where we hold that leader's share with `startPosition` + the signed size of the last fill the ledger has processed. Any mismatch, or any fetched fill not yet processed, runs the missed-exit detector (F12.AC6) at once.
+  - Fixture: a dropped reduce that leaves the leader's sign unchanged is caught by the size comparison in the next pass, and it is a missed exit if more than 60 s old.
+- **F12.AC6 [unit]** Missed-exit detector (P4 / F2, edge-hypothesis A3.1, A4.1, A4.5; test 21).
   - **Record.** Each §1 case is detected and ledgered as `missed_exit`. The record holds:
     - a missed-exit ID, the leader, the coin, the share ID and the event type
     - the event's exchange timestamp, the detection timestamp and the lag
-    - the case: late, reconstruction failed or orphan
+    - the case: late, reconstruction failed or orphan (class 2 includes a data-gap exit not handled within 60 s after resync; class 3 includes exits found by the fill audit, F12.AC10)
+    - how it was found: live, reconciliation, or daily or final fill audit
+  - **Handled.** An event is handled if, within 60 s of its exchange timestamp, the ledger holds a mirror action, a rule-based skip record, or the share's full close. A skip recorded at 61 s is missed.
+  - **Settled gap.** An exit inside a `data_gap` that is handled within 60 s of the resync is ledgered as `settled_gap_exit`, not as `missed_exit`. It does not count toward the `n/3` count or P4, its trade gets a mirror, and its gate R = min(actual, mirrored lo R).
 
     Each record is one missed exit, and a share can have several.
   - **Downtime.** For the three cases, position downtime is only `process_down` and `data_gap` before resync (§1). The P5 downtime union (F18.AC8) is never used here.
@@ -697,26 +768,61 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
     - a leader close inside a `process_down` gap longer than `restart.max_reconstruct_gap_h` (F13.AC3) is a missed exit, case "reconstruction failed"
     - a partial skipped under the $10 rule is not a missed exit, and neither is a leader close after our SL already closed the share
     - two missed exits on one share give two records and a count of 2
-- **F12.AC7 [simulation]** `/flatten` shadows (edge-hypothesis A1.3 d and A2.1).
-  - Each flattened share gets a shadow, managed on recorded data under the frozen exit rules: leader exits, SL/TP and hourly funding. Over recording gaps it uses 1h candles, with the stop assumed hit first.
+    - a rule-based skip record written 61 s after the event is a missed exit; written at 60 s it is not
+    - a leader exit that our own SL/TP closes 61 s later is a missed exit; one closed 60 s later is not
+    - a leader exit inside a data gap, mirrored 60 s after resync, is a settled gap exit (no count, its trade counts at min(actual, mirrored lo)); mirrored 61 s after resync it is a missed exit of class 2
+    - an exit found only by the daily fill audit is ledgered as an orphan with "found by: audit"
+- **F12.AC7 [simulation]** `/flatten` shadows (edge-hypothesis A1.3 d, A2.1 and A4.2).
+  - Each flattened share gets a shadow, managed on recorded data under the frozen exit rules: leader exits, SL/TP and hourly funding. Over recording gaps it uses candles from the candle store (F4.AC9), with the stop assumed hit first, and **inside a gap it fills at the lo candle prices** of F12.AC9 (worst price + 8 bps, SL/TP at the trigger or a gapped-through open).
   - The shadow runs until the shadow exit, whose time and R are stored.
   - Moving the flatten time while the shadow path is unchanged leaves the shadow exit unchanged.
 - **F12.AC8 [unit]** A dropped leader's shares stay managed by our SL/TP and that leader's exits, through the gate, until they close.
-- **F12.AC9 [simulation]** Mirror, gate values and cost (edge-hypothesis §5.3 "Missed-exit rules", A3.1; test 21; fill basis in a gap in Assumption A20).
+- **F12.AC10 [integration]** Leader-fill audit (edge-hypothesis A4.1; test 25; `eval_reference.py::exit_class`).
+  - **Schedule.** Every `eval.fill_audit_interval_h` (24 h), for every leader with a share open at any time since the last audit (followed or dropped), the engine fetches the leader's fills (`userFillsByTime`) from the end of the previous audit to `exits.missed_exit_max_lag_s` before now. It classifies every leader exit event on a coin where we held that leader's share at the event time.
+  - **Result.** An event that was neither handled within 60 s nor settled inside downtime is a missed exit. If the ledger does not hold it yet, it is ledgered now as an orphan, "found by: audit".
+  - **Final audit.** Before the verdict, one more audit covers every such leader up to `T_eval` (F18.AC3).
+  - **After `T_eval`.** Audits continue every 24 h until every share of the run has closed, so late missed exits are still found (they are ME, F20.AC4).
+  - **Incomplete audit.** An audit interval is complete when every fill in it has been retrieved. If the API is unreachable or a page is truncated, the interval is retried every `storage.retry_interval_min` for up to `eval.missing_data_retry_max_h` (72 h) from its first attempt, with one alert per `storage.alert_interval_h`.
+    - A stretch of `[t0, T_eval]` in which we held a leader's share that is still unaudited after 72 h is a **P4 breach** (F2), with breach time at the stretch's start (F18.AC7).
+    - An unaudited stretch after `T_eval` is listed with the ME list.
+  - **Coverage.** Per leader, the audited intervals, retries and any unaudited stretch are ledgered and reported (F20.AC1).
+  - Fixtures:
+    - a reduce dropped by a dead `userFills` subscription is found by the daily audit as an orphan
+    - a close and reopen between two reconciliation passes is found the same way
+    - a leader close that our own SL/TP closes 5 minutes later is found as a missed exit
+    - an audit interval unreachable for 71 h and then retrieved gives no breach, and one unreachable for 72 h gives a breach at the stretch's start
+    - a dropped leader with an open share is still audited
+    - a leader with no share since the last audit is skipped, so 0 requests are sent for it
+- **F12.AC9 [simulation]** Mirror, gate values and cost (edge-hypothesis §5.3 "Missed-exit rules", A3.1, A4.2, A4.3; tests 21, 26 and 27; `eval_reference.py` `gap_candle`, `gap_fill_px`, `gap_trigger_px`, `missed_exit_costs`).
   - **Construction.** For each share with a missed exit, the engine builds one **mirror** with the `/flatten` shadow machinery (F12.AC7). The mirror is the share managed on recorded data under the frozen exit rules from its **first** missed leader event on. That event and every later leader event on the share (adds, reduces, closes and flips) are mirrored on time.
     - The mirror uses the same stop, TP, trailing stop, $10 rules and hourly funding as the real share.
     - A mirrored leader action is decided at the event's exchange timestamp + `copyreplay.delay_ms`. It is filled by the F11.AC1 fill model at the book recorded at that decision time + `paper.ack_delay_ms`, walked with the share's size.
-    - Over a gap in our recording, the SL/TP path uses exchange 1h candles. A lost file (F23.AC3) counts as a gap. An ambiguous bar is resolved **both ways**: stop first gives the **mirrored lo R**, and TP first gives the **mirrored hi R**. Without an ambiguous bar, lo = hi.
+    - **Candle fill rule (A4.2).** Without a recorded book within `baseline.dm_max_book_gap_s` (5 s) of the fill time (a recording gap, a lost file, or data not covered by a ledgered hash), a mirrored action fills on the 1m candle that contains the fill time, else the 1h candle, from the candle store (F4.AC9).
+      - **lo** = the candle's worst price for our side (high for a buy, low for a sell) moved against us by 8 bps.
+      - **hi** = the candle's best price for our side moved against us by 2 bps.
+      - Both pay the taker fee. There is no delay term, and the tier table is not used.
+      - An SL or TP triggered inside a gap fills at its trigger price, or at the bar's open if the bar opened beyond the trigger (gap-through), moved against us by 8 bps (lo) or 2 bps (hi).
+    - Over a gap in our recording, the SL/TP path uses the same candles. A lost file (F23.AC3) counts as a gap. An ambiguous bar is resolved **both ways**: stop first gives the **mirrored lo R**, and TP first gives the **mirrored hi R**. Without an ambiguous bar, lo = hi (fills excepted).
     - A mirror still open at `t300 + eval.closeout_max_days` is marked at the recorded mid − taker fee − half-spread (F18.AC3).
   - **Values.**
     - **Gate R** = min(actual R, mirrored lo R). For a flattened trade it is the minimum of realised, shadow and mirrored lo R (`eval_reference.gate_r`). The gate USD P&L is the USD of the chosen outcome.
-    - **Cost** = mirrored hi R − actual R, in the share's R, rounded half-even to 1e-6 (`eval_reference.missed_exit_cost`).
+    - **Costs (A4.3).** Number the share's missed exits 1..k by leader event time (ties by missed-exit ID). Mirror M_j is the share managed from missed exit 1 on with missed exits 1..j and every other leader event mirrored on time, and missed exits j+1..k handled as the engine actually handled them (or not at all if the share closed first). M_k is the mirror above.
+      - The **incremental cost** of missed exit j = hi R(M_j) − hi R(M_(j−1)), with hi R(M_0) = actual R.
+      - The **trade cost** = hi R(M_k) − actual R, the sum of the increments.
+      - Each is in the share's R, rounded half-even to 1e-6 (`eval_reference.missed_exit_costs`). Two missed exits cannot net each other out.
+      - **Actual R** is the realised R at the real full close (the flatten price for a flattened trade, never its shadow), or the marked value if the trade is still open at `t300 + eval.closeout_max_days`.
     - A mirrored hi R below the mirrored lo R is an error and is never stored.
   - **Timing.** Actual, lo and hi R, gate R and cost are stored within 5 min of the later of the share's full close and its mirror exit, or at `T_eval` with whichever is still open marked. Until then, the missed exit shows "cost pending".
-  - **No data, no verdict (fail closed).** The mirror may be unbuildable: the recorded book is missing and the exchange candles can't be fetched. Then:
+  - **Uncomputable mirror (fail closed, A4.2).** A mirror is uncomputable if a fill or a gap stretch of its SL/TP path needs a candle that is neither in the candle store nor obtained from the exchange within `eval.missing_data_retry_max_h` (72 h) of the first attempt. Until then:
     - the build is retried every `storage.retry_interval_min`, with one alert per `storage.alert_interval_h`
-    - no cost is guessed
-    - the verdict is not computed while any cost in the window is pending (F18.AC11)
+    - no cost is guessed, and the missed exit shows "cost pending"
+
+    After 72 h:
+    - every cost of that share counts as **above 1R** (F2 through `p4_breach`, with the cost as +∞)
+    - the mirrored lo R = actual R, so gate R = actual R
+    - the mirror exit = the real close
+    - the breach time is the leader event time of its first missed exit (F18.AC7)
+    - the verdict never waits beyond the bound
   - Vectors (E15 `GOLDEN_MISSED`, plus spec cases):
     - actual +0.8, mirrored lo +0.3 → gate +0.300000
     - actual −1.4, mirrored lo = hi −0.2 → gate −1.400000, cost 1.200000
@@ -727,6 +833,10 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
     - mirrored lo +0.2 with hi +0.1 → error
     - timing: leader event at T, `copyreplay.delay_ms` 3,000 and `paper.ack_delay_ms` 1,000 → decided at T + 3,000 ms, filled at the first book at or after T + 4,000 ms
     - a recording gap with one 1h bar touching both the stop and the TP gives lo from the stop exit and hi from the TP exit; the gate uses lo and the cost uses hi
+    - candle fill (spec arithmetic; /tests takes the exact `GOLDEN_A4_*` vectors from E16): a buy filled in a 1m candle with high 101.00 and low 99.00 gives lo = 101.00 × 1.0008 = 101.0808 and hi = 99.00 × 1.0002 = 99.0198 (before fees); with no 1m candle in the store, the 1h candle is used
+    - a gapped-through SL: the bar opens at 95 beyond a long stop at 97, so the mirror fills at 95 minus 8 bps (lo) or minus 2 bps (hi), not at 97
+    - two missed exits on one share with increments +1.3R and −0.5R: trade cost 0.8R, but the first increment (1.3R) breaches P4
+    - no candle obtainable for 72 h: the cost counts as above 1R, lo = actual, exit = the real close, and the breach time is the first missed exit's leader event time; at 71 h 59 min it is still pending
     - over the grid actual ∈ {−2.0, −0.7, 0, 0.4, 1.9} × mirrored lo ∈ {−1.5, −0.1, 0, 0.6, 3.0}, gate R ≤ both
   - Every value is Decimal quantised to 1e-6, and the same inputs give byte-identical records.
 
@@ -794,14 +904,17 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
     - any B0d replication, B̄_i, D_i or P2c status
     - FR1–FR6, K9/S4 (B1), P6, G, any cross-day diagnostic, or the D6 checks
     - any verdict preview: pass, fail or "on track" for any gate condition (P1–P6, P2b, P2c, F1–F3), a projected bound, a probability of PASS, or a traffic light
-  - **Allowed for run results, and nothing more:** per-trade outcomes, USD P&L, counts, progress toward 300, and the `/stats` figures and operational counters (F14.AC9).
+  - **Run-result content (A4.11)** is any figure computed from the outcomes (R, USD P&L, exit prices, exit reasons) of our trades, shadows, mirrors or any baseline. Before `T_eval` it appears **only** in the `/stats` list (F14.AC9) and in each trade's own post.
+    - Every other aggregate of outcomes is refused: per coin, per day or week, per exit reason, the exit-reason mix, payoff ratio, R_maxrisk, S2–S6, decay and edge lost per second, and every item of the "Also computed at `T_eval`" list except the missed-exit counter.
+    - **Operational content** is not computed from outcomes and stays allowed in `/status`, `/traders`, alerts and reports, never with a pass/fail label: mode, health, disk, archive and storage cost; followed wallets with score, rank and follow state; the leaders' own figures in trade posts; counts of signals, entries, exits, refusals and skipped mirrors by reason; followed-set and tier changes; latency; and the operational counters (downtime used, missed exits with costs, pending deploy rulings).
     - The operational counters show raw values against their limits, with no pass, fail or on-track label.
-    - Adding a run metric to `/stats` or to a report is a spec change, checked against §5.5. Assumption A25 covers operational, non-result content.
-  - A test renders every template, including `/stats`, with a run fixture and finds 0 forbidden fields or phrases. A log capture over a simulated run finds none either.
+    - Adding a run-result metric to `/stats` or to a report is a spec change, checked against §5.5 (Assumption A25, confirmed).
+  - A test renders every template, including `/stats`, `/status`, `/traders`, alerts and reports, with a run fixture and finds 0 forbidden fields or phrases. A log capture over a simulated run finds none either.
+  - A second test feeds a fixture with known outcomes and asserts that outside the `/stats` list and trade posts, no template contains any outcome-derived figure (for example, a daily report with a per-coin P&L is refused).
   - A static dependency test shows that `telegram` and `reports` never import `evaluation` or `baselines`.
 - **F14.AC7 [qa-ui]** Reports.
   - The daily report goes out at `report.daily_time_utc` and the weekly one at `report.weekly_time_utc`.
-  - Each covers: USD P&L, trades opened and closed, refusals by reason, unexecutable count, downtime, followed-set changes, missed exits (count and IDs), coin-tier changes (F9.AC8), archive state and the projected monthly storage cost (F23.AC7).
+  - Each covers: USD P&L (**omitted while a run is active and before `T_eval`**, because a daily or weekly P&L is an outcome aggregate outside the `/stats` list, A4.11; the report then points to `/stats`), trades opened and closed, refusals by reason, unexecutable count, downtime, followed-set changes, missed exits (count and IDs), coin-tier changes (F9.AC8), archive state and the projected monthly storage cost (F23.AC7).
   - Each ends with `report.disclaimer`.
 - **F14.AC8 [integration]** Alerts and outage (failure case).
   - Alerts go only to `telegram.alerts_chat_id`.
@@ -810,7 +923,7 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
     - trading continues
     - alerts are also written to the local log
     - the queue drains in order on recovery
-- **F14.AC9 [qa-ui]** `/stats` (PO decision A14; edge-hypothesis §5.5, A3.2).
+- **F14.AC9 [qa-ui]** `/stats` (PO decision A14; edge-hypothesis §5.5, A3.2, A4.11). It is one of only two places that show run-result content before `T_eval` (the other is each trade's own post).
   - It answers within 3 s (p95), from ledger aggregates (F2) only.
   - **Scope.** It covers the active run. With no run active, it covers the time since the dry-run start or the last run end, and labels that scope.
   - **Results, overall and per trader followed at any time in the scope:**
@@ -865,7 +978,7 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
 - **F16.AC5 [simulation]** Variant budget (D4).
   - Only V0–V7 (edge-hypothesis §5.8) can be run, and the ledger counts distinct variants. A 9th is refused.
   - Sensitivity runs (`replay.sensitivity_cost_mults`, `replay.sensitivity_delays_s`) run on the selected variant and are not counted.
-- **F16.AC6 [simulation]** Cost model.
+- **F16.AC6 [simulation]** Cost model (edge-hypothesis A3.3, A4.7).
   - Spread: recorded at signal time; otherwise the coin's median half-spread × `cost.fallback_half_spread_mult`; otherwise `cost.fallback_half_spread_bps`.
   - Delay: measured decay at the p95 detection latency; otherwise `cost.fallback_delay_slippage_bps`.
   - The major or alt value of each fallback is chosen by `cost.fallback_tier_rule` on the copy side (§1, edge-hypothesis A3.3).
@@ -873,9 +986,9 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - Test 23, copy side. At decision time:
     - a coin in tier 1 uses 2 / 5 bps
     - a tier-2 or below-floor coin uses 8 / 15 bps
-    - a coin with no tier record uses 8 / 15 bps
+    - a coin with no tier record uses 8 / 15 bps (an alt for paper trades, replays, reconstruction and shadows)
 
-    The random-time side is in F19.AC4.
+    The random-time side and the other baselines (B0d, B0, B0b, B1, B3, where an untiered coin is a major) are in F19.AC4 and F20.AC1.
 - **F16.AC7 [simulation]** Speed. A replay of 7 recorded days for 9 wallets finishes in ≤ 60 min on the PO's PC.
 
 ### F17 Run control (run record, freeze, deploys, run register)
@@ -892,7 +1005,7 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - the lockfile sha256 and the Python version
   - the installed-package-list sha256: `name==version` with normalised lowercase names, sorted, UTF-8, LF line endings
   - the per-file sha256 of every non-config data input
-  - the coin-tier table in force at `t0` (F9.AC8), stored in full with its sha256
+  - the coin-tier table in force at `t0` (F9.AC8), stored in full with its sha256. It is the starting table only: later tables are ledgered every 24 h (F9.AC8).
 
   A fixture checks each field and the canonical package-list bytes.
 - **F17.AC2 [integration]** Refusals (fail closed). `run start` refuses when any of these holds:
@@ -930,7 +1043,7 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
     - Fixture: a deploy with reason kind `interim_result` gets CONTINUE refused, while ABORTED is accepted and ends the run as ABORTED at that moment.
   - **Missed-exit fixes (A3.1).** A fix for the cause of a missed exit is a deploy like any other, and nothing above is relaxed for it. Missed exits under the recorded commit while a ruling is pending count toward F2.
   - **Recorder (A3.4).** A recorder started from another worktree or commit during a run writes a deploy record and exits without writing any recording file, while the run-worktree recorder keeps recording.
-- **F17.AC4 [unit]** Config change. A config hash that differs from the run record, checked at start and every 60 s, makes the run `ABORTED` at that moment. The run count increments, and a 3rd run can't start. A tier table in force whose sha256 differs from the run record's is treated the same way.
+- **F17.AC4 [unit]** Config change. A config hash that differs from the run record, checked at start and every 60 s, makes the run `ABORTED` at that moment. The run count increments, and a 3rd run can't start. A tier table is **not** a config change merely because it differs from the table at `t0`: each 24 h recomputation is ledgered and in force from its ledger time (F9.AC8, A4.7). Only a table that the frozen rule and thresholds do not reproduce from the recorded data (a check recomputes it from the ledgered inputs) is treated as a config change, and makes the run `ABORTED`. Fixture: a recomputed table that the rule reproduces leaves the run running, and a hand-edited table is ABORTED.
 - **F17.AC5 [unit]** Manual end.
   - `run stop --confirm` ends the run as `ABORTED`.
   - An auditor void-ruling record makes it `ABORTED` even after an F1 or F2 breach, and it can never produce `PASS`.
@@ -952,13 +1065,14 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
 - **Dependencies:** F2. F18 is pure over ledger records; B0d inputs come from F19, and the P6 input from F16.
 
 - **F18.AC1 [unit]** Conformance oracle.
-  - The implementation reproduces every golden literal in `research/scripts/eval_reference.py` v3 (E15). RNG outputs must match exactly, cost strings exactly as Decimal, and everything else to 1e-6:
+  - The implementation reproduces every golden literal in `research/scripts/eval_reference.py` v4 (E16, edge-hypothesis A4.12), which keeps every E15 literal. RNG outputs must match exactly, cost strings exactly as Decimal, and everything else to 1e-6:
     - `GOLDEN_RNG` and `GOLDEN_REJ`, including the rejection case n = 2^63 + 1
     - the percentile indices: 200 and 9,799 at 96%, 50 and 9,949 at 99%
     - `GOLDEN_TOY`, `GOLDEN_UNEQUAL`, `GOLDEN_DISTINCT` and `GOLDEN_DC`
     - `GOLDEN_FLATTEN` and `GOLDEN_D`
     - **(A3.6)** `GOLDEN_MISSED` and `GOLDEN_MISSED_CLOSE` (F12.AC9, F18.AC3, F18.AC11)
-  - Each of the 16 E15 mutants (M1–M16, edge-hypothesis §12), applied to the implementation, fails at least one test.
+    - **(A4.12)** every `GOLDEN_A4_*` vector (candle fills, incremental and trade costs, breach time, settled gap, B̄ max rule, fill audit, uncomputable mirror)
+  - Each of the 31 E16 mutants (edge-hypothesis §12), applied to the implementation, fails at least one test. The count includes the 16 E15 mutants M1–M16.
 - **F18.AC2 [unit]** Sample S.
   - S is the first `eval.n_trades` shares by entry-fill time in `[t0, t0 + eval.calendar_cap_days + eval.extension_days)`. Ties are broken by client order ID, ascending.
   - Trade 301 is never in S, even when it closes first.
@@ -974,7 +1088,12 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - Trades, shadows or mirrors still open at the cap are marked at the recorded mid − taker fee − half-spread.
   - Funding counts through the last hourly funding ≤ `T_eval`.
   - A later real outcome is reported separately, and the stored verdict never changes.
-  - **Verdict timing (A3.1).** The verdict is computed no earlier than `T_eval + exits.missed_exit_max_lag_s`. Before it, a reconciliation pass (F12.AC5) over every share open at `T_eval` must have completed. So every missed exit with a leader event at or before `T_eval` is in the ledger first.
+  - **Verdict timing (A3.1, A4.1, A4.8 c).** The verdict is computed no earlier than `T_eval + exits.missed_exit_max_lag_s`, and only after all of these:
+    - a reconciliation pass (F12.AC5) over every share open at `T_eval` has completed
+    - the final leader-fill audit (F12.AC10) has completed, for every leader on whom we held a share in the window
+    - every value the verdict uses has been recomputed from hash-verified data (F23.AC3)
+
+    So every missed exit with a leader event at or before `T_eval` is in the ledger first. The wait is bounded at `eval.missing_data_retry_max_h` (72 h): after that, an incomplete audit or an uncomputable mirror counts as a P4 breach (F18.AC11) and the verdict is computed. Fixture: a final audit that completes at `T_eval` + 30 h delays the verdict to then. One that never completes gives FAIL at `T_eval` + 72 h.
   - Vectors (E15 `GOLDEN_MISSED_CLOSE`). The fixture: t300 = d0 + 30 h; M is SOL long, entry d0 + 1 h, real close d0 + 2 h, missed exit, mirror exit d0 + 40 h; N is SOL long, d0 + 30 h to d0 + 32 h; O is ETH short, d0 + 26 h to d0 + 28 h.
     - `T_eval` = d0 + 40 h, and hold M = 39 h. M is not marked.
     - With M's mirror still open, `T_eval` = d0 + 198 h, and M is marked.
@@ -994,6 +1113,7 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - The order is: ABORTED → FAIL (F1/F2) → INCONCLUSIVE (P1) → INCONCLUSIVE (G < 5) → FAIL (F3) → PASS (P1–P6, P2b, P2c) → INCONCLUSIVE.
   - Over a generated grid of every boolean combination, with G ∈ {3, 4, 5, 6} and LB/UB ∈ {−0.000001, 0.000000, 0.000001}, the result equals `eval_reference.verdict` for 100% of cases.
   - The F2 boolean in that grid is `p4_breach(count, costs)` from F18.AC11, never "at least one missed exit".
+  - **ABORTED versus FAIL (A4.4).** ABORTED wins only when its time is strictly earlier than the P4 breach time (F18.AC7). A tie goes to FAIL. Fixture: an abort at the same millisecond as the 4th missed exit's leader event gives FAIL, and an abort 1 ms earlier gives ABORTED.
   - The E15 verdict cases hold, on an otherwise passing fixture:
     - 3 missed exits, each with cost 1.000000R (−2.003 vs −1.003) → PASS
     - 4 missed exits → FAIL, including with 120 opened and with G = 3
@@ -1003,10 +1123,14 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - **F1:** drawdown ≥ `eval.max_dd` at any mark, on either of two curves:
     - the actual equity curve
     - the shadow equity curve, where flattened trades are replaced by their shadows and **trades with a missed exit by their stop-first (lo) mirrors**
-  - **F2** (F18.AC11), recorded at the first of these moments:
-    - when the 4th missed exit with a leader event in the window is ledgered, including during the wait after `T_eval`
-    - for the cost, the first moment when a trade and its mirror have both closed with a cost > 1R
-    - `T_eval`, for a cost computed with the still-open side marked
+  - **F2** (F18.AC11; A4.4, `eval_reference.py::p4_breach_time`). The **breach time** is the earliest of:
+    - the leader event time of the 4th missed exit, in leader-event order (never the order in which they were ledgered)
+    - for a cost > 1R, the moment it is established: the later of the trade's real close and its mirror exits, capped at `T_eval` (a side still open then is marked)
+    - for an uncomputable mirror, the leader event time of its first missed exit
+    - for an incomplete fill audit, the start of the unaudited stretch
+
+    It always lies in `[t0, T_eval]`. It is reported with the time the breach was found.
+  - **When it takes effect.** A breach found before `T_eval` (live or by a daily audit) records FAIL when found. A breach found after `T_eval` (by the final audit, the recomputation or the 72 h bound) is **still FAIL**, with the breach time as above, and it changes the verdict only.
   - The F2 FAIL alert states K13: "missed-exit limit: engineering failure, not evidence about the edge. Explain and fix every missed exit before run 2."
   - A missed exit that does not breach F2 leaves the run running, and never pauses entries by itself.
 - **F18.AC8 [unit]** P5 downtime.
@@ -1028,15 +1152,15 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - **Never computed.** Every function in `evaluation` and `baselines` that computes any of the items above is instrumented. A simulated run fixture from `t0` to just before `T_eval` records 0 calls to them. The fixture includes `/stats` calls, daily and weekly reports, and missed exits.
     - The only computations allowed during the run are the ones the rules need live: the missed-exit mirror, gate and cost values (F12.AC9), `p4_breach` (F18.AC11), and P3 marking on both curves (F18.AC7).
   - `/stats` (F14.AC9) never calls this API. Its figures come from ledger aggregates.
-- **F18.AC11 [unit]** Missed-exit rule, P4 and F2 (edge-hypothesis §5.3 "Missed-exit rules", A3.1; test 21).
+- **F18.AC11 [unit]** Missed-exit rule, P4 and F2 (edge-hypothesis §5.3 "Missed-exit rules", A3.1, A4.1–A4.5; tests 21 and 25–29).
   - **Count.** The count is the number of `missed_exit` records whose leader event's exchange timestamp is in `[t0, T_eval]`. It runs over **all** trades: in S or not (trades opened after the 300th included), and including missed exits during entry pauses. A missed exit whose leader event is after `T_eval` never enters the verdict; it is still ME (F20.AC4).
-  - **Costs.** For each trade with at least one missed exit whose leader event is in the window, in S or not, the cost is the F12.AC9 cost (mirrored hi R − actual R, rounded half-even to 1e-6).
-  - **F2** holds iff the count is > `eval.missed_exit_max_count`, **or** any cost, compared as the rounded Decimal, is > `eval.missed_exit_max_cost_r` (`eval_reference.p4_breach`). Its timing is in F18.AC7.
+  - **Costs.** For each trade with at least one missed exit whose leader event is in the window, in S or not, the incremental cost of each missed exit and the trade cost are the F12.AC9 costs (rounded half-even to 1e-6). An uncomputable mirror (after 72 h) counts as above 1R.
+  - **F2** holds iff the count is > `eval.missed_exit_max_count`, **or** any incremental or trade cost, compared as the rounded Decimal, is > `eval.missed_exit_max_cost_r`, **or** a mirror is uncomputable, **or** a fill-audit stretch is incomplete after 72 h (`eval_reference.p4_breach`). Its timing is in F18.AC7. A settled-gap exit (F12.AC6) is not counted and has no cost test.
   - **Gate values.**
     - A trade in S with a missed exit enters R, D and P2b's USD sum at gate R = min(actual, mirrored lo), or the minimum of three if flattened, with the matching USD.
     - Its evaluation close (F18.AC3) drives `T_eval`, `hold_i`, merged positions, the B0d hold and P3.
     - A trade outside S never enters S's statistics, even when it counts toward F2.
-  - **Verdict timing.** It follows F18.AC3 (`T_eval` + 60 s and the reconciliation pass). Also, the verdict is never computed while a cost in the window is pending (F12.AC9).
+  - **Verdict timing.** It follows F18.AC3 (`T_eval` + 60 s, the reconciliation pass, the final fill audit and recomputation from verified data). The wait for a pending cost or an incomplete audit is bounded at `eval.missing_data_retry_max_h` (72 h). After that the breach is F2, and the verdict is computed (F12.AC9, F12.AC10).
   - Vectors (E15 `GOLDEN_MISSED`, plus spec boundaries):
     - 3 missed exits, costs 0.200000 / 1.000000 / 0.000000 → no F2
     - 4 missed exits, costs 0 → F2 at the ledgering of the 4th
@@ -1050,7 +1174,13 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
     - a missed exit with a leader event at `T_eval + 1 ms` is not counted, and is listed as ME
     - a late mirror during `/pause` counts
   - **A bug never helps.** Gate R ≤ actual R on every fixture. On a fixture where a late exit beat mirroring, mean gate R over S is lower than the mean computed with actual R.
-  - **Mutants.** Each of E15 mutants M11–M16 fails at least one test: counting at actual R; FAIL at 3; a cost ≥ 1R failing; the cost from the stop-first mirror; an evaluation close that ignores the mirror; the cost compared without rounding.
+  - Scenario fixtures (A4):
+    - the 4th missed exit's breach time is its leader event time even when it was ledgered before an earlier-event one
+    - a breach found by the final audit after `T_eval` is FAIL
+    - an uncomputable mirror breaches at its first missed exit's leader event time
+    - an incomplete audit breaches at the stretch's start
+    - a settled-gap exit is not counted
+  - **Mutants.** Each of the E16 mutants fails at least one test, including E15 M11–M16: counting at actual R; FAIL at 3; a cost ≥ 1R failing; the cost from the stop-first mirror; an evaluation close that ignores the mirror; the cost compared without rounding. The remaining A4 mutants are listed in E16.
 
 ### F19 B0d baseline and P2c inputs (edge-hypothesis §6.2, exact)
 - **Value:** the gating test that the trades beat a direction-matched, random-time baseline. This is P2c, and it is non-removable.
@@ -1062,10 +1192,12 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - a book exists within `baseline.dm_max_book_gap_s` of the entry and time-exit fills
   - there is no mid or mark gap over `baseline.dm_max_mid_gap_s`
   - `t` is not in a blackout
-  - **(A3.2 b, `baseline.dm_exclude_downtime`)** `t` is not inside a recorded P5 downtime interval (F18.AC8): `process_down`, `data_gap` before resync, `access_degraded`, `disk_low`, a manual `/pause`, or a deploy-wait pause
+  - **(A3.2 b, A4.6, `baseline.dm_exclude_downtime`)** `t` is not inside a recorded **non-discretionary** downtime interval (F18.AC8): `process_down`, `data_gap` before resync, `access_degraded` or `disk_low`
   - `t ∈ [t0, T_eval − hold_i]`
 
-  A test with 10,000 draws finds 0 draws outside the set. Test 22: on a fixture with a 3-hour `/pause` and a 1-hour `process_down`, 10,000 draws from the full set and 10,000 from the relaxed set (F19.AC4) include 0 inside either interval.
+  **Discretionary pauses** (`/pause` and deploy-wait pauses) are **not** excluded from B0d draws (A4.6, `baseline.dm_discretionary_pause_rule`). Instead, for each trade B̄_i = max(mean of all draws, mean of the draws outside the discretionary pause intervals), both computed from the **same draws**. No second draw set is made. With no pause in `[t0, T_eval]`, both means are equal.
+
+  A test with 10,000 draws finds 0 draws outside the set. Test 22: on a fixture with a 3-hour `/pause` and a 1-hour `process_down`, 10,000 draws from the full set and 10,000 from the relaxed set (F19.AC4) include 0 inside the `process_down` interval, and some inside the `/pause` interval. B̄_i on that fixture equals max(all, outside the pause) to 1e-6, and a fixture where the outside-pause mean is the lower one gives the all-draws mean.
 - **F19.AC3 [simulation]** Replication. Each replication:
   - uses the same risk per trade, with its ATR stop and TP from 1h candles that closed before `t`
   - fills at the book recorded at `t + paper.ack_delay_ms`, with its own size
@@ -1075,12 +1207,13 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
 
   Evaluation test 10: when the mid jumps X bps after every leader fill, changing X changes `R_i` and leaves every `B̄_i` unchanged, and doubling `copyreplay.delay_ms` leaves `B̄_i` unchanged.
 - **F19.AC4 [unit]** Missing windows.
+  - The `baseline.dm_min_admissible_hours` (24 h) test is measured with **all** downtime excluded, discretionary pauses included (A4.6). Fixture: a trade whose only admissible hours are inside a `/pause` has less than 24 h and takes the missing-window steps, although its B0d draws may fall in the pause.
   - A trade with less than `baseline.dm_min_admissible_hours` of admissible starts gets `D_i = min(R_i, 0, R_i − B̄_i^partial)`, using the 3-step chain. The step used is recorded.
   - **Relaxed set (step 2, edge-hypothesis §6.2, A3.2 b, A3.3).**
-    - It is `[t0, T_eval − hold_i]`, restricted only by the listing, blackout and P5-downtime conditions of F19.AC2.
+    - It is `[t0, T_eval − hold_i]`, restricted only by the listing, blackout and non-discretionary downtime conditions of F19.AC2. The B̄_i max rule for discretionary pauses applies here too.
     - Where our book or mid recording is missing, a replication uses the coin's median recorded half-spread without the ×1.5 multiplier. Failing that, it uses the major or alt value of `cost.fallback_half_spread_bps` by `cost.fallback_tier_rule` on the random-time side.
     - Its SL/TP path uses exchange 1h candles, with an ambiguous bar resolved TP first.
-  - Test 23, random-time side: a B0d or B0 replication for a coin with no tier record uses the major fallback (2 bps), while a copy replay of the same coin uses the alt fallback (F16.AC6). A tier-2 coin uses 8 bps on both sides.
+  - Test 23, random-time side (A4.7): a B0d, B0, B0b, B1 or B3 replication for a coin with no tier record uses the major fallback (2 bps), while a paper trade, copy replay, reconstruction or shadow of the same coin uses the alt fallback (F16.AC6). A tier-2 coin uses 8 bps on both sides.
   - When more than `baseline.dm_max_missing_share` of S (more than 30 trades) is missing a window, P2c fails.
   - This reproduces `GOLDEN_D`.
 - **F19.AC5 [unit]** P2c.
@@ -1096,12 +1229,18 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - **Verdict:** the verdict; each of P1–P6, P2b and P2c with its value; `LB_r`, `UB_r` and all three intervals for R and D; n and G.
   - **Secondary statistics:** S2, S3 (B0), S4 (B1, top 9 by raw ROI), S5, S6 (weekly blocks), R_maxrisk, FR1–FR6, K9 and the D6 checks.
   - **Execution:** decay(Δ) and edge lost per second, latency p50/p95/p99 per stage, mirror fidelity, and the exit-reason mix.
-  - **Baseline detail:** the B0d mean, and the count of missing windows by step.
+  - **Baseline detail:** the B0d mean (B̄_i as the max rule of F19.AC2), and the count of missing windows by step. For B0d, B0, B0b, B1 and B3, a coin with no tier record is a major (A4.7).
   - **Cross-day diagnostics:** the KM median hold, the midnight-crossing share, and the overlap-component CI with G_ov (labelled "degenerate" below 5, and "P2 fragile" when applicable).
   - **Flattened and marked trades:** the flattened count with realised-minus-shadow R, and the marked trades' later outcomes.
-  - **Missed exits (A3.1):**
+  - **Missed exits (A3.1, A4.1–A4.5):**
     - the count in the window against `eval.missed_exit_max_count`
-    - every missed exit, in the window and after it, with: missed-exit ID, share ID, leader, coin, class, lag, actual R, mirrored lo R, mirrored hi R, gate R, cost, and whether it is in the window
+    - every missed exit, in the window and after it, with: missed-exit ID, share ID, leader, coin, class, lag, actual R, mirrored lo R, mirrored hi R, gate R, incremental cost, the trade cost, and whether it is in the window
+    - **how it was found:** live, reconciliation, or the daily or final fill audit
+    - every **uncomputable mirror**, with the candle or stretch that was missing
+    - the **P4 breach time** and **when it was found**, if any
+    - the **fill-audit coverage per leader:** audited intervals, retries, and any unaudited stretch
+    - every **settled-gap exit**, with its actual R and mirrored lo R
+    - every mirror or shadow fill **priced from candles**, with the candle used (1m or 1h, its hash reference)
     - the total change in ΣR over S caused by the min(actual, mirrored lo) rule
   - **Outside S:** trades after the 300th, shown separately.
   - **Other baselines:** B0b, B2, B3 and B4, plus the shadow mean R labelled exploratory (H3).
@@ -1179,7 +1318,7 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
 
 - **F23.AC1 [integration]** Daily upload and verification.
   - After a UTC day is `day_complete` (F4.AC7), every recording and leaderboard file for that day is uploaded, followed by a day manifest listing each object's path, bytes and sha256. The manifest goes last.
-  - **(A3.4)** Each object is verified by reading it back and comparing its sha256 with the file's ledger sha256 (F4.AC7) and with the manifest. A store-side checksum alone is not enough.
+  - **(A3.4, A4.8 a)** Each object is verified by reading it back and comparing **both hashes** (the stream sha256 and the transport sha256) with the file's ledger record (F4.AC7) and with the manifest. A store-side checksum alone is not enough.
   - A day becomes `archived` only when every object and the manifest verify. The ledger then gets `archive_verified` with the day and the manifest sha256.
   - Against an S3-compatible stub, a 1-day fixture is archived with 0 mismatches. With a stub that corrupts one object, the day stays not archived, the object is re-uploaded, and one alert is sent.
   - A normal day is archived ≤ `storage.upload_deadline_h` after 00:00 UTC.
@@ -1192,15 +1331,15 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - The engine never deletes or overwrites a verified object, and never changes bucket lifecycle rules. The stub records 0 such calls over the whole test suite.
   - Fixture: 10 finished days, with days 1 and 2 not archived and retention 7. After pruning, days 1, 2 and 4–10 are local, and day 3 is deleted.
 - **F23.AC3 [simulation]** Transparent reads.
-  - Replay (F16), B0d (F19), evaluation and reports (F18, F20), reconstruction (F13) and tier computation (F9) read recordings through one store interface. It serves local files first; otherwise it downloads the day from the archive into `storage.cache_dir`, verifies each object's sha256 against the day manifest, then serves it.
+  - Replay (F16), B0d (F19), evaluation and reports (F18, F20), reconstruction (F13) and tier computation (F9) read recordings through one store interface. It serves local files first; otherwise it tries **every ledgered destination, newest first** (F23.AC5), downloading the day into `storage.cache_dir`, verifying each object against the day manifest and both ledger hashes, then serving it.
   - The cache is bounded by `storage.cache_max_gb`, with least-recently-used eviction, and never evicts a file in use.
   - Reading a 3-day fixture through the interface gives byte-identical records whether the days are local or only in the archive.
   - End to end, once F16 and F19 exist (run in F21's integration suite): a 3-day replay run once fully local and once with all 3 days only in the archive gives byte-identical ledgers. The same holds for a B0d D vector (F19.AC6).
   - The point-in-time rule (F4.AC3) holds for archived data.
-  - **Verified on every read (A3.4).** Every read through the store interface verifies the file's sha256 against its ledger record (F4.AC7), whether the file is local or downloaded.
-  - **Lost file (failure case, A3.4; test 24).**
-    - If the local copy fails its hash, the archived copy is tried. A downloaded object that fails is downloaded again for up to `storage.read_retry_max_min`. A copy that fails its hash is never used.
-    - A file is **lost** when no copy matching its ledger sha256 exists: it is absent locally and the archive answers "not found", or every copy fails its hash.
+  - **Verified on every read (A3.4, A4.8 a).** Every read through the store interface verifies **both** the stream sha256 and the transport sha256 of the file against its ledger record (F4.AC7), whether the file is local or downloaded. Recomputation of verdict values uses only verified reads (A4.8 c, F18.AC3).
+  - **Lost file (failure case, A3.4, A4.8; test 24).**
+    - If the local copy fails its hash, every ledgered destination is tried, newest first. A downloaded object that fails is downloaded again for up to `storage.read_retry_max_min`. A copy that fails a hash is never used.
+    - A file is **lost** when no copy matching its ledger hashes exists: it is absent locally and every ledgered destination answers "not found", or every copy fails its hash.
     - A lost file is ledgered once as `recording_file_lost` (path, day, expected sha256, reason), and one alert is sent.
     - From then on, every reader treats the file's time span as a gap in our recording: B0d admissibility (F19), the 1h-candle fallback for shadows and mirrors (F12.AC7, F12.AC9), the replay (F16), tier coverage (F9.AC7) and the gap statistics (F4.AC4).
     - A lost file is never replaced by re-recording, by another data source, or by a copy that doesn't match its hash.
@@ -1215,6 +1354,7 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
 - **F23.AC5 [unit]** Credentials and transport (E2, abuse case).
   - The endpoint, bucket, key ID, secret key and backup encryption key come only from the environment (F1.AC5). With canary values, 0 occurrences appear in logs, the ledger, Telegram payloads, exception traces, object names or object metadata.
   - A non-HTTPS endpoint fails config validation.
+  - **Destination changes (A4.8 d).** The archive destination (endpoint and bucket) is outside the config hash. A change is written to the ledger as `archive_destination_changed` with the time, the old and new destination (never credentials), and the reason. It is **not** a config change and **not** a deploy, so it never makes a run ABORTED and needs no ruling. The reason is that the destination changes where copies live, and every read is verified against the ledger hashes, so it cannot change any value. Retention, cache size and upload timings (`storage.local_retention_days`, `storage.cache_max_gb`, `storage.upload_delay_min`, `storage.upload_deadline_h`) **stay in the config hash**. Fixture: changing the bucket mid-run leaves the config hash and the run running, writes one ledger record, and reads then try the new destination first and the old one after it. Changing `storage.local_retention_days` mid-run is ABORTED (F17.AC4).
   - With any credential missing: recording continues locally, nothing is uploaded or pruned, one alert is sent per `storage.alert_interval_h`, `/status` shows `archive: not configured`, and `run start` refuses (F17.AC2).
 - **F23.AC6 [integration]** Upload failure and backlog (failure case).
   - On an upload or verification failure, local data is kept, the upload is retried every `storage.retry_interval_min`, and one alert is sent per `storage.alert_interval_h` stating the backlog in days and GB.
@@ -1321,6 +1461,8 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
 | `recording.disk_floor_free_gb` | Hard floor: recording stops, opens and adds refused; room kept for the ledger | GB | 8 | 5 (hard floor) | – | PM (A10, A18) |
 | `recording.disk_resume_margin_gb` | Free space above the floor needed to resume recording | GB | 2 | 1 | 20 | PM |
 | `recording.max_gb_per_day` | Compressed recording budget, checked in the 24h dry run | GB/day | 1.5 | 0.1 | 5 | PM (A10) · VAL-R |
+| `recording.segment_hash_minutes` | Period of the hash-chained segment record; data not covered by a ledgered hash is a gap (F4.AC7) | min | 5 | fixed | fixed | EH A4.8 b · FROZEN |
+| `recording.candle_store` | Hourly store of 1m and 1h exchange candles for every coin with an open share, shadow or mirror, hashed like recordings (F4.AC9) | enum | hourly_1m_1h_hashed | fixed | fixed | EH A4.2 · FROZEN |
 
 ### 3.4 Scoring and selection (EH §9.1, §10)
 | Key | Meaning | Unit | Default | Min | Max (hard ceiling) | Source |
@@ -1381,7 +1523,7 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
 |---|---|---|---|---|---|---|
 | `markets.allowed_dexes` | Tradable dexes | list | core | core | core (fixed) | PO · FROZEN |
 | `tiers.lookback_days` | Recorded window for the tier metrics | days | 7 | 3 | 30 | PM (A6) · VAL-R |
-| `tiers.recompute_interval_h` | Tier recompute period outside a run | h | 24 | 1 | 168 | PM (A6) |
+| `tiers.recompute_interval_h` | Tier recompute period. During a run the cadence is 24 h (EH A4.7); each table is ledgered and in force from its ledger time (F9.AC8). See Assumption A26 | h | 24 | 1 | 168 | PM (A6) · EH A4.7 |
 | `tiers.max_age_h` | Oldest usable tier table outside a run, and at run start | h | 48 | 2 | 336 | PM (A6) |
 | `tiers.depth_band_pct` | Band around mid for the depth metric | % | 0.5 | 0.1 | 2.0 | PM (A6) · VAL-R |
 | `tiers.tier1_min_depth_usd` | Tier 1: median min-side depth within the band; must be ≥ the floor value | USD | 1,000,000 | = floor value | – | PM (A6) · VAL-R · OF |
@@ -1517,14 +1659,20 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
 | `eval.baseline_gate` | B0d lower-bound gate, non-removable | enum | direction_matched_random_time | fixed | fixed | PO + EH · FROZEN |
 | `eval.max_dd` / `eval.mark_interval_s` | P3 threshold and mark cadence (also the risk pause) | fraction / s | 0.15 / 60 | fixed | fixed | PO · FROZEN |
 | `eval.max_downtime_fraction` | P5 | fraction | 0.02 | fixed | fixed | PO · FROZEN |
-| `eval.show_interim_stats` | Interim visibility. `descriptive_only`: `/stats` and reports show the §5.5 list (F14.AC9); the gate statistics in §5.5 are never computed or shown before `T_eval` (F14.AC6, F18.AC10) | enum | descriptive_only | fixed | fixed | PO (A14) · EH A3.2 · FROZEN |
+| `eval.show_interim_stats` | Interim visibility. `descriptive_only`: run-result content before `T_eval` appears only in `/stats` (F14.AC9) and each trade's own post; operational content stays allowed with no pass/fail label; the gate statistics in §5.5 are never computed or shown before `T_eval` (F14.AC6, F18.AC10, EH A4.11) | enum | descriptive_only | fixed | fixed | PO (A14) · EH A3.2 · FROZEN |
 | `eval.missed_exit_max_count` | F2 fires when more than this many missed exits have a leader event in `[t0, T_eval]`, counted over all trades | count | 3 | fixed | fixed | PO (A4) · EH A3.1 · FROZEN |
 | `eval.missed_exit_max_cost_r` | F2 fires when any missed-exit trade's cost (mirrored hi R − actual R, rounded to 1e-6) exceeds this | R | 1.0 | fixed | fixed | PO (A4) · EH A3.1 · FROZEN |
 | `eval.missed_exit_gate_rule` | Gate R = min(actual, mirrored lo); evaluation close = the later of the real close and the mirror exit | enum | min_actual_mirrored | fixed | fixed | PO (A4) · EH A3.1 · FROZEN |
-| `eval.missed_exit_gap_rule` | Ambiguous 1h bar in a mirror: stop first (lo) for the gate and P3, TP first (hi) for the cost | enum | stop_first_gate_tp_first_cost | fixed | fixed | EH A3.1 · FROZEN |
-| `baseline.dm_exclude_downtime` | No B0d start time (full or relaxed set) inside a recorded P5 downtime interval, `/pause` included | bool | true | fixed | fixed | EH A3.2 b · FROZEN |
-| `cost.fallback_tier_rule` | Major = tier 1 at decision time; no tier record = alt for copies, major for random-time baselines (§1) | enum | tightest_tier_conservative | fixed | fixed | EH A3.3 · FROZEN |
-| `eval.recording_integrity` | Lossless compression; per-file sha256 in the ledger, verified on every read; local delete only after a verified read-back upload; a missing or failed file is a recording gap; the recorder runs the run commit during a run | enum | lossless_hashed_verified | fixed | fixed | EH A3.4 · FROZEN |
+| `eval.missed_exit_gap_rule` | Ambiguous bar and fills in a mirror over a gap: stop first and lo candle prices (worst + 8 bps) for the gate and P3, TP first and hi candle prices (best + 2 bps) for the cost; 1m candle, else 1h; SL/TP at the trigger or a gapped-through open | enum | candle_lo_stop_first_hi_tp_first | fixed | fixed | EH A3.1, A4.2 · FROZEN |
+| `eval.missed_exit_cost_rule` | Incremental cost of each missed exit and trade cost, each tested against `eval.missed_exit_max_cost_r`; actual R = realised R; an uncomputable mirror counts as > 1R with lo = actual and exit = real close | enum | incremental_and_trade_hi | fixed | fixed | EH A4.2, A4.3 · FROZEN |
+| `eval.p4_breach_time` | Breach time = the 4th exit's event time (event order), or when a cost is established (capped at `T_eval`), or the first missed exit's time for an uncomputable mirror, or the start of an unaudited stretch; ABORTED wins only when strictly earlier | enum | earliest_event_order | fixed | fixed | EH A4.4 · FROZEN |
+| `eval.settled_gap_rule` | An exit inside a data gap handled within 60 s of the resync is not a missed exit; its trade counts at min(actual, mirrored lo) | enum | settled_min_lo | fixed | fixed | EH A4.5 · FROZEN |
+| `eval.fill_audit_interval_h` | Leader-fill audit period, for every leader with a share open since the last audit; a final audit up to `T_eval`; audits continue after `T_eval` until all shares close | h | 24 | fixed | fixed | EH A4.1 · FROZEN |
+| `eval.missing_data_retry_max_h` | Retry bound for an incomplete audit stretch or an uncomputable mirror, from the first attempt; after it, a P4 breach | h | 72 | fixed | fixed | EH A4.1, A4.2 · FROZEN |
+| `baseline.dm_exclude_downtime` | No B0d start time (full or relaxed set) inside a recorded **non-discretionary** downtime interval: `process_down`, `data_gap` before resync, `access_degraded`, `disk_low`. The 24 h missing-window test is measured with all downtime excluded | bool | true | fixed | fixed | EH A3.2 b, A4.6 · FROZEN |
+| `baseline.dm_discretionary_pause_rule` | `/pause` and deploy-wait pauses are not excluded from B0d draws; B̄_i = max(mean of all draws, mean of draws outside the pause), from the same draws | enum | max_all_outside_pause | fixed | fixed | EH A4.6 · FROZEN |
+| `cost.fallback_tier_rule` | Major = tier 1 at decision time. No tier record = alt for paper trades, replays, reconstruction and shadows; major for B0d, B0, B0b, B1 and B3 (§1) | enum | tightest_tier_conservative | fixed | fixed | EH A3.3, A4.7 · FROZEN |
+| `eval.recording_integrity` | Lossless compression; a stream sha256 and a transport sha256 per file in the ledger, both verified on every read; a hash-chained segment record every 5 min (unhashed data is a gap); local delete only after a verified read-back upload; reads try local, then every ledgered destination, newest first; a missing or failed file is a recording gap; verdict values recomputed from verified data; the recorder runs the run commit during a run. The storage destination is outside the config hash (a ledgered change); retention, cache size and upload timings stay inside it | enum | lossless_hashed_verified | fixed | fixed | EH A3.4, A4.8 · FROZEN |
 | `baseline.dm_costs` | Fees + own-time book + own ack drift + funding; no decay; R from fills | enum | own_time_no_decay | fixed | fixed | EH A1.1/A2.3 · FROZEN |
 | `baseline.dm_min_admissible_hours` / `baseline.dm_max_missing_share` | Missing-window rule | h / fraction | 24 / 0.10 | fixed | fixed | EH · FROZEN |
 | `baseline.dm_missing_rule` | min(R, 0, R − B̄_partial) with the 3-step chain | enum | min_r_0_partial | fixed | fixed | EH A2.3 · FROZEN |
@@ -1568,6 +1716,8 @@ The quant-researcher reviews them against `summary.json` before the config is fr
 | Leader fill → decision (S1 + S2 + S3) | ≤ 800 ms | ≤ 1,700 ms | ≤ 3,300 ms | At least 95% of signals decided within 5 s |
 | Leader exit receive → our close decision | ≤ 20 ms | ≤ 60 ms | ≤ 150 ms | The exit path |
 | Missed exit detected → alert sent | ≤ 5 s | ≤ 30 s | ≤ 60 s | F12.AC6. The cost follows within 5 min of the later of the share's close and its mirror exit, or at `T_eval` (F12.AC9) |
+| Daily fill audit, per leader | ≤ 30 s | ≤ 2 min | ≤ 10 min | F12.AC10; an audit interval is retried for up to 72 h, then it is a P4 breach |
+| Hourly candle fetch and store, per hour | ≤ 30 s | ≤ 2 min | ≤ 10 min | F4.AC9; a missing candle is retried for up to 72 h |
 | Mark crossing SL/TP → close decision | ≤ 50 ms | ≤ 200 ms | ≤ 1,000 ms | |
 | Entry fill → Telegram post sent | ≤ 2 s | ≤ 5 s | ≤ 15 s | Subject to Telegram limits |
 | Telegram command → reply | ≤ 1 s | ≤ 3 s | ≤ 10 s | |
@@ -1597,7 +1747,8 @@ The quant-researcher reviews them against `summary.json` before the config is fr
 - A replay of 7 days × 9 wallets takes ≤ 60 min.
 - The report regenerates in ≤ 10 min from computed baselines.
 - These budgets hold with every input day local, and they include the sha256 verification of every file read (F23.AC3). When days must first be downloaded from the archive, the download time is extra and is reported separately.
-- The verdict is computed no earlier than `T_eval` + 60 s, after the reconciliation pass (F18.AC3). The 4 h budget starts from then.
+- The verdict is computed no earlier than `T_eval` + 60 s, after the reconciliation pass, the final fill audit and the recomputation from verified data (F18.AC3), and no later than 72 h after `T_eval` (A4.1). The 4 h budget starts from then.
+- The fill-audit and candle requests use the reconciliation and exit priority class of F3.AC1 and never exceed the REST budget.
 
 **Cost:**
 - Total ≤ $50/month.
@@ -1637,11 +1788,12 @@ The default is **fail closed for opens and adds, never for exits**.
 | Free disk below the hard floor | F4.AC5 | Recorder flushes and stops safely; opens and adds refused `disk_low` (downtime); exits, ledger and uploads continue | Alert "recording stopped: disk floor" | Automatic resume above floor + margin; the gap counts under edge-hypothesis §14 item 8 |
 | Archive upload or verification fails | F23.AC1 / F23.AC6 | Keep local data; retry; never prune the day | Alert with the backlog (days, GB) | Automatic on success; if the backlog reaches the disk floor, see the row above |
 | Storage credentials missing | F23.AC5 | Record locally; no upload or pruning; `run start` refused | Alert; `/status` shows `archive: not configured` | PO sets the env variables |
-| Recording file fails its ledger sha256, or is missing | F23.AC3 | Try the other copy (local or archive) and re-download for `storage.read_retry_max_min`; never use a failing copy. With no matching copy, the file is **lost**: ledgered once and treated as a recording gap by every reader | Alert `recording_file_lost` with the file and day | None for the file: it is never re-recorded or replaced (A3.4). Its effect goes through B0d admissibility, the 1h-candle fallback for shadows and mirrors, and D6 (edge-hypothesis §14 item 8). A bad archived copy is re-uploaded from a local copy only if that copy matches the ledger sha256. |
+| Recording file fails its ledger sha256, or is missing | F23.AC3 | Try every ledgered destination, newest first, and re-download for `storage.read_retry_max_min`; never use a failing copy. With no matching copy, the file is **lost**: ledgered once and treated as a recording gap by every reader | Alert `recording_file_lost` with the file and day | None for the file: it is never re-recorded or replaced (A3.4). Its effect goes through B0d admissibility, the 1h-candle fallback for shadows and mirrors, and D6 (edge-hypothesis §14 item 8). A bad archived copy is re-uploaded from a local copy only if that copy matches the ledger sha256. |
 | Archive unreachable during a batch read | F23.AC3 | Retry for `storage.read_retry_max_min`, then the batch job exits non-zero | Error naming the day | Re-run when reachable; trading is unaffected |
 | Ledger backup fails | F23.AC4 | Retry; trading continues | Alert | Automatic; `run start` refused after 48 h without a verified backup |
 | Projected storage cost ≥ 80% of $5/month | F23.AC7 | Keep uploading | Daily alert | PO decides (A21) |
 | Tier table missing or stale | F9.AC8 | Refuse opens with `untiered`; exits continue; `run start` refused | Alert | Next recompute with enough coverage |
+| Tier table in force that the frozen rule does not reproduce | F17.AC4 | Run → ABORTED. A table the rule reproduces (each 24 h recompute) is not a config change | Alert "run ABORTED: tier table" | Run 2 needs a new run record |
 | No leverage within the ceiling fits the margin, or liquidation too close | F10.AC4 | Refuse the open or add (`insufficient_margin` / `liq_too_close`); never an exit | Logged refusal; counted in the daily report | None needed |
 | Telegram API down | Send errors | Queue messages (F14.AC8); trading continues; the kill switch stays available on the CLI | Delayed posts | Queue drains in order |
 | LLM down, timeout or over budget | F15 | Post without "why"; try Ollama | "why unavailable" | Automatic; the budget resets monthly |
@@ -1655,8 +1807,10 @@ The default is **fail closed for opens and adds, never for exits**.
 | Daily or weekly loss limit | F10.AC5 | Halt opens and adds until reset (not downtime) | Alert once | Automatic at reset |
 | Missed exit detected (including during an entry pause, on a trade outside S, or after `T_eval`) | F12.AC6 | Bring the share in line with the leader. Build the mirror (F12.AC9) and, once the trade and its mirror have both closed, store gate R = min(actual, mirrored lo) and cost = mirrored hi − actual. Write go-live blocker ME. Entries are not paused. | Alert "missed exit n/3, go-live blocker ME", then a second alert with the cost | The run continues unless F2 fires (next row). ME stays until explained and fixed at /go-live. Run 2 needs a resolution record (F17.AC9). A fix during the run is a deploy (F17.AC3); the recommended route is to fix it after `T_eval`. |
 | 4th missed exit with a leader event in `[t0, T_eval]`, or a missed-exit trade whose cost > 1R (edge-hypothesis A3.1) | F18.AC11, F18.AC7 | FAIL (F2) at the ledgering of the 4th missed exit, or when the trade and its mirror have both closed, or at `T_eval` with the open side marked; the run ends; the bot pauses | Alert "missed-exit limit, run FAIL (K13): engineering failure, not evidence about the edge" | The run is over. Explain and fix every missed exit before run 2 (K13, F17.AC9). |
-| Missed-exit cost can't be computed (book missing and exchange candles unreachable) | F12.AC9 | Retry; no cost is guessed; the verdict is not computed while any cost in the window is pending | Alert per `storage.alert_interval_h` | Automatic when the data is reachable |
-| Verdict time reached | F18.AC3 | Wait until `T_eval` + 60 s and one reconciliation pass over every share open at `T_eval`, then compute | None | – |
+| Missed-exit cost can't be computed (book missing and exchange candles unreachable) | F12.AC9 | Retry every `storage.retry_interval_min`; no cost is guessed for up to 72 h. **After 72 h it is F2 (K13):** the cost counts as > 1R, lo = actual R, mirror exit = the real close, breach time = the first missed exit's leader event time | Alert per `storage.alert_interval_h`; "cost pending", then the F2 alert | Automatic if the data arrives within 72 h. After that the FAIL stands; fix the cause before run 2. |
+| Incomplete leader-fill audit (API unreachable or a page truncated) | F12.AC10 | Retry every `storage.retry_interval_min` for up to 72 h from the first attempt. **After 72 h a stretch of `[t0, T_eval]` still unaudited is a P4 breach (F2, K13)** at the stretch's start; the verdict waits for the final audit, bounded at 72 h. An unaudited stretch after `T_eval` is listed with ME | Alert per `storage.alert_interval_h`; the audit coverage in the report | Automatic if the fills are retrieved within 72 h. After that the FAIL stands. |
+| Verdict time reached | F18.AC3 | Wait until `T_eval` + 60 s, one reconciliation pass over every share open at `T_eval`, the final fill audit, and recomputation from hash-verified data; bounded at 72 h, then compute | None | – |
+| Archive destination changed | F23.AC5 | Ledger `archive_destination_changed`; reads try local, then every ledgered destination, newest first; not a config change or deploy | None | – |
 | Unauthorized Telegram command | F14.AC1 | Refuse; audit | Throttled alert | – |
 | Repeated wrong PIN | F14.AC5 | Lock `/flatten` in Telegram | Alert | Lockout expires; CLI flatten still works |
 | NTP or offset source unreachable | Estimate age grows | After `clock.max_estimate_age_s`, refuse opens and adds | Alert | Automatic |
@@ -1679,7 +1833,7 @@ The default is **fail closed for opens and adds, never for exits**.
 | Invariant | Enforced by |
 |---|---|
 | A1 single chokepoint | F10.AC1 |
-| A2 fail closed | F1.AC1, F10.AC7, F5.AC3, F8.AC3, F3.AC5, F4.AC5, F9.AC7–AC8 (below floor, untiered), F10.AC4 (no fitting leverage), F12.AC9 and F18.AC11 (no verdict while a missed-exit cost is pending), F17.AC2 (recorder not on the run commit), F23.AC3 (every read hash-verified; a failing copy is never used), §5 |
+| A2 fail closed | F1.AC1, F10.AC7, F5.AC3, F8.AC3, F3.AC5, F4.AC5, F9.AC7–AC8 (below floor, untiered), F10.AC4 (no fitting leverage), F12.AC9, F12.AC10 and F18.AC11 (an uncomputable mirror or incomplete audit is F2 after 72 h, never a pass; no guessed cost), F17.AC2 (recorder not on the run commit), F23.AC3 (every read hash-verified; a failing copy is never used), §5 |
 | A3 hard limits in config (notional, leverage, open positions, per-symbol exposure, daily loss, orders/min) | F1.AC2, F10.AC3–AC5, F10.AC10 (leverage ceilings 5x/10x and the compiled high-leverage coin set); §3.6 |
 | A4 kill switch (CLI + Telegram, persistent, tested) | F10.AC6, F14.AC4–AC5, F13.AC4 |
 | A5 idempotency / deterministic client order IDs | F10.AC8, F7.AC2, F2.AC3, F13.AC5 |
@@ -1696,7 +1850,7 @@ The default is **fail closed for opens and adds, never for exits**.
 | C1 verified fills and minimum sample | F5.AC3, F5.AC6 |
 | C2 size by our risk budget | F10.AC2 (the mirror is only an upper bound; the risk cap always applies) |
 | C3 slippage guard | F9.AC1 (thresholds by liquidity tier), F9.AC7 |
-| C4 mirror closes, reductions and flips; no orphans | F12.AC3, AC4, AC5, AC6, AC8, AC9; a missed exit is always go-live blocker ME (F20.AC4), and run 2 needs its resolution (F17.AC9) |
+| C4 mirror closes, reductions and flips; no orphans | F12.AC3, AC4, AC5, AC6, AC8, AC9, AC10 (the fill audit); a missed exit is always go-live blocker ME (F20.AC4), and run 2 needs its resolution (F17.AC9) |
 | C5 independent leaders in consensus | **N/A:** no consensus voting exists. Each leader is a separate share. Correlated leaders' stacking is bounded by the per-coin, BTC-bucket and per-leader caps (F10.AC3). |
 | C6 end-to-end latency measured and exported | F7.AC6, F21.AC3, F20.AC1, §4 |
 | D1 no look-ahead | F4.AC3, F5.AC5, F9.AC2, F9.AC7 (tiers from data received ≤ computation time), F16.AC2, F23.AC3 |
@@ -1733,13 +1887,15 @@ The default is **fail closed for opens and adds, never for exits**.
 - B0d and P2c: F19
 - Go-live blockers and diagnostics: F20
 - Visibility (§5.5, A3.2): F14.AC6, F14.AC9 and F18.AC10; interim-result deploys (A3.2 c): F17.AC3
-- Missed-exit rule (P4/F2, A3.1): F12.AC6, F12.AC9, F18.AC3, F18.AC4, F18.AC6, F18.AC7, F18.AC9, F18.AC11 and F20.AC1; ME and K13: F20.AC4 and F17.AC9
+- Missed-exit rule (P4/F2, A3.1, A4.1–A4.5): F12.AC5, F12.AC6, F12.AC9, F12.AC10, F4.AC9, F18.AC3, F18.AC4, F18.AC6, F18.AC7, F18.AC9, F18.AC11 and F20.AC1; ME and K13: F20.AC4 and F17.AC9
 - `/flatten` shadow: F12.AC7 and F18.AC3
-- B0d downtime exclusion (A3.2 b): F19.AC2 and F19.AC4
-- Fallback tier rule (A3.3): §1, F13.AC1, F16.AC6 and F19.AC4
-- Recording integrity (A3.4): F4.AC7, F4.AC8, F17.AC2, F17.AC3, F23.AC1, F23.AC2 and F23.AC3
+- B0d downtime exclusion and the discretionary-pause max rule (A3.2 b, A4.6): F19.AC2 and F19.AC4
+- Fallback tier rule and untiered coins (A3.3, A4.7): §1, F13.AC1, F16.AC6, F19.AC4, F20.AC1; tier table in a run (A4.7): F9.AC8, F17.AC1 and F17.AC4
+- Recording integrity (A3.4, A4.8): F4.AC7, F4.AC8, F4.AC9, F17.AC2, F17.AC3, F23.AC1, F23.AC2, F23.AC3 and F23.AC5
+- Visibility of run-result content (A4.11): F14.AC6, F14.AC7, F14.AC9 and F18.AC10
+- Conformance oracle E16 (A4.12): F18.AC1
 - Run register: F17.AC6
-- Evaluation tests 1–24 (§10.8): covered across F4, F12, F14, F16, F17, F18, F19, F20 and F23; the test plan maps each. Tests 21–24 map to F12.AC6/AC9 and F18.AC3/AC11 (21), F19.AC2 (22), F16.AC6 and F19.AC4 (23), and F4.AC7, F17.AC2/AC3 and F23.AC2/AC3 (24).
+- Evaluation tests 1–24 (§10.8): covered across F4, F12, F14, F16, F17, F18, F19, F20 and F23; the test plan maps each. Tests 21–24 map to F12.AC6/AC9 and F18.AC3/AC11 (21), F19.AC2 (22), F16.AC6 and F19.AC4 (23), and F4.AC7, F17.AC2/AC3 and F23.AC2/AC3 (24). Tests 25–29 (A4) map to F12.AC5/AC10 (25), F12.AC9 and F4.AC9 (26), F12.AC9 and F18.AC11 (27), F18.AC6/AC7 (28), and F12.AC6 (29). The numbering of tests 25–29 follows the A4 table and is to be confirmed against §10.8.
 
 ---
 
@@ -1769,7 +1925,7 @@ The epic is done, meaning **run-1-ready**, when all of the following hold:
    - The full test suite passes on Windows 10/11 with the pinned lockfile (F21.AC5).
    - Every test that proves an AC fails before its implementation.
    - The mutation threshold set by /onboard is met for `risk`, `paper`, `positions`, `evaluation`, `baselines` and `archive`.
-3. **Conformance.** The evaluation reproduces every E15 golden vector (`eval_reference.py` v3, including `GOLDEN_MISSED` and `GOLDEN_MISSED_CLOSE`), and all 16 E15 mutants are killed (F18.AC1).
+3. **Conformance.** The evaluation reproduces every E16 golden vector (`eval_reference.py` v4, including `GOLDEN_MISSED`, `GOLDEN_MISSED_CLOSE` and the `GOLDEN_A4_*` vectors), and all 31 E16 mutants are killed (F18.AC1).
 4. **Reviews.** No BLOCKING finding is open from /review or /qa.
 5. **24h dry run.**
    - ≥ 24 h continuous, full pipeline, live mainnet data, dry-run mode, on the PO's PC (F21.AC2).
@@ -1801,8 +1957,8 @@ The epic is done, meaning **run-1-ready**, when all of the following hold:
     - `run start` refuses on a dirty tree, and while the recorder runs from another worktree (both demonstrated).
 11. **Acknowledgements.**
     - The PO's acknowledgement of section-14 items 1–8 is recorded. It already is: `decisions.md`, 2026-09-29.
-    - The PO's acknowledgement of section-14 **items 9 (missed exits) and 10 (`/stats`)**, added by edge-hypothesis A3.7, is recorded in `decisions.md`. The edge-hypothesis makes this a run-1 precondition (header and §8.1).
-    - Edge-hypothesis Addendum A3 is committed and dated before run 1. It is. The ACs marked provisional in Amendment 1 were reconciled with it in Amendment 2.
+    - The PO's **re-acknowledgement** of section-14 **items 9 (missed exits) and 10 (`/stats`)**, as rewritten in plain language by edge-hypothesis A4.9, is recorded in `decisions.md`. An acknowledgement of the A3 wording does not satisfy this. **It is pending.** The edge-hypothesis makes it a run-1 precondition (header and §8.1).
+    - Edge-hypothesis Addenda A3 and A4 are committed and dated before run 1. They are. The ACs were reconciled with A3 in Amendment 2 and with A4 in Amendment 4.
 12. **No live path.** No live order path exists in the build (F1.AC3).
 13. **Tiers validated.** The VAL-R tier thresholds have been reviewed against recorded data in the readiness report, and the tier table in force at config freeze is shown to the PO with its tier-1, tier-2 and below-floor coins.
 
@@ -1824,7 +1980,9 @@ The epic is done, meaning **run-1-ready**, when all of the following hold:
 
 **Critical path:** F1 → F3 → F4/F7 → F9/F10/F11 → F12 → F16 → F20/F21. F23 is off the critical path but must pass before the recording worktree nears the disk alert threshold, and before run 1. F22 is off the critical path and is the first to be dropped under schedule pressure.
 
-**Edge-hypothesis A3:** committed. The A3-derived vectors are final: F12.AC6/AC9, F14.AC6/AC9, F18.AC1/AC3/AC4/AC6/AC7/AC10/AC11, F19.AC2/AC4 and the F23 integrity cases. /tests takes them from A3 tests 21–24 and the E15 literals. If /tests finds a gap between this spec and A3, A3 wins, and the PM is asked to amend.
+**Edge-hypothesis A3 and A4:** committed. The A3- and A4-derived vectors are final: F4.AC7/AC9, F9.AC8, F12.AC5/AC6/AC9/AC10, F14.AC6/AC9, F17.AC4, F18.AC1/AC3/AC4/AC6/AC7/AC10/AC11, F19.AC2/AC4, F20.AC1 and the F23 integrity cases. /tests takes them from A3 tests 21–24, A4 tests 25–29 and 22–24 as amended, and the E16 literals (`GOLDEN_A4_*`). If /tests finds a gap between this spec and A3 or A4, the addendum wins, and the PM is asked to amend.
+- **Candle store wiring (F4.AC9).** F4 (wave 2) owns the store and a request interface. The set of coins with an open share, shadow or mirror comes from F12 (wave 4) through that interface, so F4 tests use a stub set. F21 wires the two together, and the end-to-end candle fixture runs in F21's integration suite.
+- **Fill audit (F12.AC10)** is owned by F12 and uses F3's `userFillsByTime` and F4's store interface only.
 
 **File-ownership map.**
 - A feature may create or modify only the paths it owns.
@@ -1836,7 +1994,7 @@ The epic is done, meaning **run-1-ready**, when all of the following hold:
 | F1 | Project metadata file and lockfile (**shared**; dependency additions are CTO-serialized); `engine-path-set.txt`; `src/copytrade/core/**` (config loader, ceilings, mode, money/units, clock, secrets, domain types, events); `src/copytrade/cli/main.*` (subcommand registry); `config/platform.*`; `tests/core/**` | – |
 | F2 | `src/copytrade/ledger/**`; `src/copytrade/cli/ledger.*`; `config/ledger.*`; `tests/ledger/**` | core |
 | F3 | `src/copytrade/hl/**`; `config/hl.*`; `tests/hl/**` | core, ledger |
-| F4 | `src/copytrade/recorder/**` (writers, compressed day-partitioned format, disk guard, and the store **interface** with its local implementation); `src/copytrade/cli/recorder.*`; `config/recording.*`; `tests/recorder/**` | hl, ledger |
+| F4 | `src/copytrade/recorder/**` (writers, compressed day-partitioned format with stream and transport hashes and segment records, hourly candle store, disk guard, and the store **interface** with its local implementation); `src/copytrade/cli/recorder.*`; `config/recording.*`; `tests/recorder/**` | hl, ledger |
 | F5 | `src/copytrade/scoring/**`; `config/scoring.*`; `tests/scoring/**` | core; hl and recorder interfaces |
 | F6 | `src/copytrade/selection/**`; `config/selection.*`; `tests/selection/**` | scoring, hl, recorder, ledger |
 | F7 | `src/copytrade/signals/**`; `src/copytrade/cli/latency.*`; `config/markets.*`; `tests/signals/**` | hl, ledger |
@@ -1844,18 +2002,18 @@ The epic is done, meaning **run-1-ready**, when all of the following hold:
 | F9 | `src/copytrade/filters/**` (including the liquidity-tier computation and the tier table in force); `config/filter.*`; `config/tiers.*`; `tests/filters/**` | signals, calendar, recorder (store interface) |
 | F10 | `src/copytrade/risk/**` (gate, sizing, caps, automatic leverage, kill-switch state); `src/copytrade/cli/killswitch.*`; `config/risk.*`; `tests/risk/**` | paper (broker interface and liquidation model), ledger |
 | F11 | `src/copytrade/paper/**`; `config/paper.*`; `tests/paper/**` | recorder, hl, ledger |
-| F12 | `src/copytrade/positions/**` (shares, exits, mirroring, reconciliation, missed-exit detector, shadows); `config/exits.*`; `tests/positions/**` | risk, paper, signals |
+| F12 | `src/copytrade/positions/**` (shares, exits, mirroring, reconciliation, missed-exit detector, leader-fill audit, candle-priced mirror and shadow fills, shadows); `config/exits.*`; `tests/positions/**` | risk, paper, signals |
 | F13 | `src/copytrade/recovery/**`; `config/restart.*`; `tests/recovery/**` | positions, hl, recorder |
 | F14 | `src/copytrade/telegram/**` (including `/stats`); `src/copytrade/reports/**`; `config/telegram.*`; `tests/telegram/**` | risk, positions, ledger, llm interface. **Never** evaluation or baselines (F14.AC6). |
 | F15 | `src/copytrade/llm/**`; `config/llm.*`; `tests/llm/**` | ledger |
 | F16 | `src/copytrade/replay/**`; `src/copytrade/cli/replay.*`; `config/replay.*`; `tests/replay/**` | signals, filters, risk, paper, positions, recorder |
 | F17 | `src/copytrade/run/**`; `src/copytrade/cli/run.*`; `tests/run/**` | core, ledger, calendar, filters (tier table), archive (health) |
-| F18 | `src/copytrade/evaluation/**`; `config/eval.*`; `tests/evaluation/**` (including golden literals copied from E15) | ledger |
+| F18 | `src/copytrade/evaluation/**`; `config/eval.*`; `tests/evaluation/**` (including golden literals copied from E16) | ledger |
 | F19 | `src/copytrade/baselines/**`; `config/baseline.*`; `tests/baselines/**` | evaluation, paper (fill model), recorder, ledger (downtime intervals, tier records) |
 | F20 | `src/copytrade/reporting/**`; `src/copytrade/cli/report.*`; `config/report.*`; `tests/reporting/**` | evaluation, baselines, replay |
 | F21 | `src/copytrade/app/**` (supervisor and wiring); `src/copytrade/cli/app.*`; `tests/app/**`; `docs/sdlc/copytrade-v1/run-worktree.md` | everything |
 | F22 | `src/copytrade/okx/**`; `config/okx.*`; `tests/okx/**` | ledger |
-| F23 | `src/copytrade/archive/**` (uploader, verifier, pruner, archive-backed store implementation, ledger backup and restore, cost projection); `src/copytrade/cli/archive.*`; `config/storage.*`; `tests/archive/**` (including the S3-compatible stub) | recorder (store interface, day files), ledger, core |
+| F23 | `src/copytrade/archive/**` (uploader, verifier, pruner, archive-backed store implementation reading every ledgered destination newest first, destination ledgering, ledger backup and restore, cost projection); `src/copytrade/cli/archive.*`; `config/storage.*`; `tests/archive/**` (including the S3-compatible stub) | recorder (store interface, day files), ledger, core |
 
 **Collision rules.**
 1. The config tree is split one file per area, so parallel features never edit the same config file. The config hash covers all of `config/**`.
@@ -1863,7 +2021,7 @@ The epic is done, meaning **run-1-ready**, when all of the following hold:
 3. The CLI registry (`cli/main.*`) discovers `cli/<area>.*` files, so features don't edit it.
 4. `engine-path-set.txt` lists directory globs, so new modules under `src/copytrade/**` and `data/inputs/**` don't require editing it.
 5. `storage.ledger_dir` and `storage.recordings_dir` stay in `config/platform.*` (F1). Every other `storage.*` key lives in `config/storage.*` (F23).
-6. Readers of recordings (F9, F12, F13, F16, F19, F20) depend only on F4's store interface. F23 provides the archive-backed implementation, with hash verification on every read and the lost-file gap rule (F23.AC3), and F21 wires it in, so no reader changes when F23 lands.
+6. Readers of recordings (F9, F12, F13, F16, F19, F20) depend only on F4's store interface. F23 provides the archive-backed implementation, with both-hash verification on every read, the every-ledgered-destination read order and the lost-file gap rule (F23.AC3, A4.8), and F21 wires it in, so no reader changes when F23 lands.
 7. **Run-version startup guard (A3.4).** F17 owns the guard in `src/copytrade/run/**` that F17.AC2/AC3 describe. F4 and F23 ship before F17, and only write their `component_start` records (F4.AC8). When F17 lands, a small CTO-serialized commit wires the guard into the recorder and archive entry points (`cli/recorder.*`, `cli/archive.*`). F21 wires it into `app/**`, and its integration suite proves the recorder pinning end to end (test 24). A run can't start before F21 passes /verify, so no run exists without the guard.
 
 ---
@@ -1876,6 +2034,12 @@ None of these contradicts a PO decision. Each fills a gap the PO hasn't ruled on
 - **Accepted by the PO** ("Other points OK"): A1, A3, A5, A7, A8, A11, A12, A13, A15 and A16.
 - **Replaced by PO decisions** (Spec review, `decisions.md`), rewritten below: A2, A4, A6, A9, A10 and A14.
 - **New, pending PO confirmation:** A17 to A23. Each follows from applying the Spec review decisions.
+
+**Status (Amendment 4, 2026-09-29):**
+- **A20 is replaced by edge-hypothesis A4.2** and is no longer an assumption.
+- **A25 is confirmed** by A4.11.
+- **A26 is new** (below), for the A4 author or PO to confirm.
+- **PO action:** DoD item 11 needs the PO's re-acknowledgement of §14 items 9 and 10 as rewritten by A4.9.
 
 **Status (Amendment 2, 2026-09-29):**
 - **Rewritten to match edge-hypothesis A3:** A4 (A3.1), A14 (A3.2), A16 (A3.4) and A20 (A3.1).
@@ -1906,9 +2070,10 @@ None of these contradicts a PO decision. Each fills a gap the PO hasn't ruled on
 | A17 | **Resolved by edge-hypothesis A3.3 (`cost.fallback_tier_rule`, FROZEN).** A major is a coin in the tightest liquidity tier (tier 1) in the tier assignment in force at the decision time of the trade or replication, read from the ledger's tier records. Every other tier is an alt. A coin with no tier record is an alt for copies and a major for random-time baselines (§1; F13.AC1, F16.AC6, F19.AC4). Fallbacks apply only where our recording is missing. | – | – (no longer an assumption) |
 | A18 | **Below the disk floor, opens and adds are refused** (`disk_low`, counted as downtime), as well as recording stopping. Exits always continue. | A trade opened while nothing is recorded has no B0d window or replay data, so it could only hurt P2c and P6 | Keep trading while recording is stopped |
 | A19 | **Leverage starts at 1x** (`risk.leverage_min` = 1). At each open or add, the merged position's leverage is re-chosen as the lowest that fits the whole position. Early positions therefore use more margin, and later ones may need higher leverage or be refused `insufficient_margin`. | "Lowest value that fits" read literally; lower leverage keeps liquidation furthest away | Start at 2x or 3x, which leaves more free margin for later signals |
-| A20 | **Mirror basis** (F12.AC9).<br>**Fixed by A3.1:**<br>• the mirror is built with the `/flatten` shadow machinery from the first missed leader event<br>• each mirrored leader action is decided at its exchange timestamp + `copyreplay.delay_ms` and filled at the book recorded at that time + `paper.ack_delay_ms`<br>• over a recording gap, the SL/TP path uses exchange 1h candles, with ambiguous bars resolved stop first (lo, gate) and TP first (hi, cost)<br>**Not pinned by A3; PM default for the quant-researcher to confirm:**<br>(a) **No recorded book at a mirrored leader action.** The fill is the exchange 1m candle open at the fill time ± the fallback half-spread and delay slippage, plus the taker fee. The lo mirror uses the copy-side tier rule (untiered = alt). The hi mirror always uses the major values: generous for the mirror, so a gap can't hide a cost, in the spirit of A3.1's TP-first rule.<br>(b) **Neither a book nor exchange candles are available.** No cost is guessed. It stays pending and is retried, and the verdict is not computed until it exists. This replaces Amendment 1's "uncomputable counts as > 1R", because A3 defines F2 only through `p4_breach`. | A3.1 fixes the rule but not the fill when our book is missing | (a) Use the copy-side tier rule for both lo and hi (a gap could then understate the cost). (b) Keep "uncomputable counts as > 1R" (a FAIL that A3 doesn't define). |
+| A20 | **Replaced by edge-hypothesis A4.2 (FROZEN; no longer an assumption).** With no recorded book within 5 s of the fill time, a mirrored action fills on the 1m candle, else the 1h candle, from the hashed candle store (F4.AC9). lo = the worst price for our side + 8 bps, hi = the best price for our side + 2 bps, plus the taker fee, with no delay term and no tier table. SL/TP fill at the trigger or a gapped-through open. `/flatten` shadows use the lo prices. A mirror uncomputable after 72 h costs more than 1R (F2), with lo R = actual R and mirror exit = the real close (F12.AC9). "No verdict while pending" is not adopted.<br>**Superseded text follows, kept for history only. Where it differs from the above, the above wins.**<br>**Fixed by A3.1:**<br>• the mirror is built with the `/flatten` shadow machinery from the first missed leader event<br>• each mirrored leader action is decided at its exchange timestamp + `copyreplay.delay_ms` and filled at the book recorded at that time + `paper.ack_delay_ms`<br>• over a recording gap, the SL/TP path uses exchange 1h candles, with ambiguous bars resolved stop first (lo, gate) and TP first (hi, cost)<br>**Not pinned by A3; PM default for the quant-researcher to confirm:**<br>(a) **No recorded book at a mirrored leader action.** The fill is the exchange 1m candle open at the fill time ± the fallback half-spread and delay slippage, plus the taker fee. The lo mirror uses the copy-side tier rule (untiered = alt). The hi mirror always uses the major values: generous for the mirror, so a gap can't hide a cost, in the spirit of A3.1's TP-first rule.<br>(b) **Neither a book nor exchange candles are available.** No cost is guessed. It stays pending and is retried, and the verdict is not computed until it exists. This replaces Amendment 1's "uncomputable counts as > 1R", because A3 defines F2 only through `p4_breach`. | A3.1 fixes the rule but not the fill when our book is missing | (a) Use the copy-side tier rule for both lo and hi (a gap could then understate the cost). (b) Keep "uncomputable counts as > 1R" (a FAIL that A3 doesn't define). |
 | A21 | **Storage policy details.** (a) At ≥ 80% of the $5 projected monthly cost, alert daily but **keep uploading**: losing run data costs more than a small overage, and at ≤ 1.5 GB/day the projection is under $2. (b) `run start` refuses while a finished day older than 2 days is unarchived, or no ledger backup has verified in 48 h. | Never lose run data silently; start a run only with a working backup | (a) Stop uploading at the cap. (b) Allow a run to start without a verified backup. |
 | A22 | **Tier default thresholds** (VAL-R priors, not measurements): tier 1 = median thinner-side depth ≥ $1,000,000 within 0.5% of mid **and** median 24h volume ≥ $200M; tradable floor = ≥ $50,000 **and** ≥ $10M; 7-day lookback; ≥ 80% coverage; recomputed every 24 h. Expected, but not measured: BTC and ETH in tier 1, SOL around the line, and DOGE, kPEPE and WIF in tier 2. Our orders are ≤ $300, so the floor keeps each order ≤ 1% of depth. | Thresholds need numbers before recordings exist; the readiness report replaces the guess with data | Other thresholds within the bounds in §3.5 |
 | A23 | **`/stats` shows realised figures**, not gate-adjusted values (not min(realised, shadow) for flattened trades, and not min(actual, mirrored) for missed exits). It is labelled "descriptive only". With no run active, it covers the time since the dry-run start or the last run end. | Gate-adjusted numbers would move `/stats` closer to a verdict preview | Show gate-adjusted R, labelled as such |
 | A24 | **K13 is enforced by the engine** (F17.AC9). Run 2 can't start while any missed exit from run 1 lacks a resolution record: a written root cause, a fix commit that is an ancestor of the run-2 commit, and a regression test ID. A resolution record doesn't clear go-live blocker ME, which is cleared only at /go-live. | Edge-hypothesis K13 and §5.3 say to explain and fix every missed exit before run 2. A checklist item could be skipped. | Keep it procedural: the PO or CTO checks before starting run 2, with no engine refusal |
-| A25 | **What §5.5's "Nothing else is shown" covers** (for the quant-researcher to confirm). The spec reads edge-hypothesis §5.5 and test 7 as limiting **run-result and evaluation statistics**. That leaves the existing operational content, which states nothing about the edge:<br>• `/status`: mode, feed health, disk, archive state and cost<br>• `/traders`: score and rank<br>• trade posts: the leader's own scoring-window figures<br>• daily and weekly reports: refusals by reason, unexecutable count, followed-set changes, tier changes, archive state and storage cost<br>Any new run-result metric still needs a spec change checked against §5.5 (F14.AC6). | Test 7 says every command and report serves "only the 5.5 list"; read literally, it would remove `/status`, `/traders` and most of the reports | Restrict every command and report to the §5.5 list literally (drops most operational content), or amend A3 to list the operational content explicitly |
+| A25 | **Confirmed by edge-hypothesis A4.11 (FROZEN).** **What §5.5's "Nothing else is shown" covers.** Run-result content is any figure computed from the outcomes of our trades, shadows, mirrors or any baseline. Before `T_eval` it appears only in the `/stats` list and each trade's own post. Operational content stays allowed, never with a pass/fail label. Consequence: the daily and weekly reports omit USD P&L while a run is active before `T_eval` (F14.AC7). The original reading follows. The spec reads edge-hypothesis §5.5 and test 7 as limiting **run-result and evaluation statistics**. That leaves the existing operational content, which states nothing about the edge:<br>• `/status`: mode, feed health, disk, archive state and cost<br>• `/traders`: score and rank<br>• trade posts: the leader's own scoring-window figures<br>• daily and weekly reports: refusals by reason, unexecutable count, followed-set changes, tier changes, archive state and storage cost<br>Any new run-result metric still needs a spec change checked against §5.5 (F14.AC6). | Test 7 says every command and report serves "only the 5.5 list"; read literally, it would remove `/status`, `/traders` and most of the reports | Restrict every command and report to the §5.5 list literally (drops most operational content), or amend A3 to list the operational content explicitly |
+| A26 | **Points that A4 leaves open, with PM defaults for the A4 author to confirm.**<br>(a) **Tier cadence.** `tiers.recompute_interval_h` has a range of 1–168 h, but A4.7 fixes 24 h during a run. Default: the key stays at 24 in the frozen config, and it is part of the config hash, so changing it mid-run is ABORTED.<br>(b) **Stream and transport hash.** The stream sha256 covers the canonical serialised records, and the transport sha256 covers the stored file bytes (F4.AC7). A4.8 a names the two hashes but not their scope.<br>(c) **Reports before `T_eval`.** The daily and weekly reports omit USD P&L while a run is active (F14.AC7), as a consequence of A4.11. `/stats` and each trade's post carry it.<br>(d) **Incremental-cost breach.** A breach by an incremental cost alone (the trade cost below 1R) is F2, as A4.3 says.<br>(e) **`/flatten` mirror shadows and settled-gap trades** use the lo prices where inside a gap. | A4 pins the rules but not these details | (a) Make the in-run cadence a fixed constant. (b) Hash the compressed bytes only. (c) Keep USD P&L in reports and amend A4.11. |
