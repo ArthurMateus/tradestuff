@@ -1,60 +1,98 @@
 # Edge hypothesis: copytrade-v1
 
-Date: 2026-09-29. Author: quant-researcher. Status: **PRE-REGISTRATION**. No result on real data exists yet.
+Date: 2026-09-29. Author: quant-researcher. Version: **v2**.
+
+Status: **PRE-REGISTRATION FROZEN.** No result on real data exists yet.
+- v2 encodes the PO's research-phase decisions and closes backtest-audit findings BT-1 to BT-17. The closure table is in section 15.
+- Section 5 is the frozen pre-registration. Section 5.1 says how it is frozen and how it can legitimately change.
 
 Inputs:
-- `01-brief.md`, `02-discovery.md`, `03-answers.md`
-- `docs/product/decisions.md`
-- `research/brainstorm-domain-research.md`
-- `research/market-context.md` (read after it landed at 16:12 UTC)
+- `01-brief.md`, `02-discovery.md`, `03-answers.md` (including "Research-phase decisions")
+- `docs/product/decisions.md` (2026-09-29 entries)
+- `research/brainstorm-domain-research.md`, `research/market-context.md`
+- `research/backtest-audit.md` (BT-1 to BT-17)
 
 Labels used below:
 - **[PO]** a fixed PO decision, reproduced and not changed
-- **[QR]** a research choice made here, which the PO or PM may override
+- **[QR]** a research choice made here. The PO or PM may override it, but only before run 1 starts (5.1).
 - **[EXPL]** exploratory and synthetic. It is not evidence and has not yet been reviewed by the backtest-auditor.
 
 ## 0. Base rates and prior
 
-- **Most Hyperliquid traders lose money.** A 30-day, 10,000-wallet on-chain sample (Nov 2024) found 73.8% of wallets losing, 16.5% profitable and 27.2% losing more than 85% of capital. That is a third-party analysis of public data, so treat it as a base rate, not a precise number. Another sample of 1,000 wallets found 16.6% profitable.
-- **Leaderboards select on luck.** About 15,000 leaderboard rows (market-context 2.1) means the best of 15,000 zero-skill wallets shows a t-statistic of about 3.9 by chance (section 5, E).
-- **Copy trading adds its own costs.** Following adds taker fees on both legs, the spread, delay slippage, and a payoff change from our own stops. Apesteguia et al. (2020) show copy trading induces excess risk-taking. In Alpha Arena S1, 4 of 6 LLM traders lost money.
-- **Prior (QR):** P(mean copy R > 0 after all costs) is about 0.25. Conditional on being positive, the most likely true mean is below 0.10R. Scalpers and market makers are uncopyable at 1-5 s delay. Whatever edge exists should come from multi-hour discretionary or informed traders.
+- **Most Hyperliquid traders lose money.** A 30-day, 10,000-wallet on-chain sample (Nov 2024) found:
+  - 73.8% of wallets losing
+  - 16.5% profitable
+  - 27.2% losing more than 85% of capital
 
-**Default belief: no edge.** Everything below is designed to find that out cheaply and honestly.
+  That is a third-party analysis of public data, so treat it as a base rate, not a precise number. Another sample of 1,000 wallets found 16.6% profitable.
+- **Leaderboards select on luck.** The leaderboard has about 15,000 rows (market-context 2.1). Among 15,000 zero-skill wallets, the best shows a t-statistic of about 3.9 by chance (Emax(15,000), between the N = 2,000 and N = 30,000 values in E6 section E).
+- **Copy trading adds its own costs:**
+  - taker fees on both legs
+  - the spread
+  - delay slippage
+  - a payoff change from our own stops
+
+  In R terms these costs are about 0.04-0.53R per trade (6.3). Apesteguia et al. (2020) show copy trading induces excess risk-taking. In Alpha Arena S1, 4 of 6 LLM traders lost money.
+- **Prior (QR):** P(mean copy R > 0 after all costs) is about 0.25.
+  - Conditional on being positive, the most likely true mean is below 0.10R.
+  - Scalpers and market makers are uncopyable at 1-5 s delay.
+  - Whatever edge exists should come from multi-hour discretionary or informed traders.
+
+**Default belief: no edge.** Everything below is designed to find that out cheaply and honestly. The most likely honest verdict of a paper run is INCONCLUSIVE (5.9, 11).
 
 ---
 
 ## 1. Hypothesis
 
-**H1 (primary; the one the go-live gate tests).** Automatically copying the 5-10 Hyperliquid wallets ranked highest by the scoring model in section 10 into a $300 paper wallet yields a positive mean R per trade over the first 300 closed taken trades, net of all costs. The copy uses our deterministic filter, mirrored fractional sizing capped by risk limits, and first-exit-wins exits, and costs include taker fees, the spread and book impact at our decision time plus the configured ack delay, and hourly funding. The 95% cluster-robust CI lower bound must be above 0, with peak-to-trough drawdown below 15%.
+**H1 (primary; the go-live gate tests this).**
+- **Setup:** automatically copy the 5-9 Hyperliquid wallets ranked highest by the scoring model in section 10 [PO: at most 9] into a $300 paper wallet at 0.5% risk per trade [PO]. The copy uses:
+  - our deterministic filter
+  - mirrored fractional sizing capped by risk limits
+  - first-exit-wins exits
+- **Claim:** this yields a positive mean R per trade over the **first 300 opened trades**, evaluated once all 300 have closed [PO].
+- **Costs:** every trade is net of taker fees, spread and book impact at decision time plus the configured ack delay, and hourly funding.
+- **Test:** the exact rule is the frozen rule in 5.3. In short:
+  - the day-clustered CI lower bound at the run's CI level is > 0
+  - net USD P&L is > 0
+  - the trades beat a direction-matched, random-time baseline
+  - mark-to-market drawdown stays below 15%
 
-**H2 (selection adds information).** Over the same window, the mean R of H1 exceeds both of these:
-- (a) the 95th percentile of the random-entry baseline (matched coin, frequency, holding time, sizing, stops and costs)
-- (b) the mean R of copying the top 8 by raw 30-day ROI through the same engine
+**H2 (selection adds information beyond direction and beta).** Over the same evaluation window:
+- (a) **gating [PO]:** the trades beat B0d, the direction-matched random-time baseline in 6.2. This is P2c in 5.3.
+- (b) **go-live blocker, not gating:** our mean R exceeds the mean R of copying the top 9 wallets by raw 30-day ROI through the same engine (S4, K9).
 
-**H3 (filter adds value, exploratory only).** Taken signals have a higher mean R than rejected signals' shadow outcomes. The design cannot answer this in v1: detecting a 0.2R lift needs about 880 trades per arm. It is reported, never gating.
+**H3 (filter adds value; exploratory only).** Taken signals have a higher mean R than the shadow outcomes of rejected signals. v1 cannot answer this: detecting a 0.2R lift needs about 880 trades per arm. It is reported, never gating.
 
-Each of these can be falsified:
-- H1 fails at N=300 if the CI upper bound is ≤ 0, or if drawdown reaches 15%.
-- H2 fails if our mean R does not exceed those baselines.
+**Falsification:**
+- H1 fails when the frozen rule returns FAIL: the CI upper bound ≤ 0, or drawdown reaches 15%, or a missed exit.
+- H2(a) fails when P2c fails.
+- H2(b) fails when S4 fails.
 
 ## 2. Mechanism: why an edge could exist, and who is on the other side
 
 **Why it could exist:**
-1. **Persistent skill in a small minority.** Some traders have skill at multi-hour horizons: information processing, flow reading, funding and basis dislocations. Their edge accrues over minutes to hours, so a 1-5 s copy delay costs a small fraction of it. The eligibility gates keep only these (median hold ≥ 15 min).
+1. **Persistent skill in a small minority.** Some traders have skill at multi-hour horizons: information processing, flow reading, funding and basis dislocations.
+   - Their edge accrues over minutes to hours, so a 1-5 s copy delay costs only a small fraction of it.
+   - The eligibility gates keep only these traders (median hold ≥ 15 min).
 2. **Informed flow.** Some large Hyperliquid wallets have traded ahead of news. Copying public on-chain fills is legal. Whether such edges persist is unknown.
 3. **Transparency.** Hyperliquid publishes every wallet's fills in real time, so the edge is observable without trusting self-reported ROI (C1).
 
 **Who is on the other side:**
 - **Of the leader's trade:** market makers (including HLP) and less informed takers.
-- **Of our copy:** market makers who have already seen the leader's flow, and other copy bots racing us for the same liquidity. If crowding matters, it shows up as adverse drift in the seconds after the leader's fill (the decay metric, section 4). At $300 our own book impact is negligible, but the crowd's is not.
+- **Of our copy:** market makers who have already seen the leader's flow, and other copy bots racing us for the same liquidity.
+  - If crowding matters, it shows up as adverse drift in the seconds after the leader's fill: the decay metric in section 4.
+  - At $300 our own book impact is negligible, but the crowd's is not.
 
 **Why it probably does not exist, or does not transfer to us:**
 - **Luck.** Thousands of wallets means impressive track records happen by chance.
 - **Execution edges are uncopyable.** Maker rebates, queue position and HFT profits do not survive a copy.
-- **Our exits change the payoff.** A leader who averages down and holds through a 3×ATR drawdown wins where our 2×ATR stop took −1R. The leader's historical P&L therefore does not predict our copy's R. The scoring model scores the copy-replay R, not the leader's P&L (section 10).
-- **Sizing distortion.** Mirrored sizing plus the $10 minimum silently drops small, early-tranche and partial orders.
-- **Regime dependence.** A 30-day window is a single regime.
+- **Our exits change the payoff.**
+  - A leader who averages down and holds through a 3×ATR drawdown wins where our 2×ATR stop took −1R.
+  - The leader's historical P&L therefore does not predict our copy's R.
+  - The scoring model scores the copy-replay R, not the leader's P&L (section 10).
+- **Sizing distortion.** Mirrored sizing plus the $10 minimum drops small, early-tranche and partial orders. Under the PO rule, a partial below $10 is skipped, or the position is closed in full if the remainder would be below $10.
+- **Beta, not skill.** A long-biased copy portfolio profits in a rising month. The direction-matched random-time baseline (P2c) exists to catch this.
+- **Regime dependence.** A 30-60-day window is a single regime.
 
 Mechanism strength: weak to moderate. The prior in section 0 stands.
 
@@ -62,94 +100,224 @@ Mechanism strength: weak to moderate. The prior in section 0 stands.
 
 | Need | Source | Fields | Granularity | History | Point-in-time? | Gaps / notes |
 |---|---|---|---|---|---|---|
-| Candidate list | `GET stats-data.hyperliquid.xyz/Mainnet/leaderboard` (undocumented) | `ethAddress`, `accountValue`, `windowPerformances` (day/week/month/allTime: `pnl`, `roi`, `vlm`) | snapshot | none: current state only | **Only from our own hourly snapshots, from day 1** | Survivorship: wallets that blew up drop off. We store every snapshot and never delete a wallet we have seen (D2). |
-| Leader fills (scoring) | `POST /info userFillsByTime` (`aggregateByTime: true`) | `coin`, `px`, `sz`, `side`, `time`, `startPosition`, `dir`, `closedPnl`, `fee`, `crossed`, `oid`, `tid`, `hash` | per fill, ms | **Latest 10,000 fills per wallet**; ≤ 2,000 per call | Yes: fills are immutable; score at t uses fills with `time ≤ t` only | History is bounded by fill count. Busy wallets cover only days, which gate G3 handles. TWAP slice fills are a separate stream, not covered. |
-| Leader fills (live) | WS `userFills` | same | per fill | live | Yes; exchange timestamp + local receive timestamp (B2) | Max 10 unique users per IP (market-context 2.3) |
-| Leader equity and P&L curve | `POST /info portfolio` | `accountValueHistory`, `pnlHistory` per `perpDay`/`perpWeek`/`perpMonth`/`perpAllTime` | allTime about 93 points (coarse); month finer | account lifetime | **No**: fetched now, covers the past. Point-in-time only for values we snapshot ourselves. | `accountValue` jumps with deposits. Returns use `pnlHistory` (deposit-neutral) divided by the prior account value. |
+| Candidate list | `GET stats-data.hyperliquid.xyz/Mainnet/leaderboard` (undocumented) | `ethAddress`, `accountValue`, `windowPerformances` (day/week/month/allTime: `pnl`, `roi`, `vlm`) | snapshot | none: current state only | **Only from our own hourly snapshots, recorded from day 1 [PO]** | Survivorship: wallets that blew up drop off. We store every snapshot and never delete a wallet we have seen (D2). |
+| Leader fills (scoring) | `POST /info userFillsByTime` (`aggregateByTime: true`) | `coin`, `px`, `sz`, `side`, `time`, `startPosition`, `dir`, `closedPnl`, `fee`, `crossed`, `oid`, `tid`, `hash`, `liquidation` | per fill, ms | **Latest 10,000 fills per wallet**; ≤ 2,000 per call | Yes: fills are immutable; the score at t uses fills with `time ≤ t` only | History is bounded by fill count; gate G3 handles busy wallets. TWAP slice fills are a separate stream and not covered. |
+| Leader fills (live) | WS `userFills` | same | per fill | live | Yes: exchange timestamp plus local receive timestamp (B2) | Max 10 unique users per IP. 9 followed plus 1 slot for swaps [PO]. |
+| Leader equity and P&L curve | `POST /info portfolio` | `accountValueHistory`, `pnlHistory` per `perpDay`/`perpWeek`/`perpMonth`/`perpAllTime` | allTime about 93 points (coarse); month finer | account lifetime | **No**: fetched now, covering the past. Point-in-time only for values we snapshot ourselves. | `accountValue` jumps with deposits. Returns use the deposit-neutral `pnlHistory`. Resolution rules are in 10.1 (BT-17). |
+| Account role | `POST /info userRole` | `role` ∈ user / agent / vault / subAccount / missing | snapshot | now | Snapshot per scoring cycle | Used by the vault/HLP gate G13 |
 | Leader funding | `POST /info userFunding` | per-hour funding paid | hourly | bounded | yes | Adds weight per 20 items |
 | Current positions and account value | `clearinghouseState` (weight 2) | positions, `marginSummary.accountValue` | snapshot | none | Only when we snapshot it | Needed for mirrored sizing at signal time |
 | Prices for the copy replay | `candleSnapshot` 1h (about 208 days) and 1m (about 3.5 days) | OHLCV | 1h / 1m | 5,000 candles | yes | 1h bars are coarse for stop checks. On an ambiguous bar, assume the stop hit first (conservative). |
-| Books, mids, trades (paper fills, decay) | WS `l2Book`, `allMids`, `trades`; REST `l2Book` | levels, mid, prints | tick | **none historically via API** | Only what we record | **Record from day 1** for every coin followed wallets trade. S3 `hyperliquid-archive` is requester-pays and needs AWS credentials, which are not used here. |
-| Funding rates, OI, mark/oracle | `metaAndAssetCtxs`, `fundingHistory` | `funding`, `openInterest`, `markPx`, `oraclePx` | hourly / snapshot | bounded | Only what we record | Paper funding accrues hourly |
-| Exchange rules | `meta` | `szDecimals`, `maxLeverage` | static | now | Snapshot at startup | $10 minimum order value; reduce-only full close is exempt [T] |
-| Macro calendar | Fed, BLS, BEA data file | event, ET time | event | quarterly | yes | Times anchored to America/New_York |
+| Books, mids, trades (paper fills, decay, baselines) | WS `l2Book`, `allMids`, `trades`; REST `l2Book` | levels, mid, prints | tick | **none historically via API** | Only what we record | **Recorded from day 1 [PO]** for every coin the followed wallets trade, and for HIP-3 markets (recorded only, not traded [PO]). **No paid S3 data [PO].** |
+| Funding rates, OI, mark/oracle | `metaAndAssetCtxs`, `fundingHistory` | `funding`, `openInterest`, `markPx`, `oraclePx` | hourly / snapshot | bounded | Only what we record | Paper funding accrues hourly from actual rates [PO] |
+| Exchange rules | `meta` | `szDecimals`, `maxLeverage` | static | now | Snapshot at startup | $10 minimum order value; a reduce-only full close is exempt [T] |
+| Macro calendar | Fed, BLS, BEA data file | event, ET time | event | quarterly | yes | Times anchored to America/New_York. Blackouts block entries and adds only [PO]. |
 
 **Survivorship treatment (D2):**
-1. The go-live evidence uses only our own point-in-time data: leaderboard snapshots, scores, decisions, books and paper fills recorded live.
-2. Any replay before our recording started is labelled "indicative only, survivorship-biased" and never counts as evidence.
+1. The go-live evidence uses only our own point-in-time data: leaderboard snapshots, scores, decisions, books and paper fills, all recorded live.
+2. Any replay before our recording started is labelled "indicative only, survivorship-biased" and never counts as evidence. That includes `hl_sample.py`, whose pool is today's leaderboard.
 3. A trader who is dropped, blows up or vanishes from the leaderboard stays in the dataset, and their copied trades stay in the stats.
-4. Delisted coins are force-settled at the exchange price and included.
+4. Delisting settlements are counted as normal trades at the exchange settlement price [PO].
 
 **Look-ahead (D1):**
-- The score at cycle t uses fills with `time ≤ t` and the portfolio or clearinghouse snapshot fetched at or before t.
+- The score at cycle t uses fills with `time ≤ t`, and the portfolio or clearinghouse snapshot fetched at or before t.
 - Every cycle's inputs, metrics, score, rank and decision are persisted, so replays read the stored snapshot rather than refetching.
-- ATR for a stop uses candles closed before entry.
+- The ATR for a stop uses candles closed before entry.
 - The filter uses only data older than the decision timestamp.
+- A leader's account value for a past event is the latest point at or before it, never a later one.
 
 **Known gaps:**
 - There is no historical order book, so the replay's slippage is modelled.
 - The 10,000-fill cap limits history.
-- The coarse 93-point allTime equity curve makes the hidden-drawdown detector approximate.
+- The coarse all-time equity curve is not used for Sharpe (10.1).
 - Brazil-to-Tokyo latency has not been measured.
 - The leaderboard endpoint is undocumented and can break.
-- **The Hyperliquid API was not reachable from this research environment (egress 403), so no real sample was pulled.**
+- **The Hyperliquid API is not reachable from this research environment.** The egress proxy returns 403 by organization policy; re-checked on 2026-09-29, E8. No real sample has been pulled. The PO runs `hl_sample.py` once from their PC [PO] (`scripts/README.md`).
 
 ## 4. Metrics
 
-All metrics come from the append-only ledger. They are net of taker fees, spread and book impact, delay, and hourly funding, and cover every taken trade, including losers, reconstructed trades and delisting force-settles.
+All metrics come from the append-only ledger. They are net of taker fees, spread and book impact, delay and hourly funding, and cover every trade in the sample, including:
+- losers
+- reconstructed trades
+- delisting settlements
+- trades around macro events [PO]
 
 | Metric | Definition |
 |---|---|
-| **R per trade [PO]** | `net_pnl_usd / initial_risk_usd`, where `initial_risk_usd = qty_at_entry × |entry_fill_px − initial_stop_px|` + estimated exit fee. One trade is one trader share, from open to fully closed. |
-| R_maxrisk (reported) [QR] | `net_pnl_usd / max_committed_risk_usd` over the trade's life, counting risk added by adds. See concern C4. |
+| **R per trade [PO]** | `net_pnl_usd / initial_risk_usd`, where `initial_risk_usd = qty_at_entry × |entry_fill_px − initial_stop_px|` + estimated exit fee. One trade is one trader share, from our entry fill to fully closed [PO]. **This R is the gate statistic.** |
+| R_maxrisk (reported) [PO] | `net_pnl_usd / max_committed_risk_usd` over the trade's life, counting the risk added by mirrored adds. Mean R_maxrisk ≤ 0 raises flag FR5. |
+| **Net USD P&L [PO]** | Σ `net_pnl_usd` over the sample. It is a PASS condition (P2b). It has the same sign as the risk-weighted mean R `Σ net_pnl_usd / Σ initial_risk_usd` (S2), so S2 needs no separate gate. |
+| **Baseline excess D_i [PO + QR]** | `R_i − mean R of trade i's 1,000 direction-matched random-time replications` (B0d, 6.2). Its day-clustered lower bound is P2c. |
 | Expectancy | mean R, and mean USD P&L per trade |
-| Risk-weighted mean R (reported) [QR] | `Σ net_pnl_usd / Σ initial_risk_usd`. Equals total P&L in R units. See concern C3. |
 | Win rate and payoff ratio | share of trades with R > 0; `mean(R | R>0) / |mean(R | R≤0)|`. Always reported together. |
-| Max drawdown | peak-to-trough of **marked-to-market** paper equity (mark every 60 s), as a % of peak |
-| Trade count | closed taken trades. Also counted separately: signals seen, rejected by reason, unexecutable (below $10), and conflict-skipped. |
+| Max drawdown | peak-to-trough of **marked-to-market** paper equity (marked every 60 s), as a % of peak |
+| Trade count | trades opened. Also counted separately: signals seen, rejected by reason, unexecutable (below $10), conflict-skipped, and opened after the 300th (outside the sample). |
 | Exposure time | fraction of wall-clock time with ≥ 1 open position; time-average of open risk as % of equity |
 | Turnover | Σ traded notional / mean equity, per day |
-| Exit-reason mix | our SL, our TP, trader close, trader reduce to zero, force-settle, reconstructed |
-| Mirror fidelity | share of leader adds and partials we could not mirror (below $10, risk cap, stop-widening skip) |
-| **Signal-to-fill decay** | `decay(Δ) = mean over signals of s × (mid(t_leader + Δ) − px_leader) / px_leader`, in bps, where s = +1 for long and −1 for short, Δ ∈ {0.25, 0.5, 1, 2, 3, 5, 10, 30, 60, 300} s, and mids come from our recorded WS stream. **Edge lost per second** = OLS slope of decay on Δ over 0-5 s (bps/s), also expressed as a % of the mean leader gross round-trip move. Covers taken and rejected signals. |
+| Exit-reason mix | our SL, our TP, trader close, trader reduce to zero, close-all under the $10 remainder rule, delisting settlement, reconstructed, marked at the close-out cap |
+| Mirror fidelity | share of leader adds and partials we could not mirror: partial skipped below $10, close-all under the remainder rule, add below $10, add blocked by a risk cap, stop-widening skip |
+| **Cost in R** | per trade `c_i = (fees + spread and impact vs mid at decision + delay slippage vs the leader fill) / initial_risk_usd`, excluding funding. Feeds FR3. |
+| **Signal-to-fill decay** | `decay(Δ) = mean over signals of s × (mid(t_leader + Δ) − px_leader) / px_leader`, in bps. s = +1 for long and −1 for short; Δ ∈ {0.25, 0.5, 1, 2, 3, 5, 10, 30, 60, 300} s; mids come from our recorded WS stream. **Edge lost per second** = the OLS slope of decay on Δ over 0-5 s (bps/s), also expressed as a % of the mean leader gross round-trip move. Covers taken and rejected signals. |
 | Latency breakdown (C6) | leader fill (exchange ts) → WS receive → decision → simulated ack. p50/p95/p99 per stage, clock-offset corrected. |
 | Shadow mean R | mean R of rejected signals, simulated with the same exit rules (H3, reported only) |
 
-## 5. Pre-registered success criteria (D4)
+---
 
-Written 2026-09-29 before any result. Changing any number after the paper run starts voids the run.
+## 5. Frozen pre-registration (D4)
 
-### 5.1 Go-live gate (the PO's criteria, pinned to exact numbers)
+### 5.1 Freeze
 
-| ID | Criterion | Threshold |
+- **Frozen on 2026-09-29 in this v2 of the file, before any real result exists.** It covers:
+  - this section
+  - kill criteria (7)
+  - the paper plan (8)
+  - the evaluation keys in 9.2
+
+  The PO's decisions it encodes are final [PO].
+- **At the start of every paper run,** the engine writes a run record into the append-only ledger. The record holds:
+  - the run number (1 or 2)
+  - the start time (UTC)
+  - the sha256 of this file
+  - the sha256 of the frozen config
+  - the CI level for that run
+  - the bootstrap seed, generated at run start
+- **Edits after run 1 starts** apply only if they are logged as a dated **addendum** before the next run starts. Past runs are always evaluated under the version hashed in their run record. Any other edit is a D4 violation, and the backtest-auditor must treat it as voiding the run.
+
+### 5.2 PO answers to the research questions (2026-09-29)
+
+| Q | Question (v1, section 14) | PO answer | Encoded as |
+|---|---|---|---|
+| Q1 | USD P&L and risk-weighted mean R as co-conditions of PASS? | Net USD P&L > 0 is a PASS condition. **Also:** the trades must beat a direction-matched, random-time baseline, and the CI is clustered by UTC day. | P2b; P2c; the P2 method. Risk-weighted mean R has the same sign as USD P&L, so it stays reported (S2). |
+| Q2 | R on max committed risk? | The gate uses R on **initial** risk. R on max committed risk is also reported. | P2 uses R; R_maxrisk reported; flag FR5 |
+| Q3 | Single evaluation at N = 300 with a conservative CI? | The sample is the **first 300 opened trades**, evaluated **once, after all have closed**. | 5.3: sample S, `T_eval`, a single evaluation |
+| Q4 | `risk_per_trade` 0.5% or 1%? | **0.5%** for paper; the ceiling stays 1%. | `risk.per_trade_fraction = 0.005` |
+| Q5 | N < 300 at day 30? | **Extend to 60 days** with the same frozen config and **one evaluation**. | 5.3: sample window `[t0, t0 + 60 days)` |
+| Q6 | Mirrored partial exit below $10? | **Skip and log.** If the remainder would fall below $10, **close all**. | `sizing.partial_below_min_action`, `sizing.close_all_if_remainder_below_min` |
+| Q7 | Live wallet ≥ $300? | Paper wallet **$300**; live starts at **≥ $300**, never smaller than the paper-tested size. | 8; `paper.wallet_usd`, `live.min_wallet_usd` |
+| Q8 | Paid S3 historical data? | **No.** | Data section: replay only from our own recordings |
+| Q9 | Run `hl_sample.py` from the PO's PC? | **Yes, once**, after the fixes. | `scripts/README.md` |
+
+**Other research-phase decisions encoded here [PO]:**
+- at most **2 paper runs**
+- a config change mid-run restarts the run and **counts as a run**
+- the PO **sees trades and P&L** during the run
+- follow at most 9 wallets
+- crypto perps only (`allowed_dexes = core`), with HIP-3 data recorded
+- market data recorded from day 1
+- blackouts block entries and adds only, and trades around events count toward the sample
+- degraded access means alert and pause entries
+- funding is charged hourly
+- delisting settlements count as normal trades
+- no paid S3
+
+### 5.3 The verdict rule (exact)
+
+**Definitions**
+
+| Term | Definition |
+|---|---|
+| Trade | One trader share, from our entry fill to fully closed [PO]. Rejected or skipped signals are never trades. |
+| Run start `t0` | Timestamp of the run record (5.1) |
+| Sample S | The **first 300 trades by entry-fill timestamp** opened in `[t0, t0 + 60 days)` [PO]. Ties are broken by client order ID, ascending. Trades opened after the 300th are traded normally but are outside S, and their statistics are reported separately. |
+| `t300` | Entry-fill time of the 300th trade |
+| **`T_eval`** | The moment the last trade in S closes, or `t300 + 7 days`, whichever comes first [QR]. A trade in S still open at `t300 + 7 days` is marked for the gate at the recorded mid, minus taker fee and half-spread at that moment. It is flagged "marked" and keeps being managed normally. |
+| Evaluation window | `[t0, T_eval]`. P3, P4 and P5 apply to this window. |
+| Day cluster | The UTC calendar day of the **first entry fill of the merged position** the trade belongs to. A merged position is all trader shares with the same symbol and direction that overlap in time. Every share of a merged position is therefore in one day cluster. G is the number of distinct day clusters in S. |
+| Run level `L_r` | Run 1: **L_1 = 96%** (two-sided α = 0.04). Run 2: **L_2 = 99%** (α = 0.01). See 5.4. |
+| `LB_r(x)` / `UB_r(x)` | For per-trade values x_i over S, the **minimum** of the lower bounds / **maximum** of the upper bounds of three two-sided CIs of the mean, at level `L_r`: (a) the iid t-interval, n − 1 df; (b) a percentile cluster bootstrap resampling day clusters with replacement, B = 10,000, seed from the run record; (c) a cluster-robust t-interval, `V = G/(G−1) · Σ_g (Σ_{i∈g}(x_i − x̄))² / n²`, with G − 1 df. |
+
+**At `T_eval`, the verdict is exactly one of:**
+
+**PASS** requires all of the following:
+
+| ID | Condition |
+|---|---|
+| P1 [PO] | S is complete: 300 trades opened before `t0 + 60 days` |
+| P2 [PO + QR method] | `LB_r(R) > 0`, and G ≥ 5 [QR]. Below 5 day clusters the cluster variance is degenerate; E10 shows the rule is conservative from G = 5. |
+| P2b [PO] | Σ net USD P&L over S > 0 |
+| P2c [PO + QR precision] | `LB_r(D) > 0`, where `D_i = R_i − mean_R(B0d replications of trade i)` (6.2) |
+| P3 [PO] | Mark-to-market drawdown < 15% at every mark in the evaluation window |
+| P4 [PO] | 0 missed exits in the evaluation window |
+| P5 [PO] | Downtime < 2% of the evaluation window. Downtime is time when the engine could not open or manage positions (process down, a data gap before resync, the access-degraded pause) plus any manual `/pause`. Rule-based event blackouts are not downtime. |
+| P6 [PO] | The point-in-time replay of `[t0, T_eval]`, run through the same engine on recorded data, has a mean R with the **same sign** as the paper mean R over S |
+
+**FAIL** if any of the following holds:
+
+| ID | Condition |
+|---|---|
+| F1 [PO] | P3 is breached at any time before `T_eval`. The verdict is immediate: the run ends and the bot pauses per the risk rules. |
+| F2 [PO] | P4 is breached (a missed exit) at any time before `T_eval`. The verdict is immediate. |
+| F3 | At `T_eval`: `UB_r(R) ≤ 0` |
+
+**INCONCLUSIVE** otherwise. That includes:
+- fewer than 300 trades opened by `t0 + 60 days` (evaluate nothing; report descriptive statistics labelled "not a verdict")
+- G < 5
+- `LB_r(R) ≤ 0 < UB_r(R)`
+- P2 holds but any of P2b, P2c, P5 or P6 fails
+
+**ABORTED** (counts as a run, never a PASS):
+- a config change before `T_eval`, meaning any change to the frozen config hash [PO]
+- a manual stop of the run by the PO
+- a ruling by the backtest-auditor that a bug invalidated the run
+
+Bug fixes that don't change the config hash are logged, the run continues, and the affected trades stay in S. A crash-restart with the same config and continuous ledger is not a new run; its downtime counts toward P5.
+
+**Also computed at `T_eval` and reported with every verdict** (go-live blockers in 5.6, not verdict changes):
+- R_maxrisk
+- S2, S3, S4
+- FR1 to FR5
+- decay
+- mirror fidelity
+- the exit-reason mix
+- the B0d mean (the "direction + beta + cost" component)
+
+### 5.4 Runs and the α split (BT-5)
+
+- **At most 2 paper runs in this epic [PO].** Every run that starts counts, including one that ends ABORTED. There is no run 3.
+- **α split:** run 1 is evaluated at L_1 = 96% (two-sided α₁ = 0.04) and run 2 at L_2 = 99% (α₂ = 0.01). Because α₁ + α₂ = 0.05:
+  - the family-wise false-PASS probability across both runs is at most (0.04 + 0.01)/2 = **2.5% one-sided**, the same as one look at the PO's original 95% CI
+  - α is front-loaded because run 2 only exists if run 1 did not PASS
+  - the same levels apply to P2c
+  - E6 section G gives the operating characteristics
+- **After a FAIL:** a second run is allowed by the cap. My recommendation stays kill or redesign (K3). Any redesign must be written as a dated addendum before run 2 starts, and run 2 is evaluated at 99%.
+- **After run 2 without a PASS,** the paper gate of this epic is closed. The recommendation is kill, or redesign as a **new epic** with a new pre-registration and data collected after it, disclosing both earlier runs.
+- **Run register:** every started, ended or aborted run gets a row in the ledger's run register and in section 12 of this file. The row holds the run number, start and end time, config hash, file hash, end reason and verdict.
+
+### 5.5 What is visible during a run (BT-5)
+
+- **The PO sees trades, positions and USD P&L live**, plus the daily and weekly reports [PO].
+- **The system does not compute or display interim mean R, CIs or a running verdict.** The gate statistics are computed once, at `T_eval`. Reports may show trade counts and the progress toward 300.
+- **Interim numbers can't justify a config change.** A config change can still be made, but it ends the run as ABORTED and consumes it [PO].
+- **Safety actions are always allowed:** the kill switch, `/pause` and the drawdown pause. `/pause` time counts as downtime (P5).
+
+### 5.6 Go-live blockers that don't change the verdict
+
+Each item below is computed at `T_eval`. If any is triggered, a PASS **cannot proceed to any live step without a written PO review** of that item.
+
+| ID | Check | Triggered when |
 |---|---|---|
-| P1 [PO] | Sample size | **N = 300** closed taken trades. "~300" is pinned to exactly 300 [QR]. |
-| P2 [PO + QR method] | Mean R 95% CI lower bound | **> 0.** Two-sided 95% CI, computed as the lower (more conservative) of (a) the t-interval and (b) a cluster bootstrap. For (b), a cluster is all trader shares of one merged position (same symbol and direction, overlapping in time), B = 10,000, percentile, fixed seed stored in the ledger. |
-| P3 [PO] | Max drawdown (mark-to-market) | **< 15%** at every point of the run. Touching 15% is an immediate FAIL. |
-| P4 [PO] | Missed exits | **0** |
-| P5 [PO] | Downtime | **< 2%** of wall-clock time in the run |
-| P6 [PO] | Replay over our recorded window vs paper | Same sign of mean R |
-| P7 [QR] | **Single look** | The PASS, FAIL or INCONCLUSIVE verdict is computed once, on the first 300 closed trades. Earlier trades are not "peeked" into a verdict. Running statistics can be displayed but carry the label "interim, not a verdict". See concern C2. |
+| K9 / S4 | Top-9-by-raw-ROI baseline (B1) | Our mean R ≤ B1's mean R over its trades opened in `[t0, T_eval]`. A P2c failure also fires K9, but that already prevents PASS. |
+| FR1 | Top-trade concentration | Mean R over S without its 5 highest-R trades ≤ 0 |
+| FR2 | Leader concentration | Mean R over S without the trades of the leader with the largest total R ≤ 0 |
+| FR3 | **Cost-fragile** (BT-13) | `mean_i(R_i − c_i) ≤ 0`, that is, mean R with all modelled costs doubled |
+| FR4 | Short-volatility profile (S5) | Win rate > 70% **and** payoff ratio < 0.5 |
+| FR5 | Add-inflated R | Mean R_maxrisk ≤ 0 |
+| D6 | Paper vs replay divergence | Any tolerance in 8.2 exceeded. This blocks any live step outright (D6). |
 
-**Verdict mapping at N = 300:**
-- PASS if P2-P6 all hold.
-- FAIL if P3 or P4 is breached at any time, or the CI upper bound is ≤ 0.
-- INCONCLUSIVE otherwise, including fewer than 300 trades at the calendar cap.
+### 5.7 Reported secondary statistics (never gating)
 
-### 5.2 Secondary criteria (reported; gating only if the PO approves concerns C3 and C4)
+| ID | Statistic |
+|---|---|
+| S2 | Risk-weighted mean R. It has the same sign as P2b. |
+| S3 | B0: random entry, random direction, matched frequency and holding time; our mean R vs its 95th percentile |
+| S4 | B1: top 9 by raw ROI (feeds K9) |
+| S5 | Win rate and payoff ratio (feeds FR4) |
+| – | R_maxrisk, decay, latency, mirror fidelity, exit mix, B0b, B2, B3, B4 (6.2) |
 
-| ID | Criterion | Threshold |
-|---|---|---|
-| S1 | Net USD P&L over the 300 trades | > 0 |
-| S2 | Risk-weighted mean R | > 0 |
-| S3 | H2(a): mean R vs the random-entry baseline | above the baseline's 95th percentile (1,000 replications) |
-| S4 | H2(b): mean R vs the top-8-by-raw-ROI baseline | greater |
-| S5 | Payoff check | Not both: win rate > 70% and payoff ratio < 0.5. That combination is a hidden short-volatility profile. |
+### 5.8 Variant budget (D4)
 
-### 5.3 Variant budget (D4)
-
-- **Paper run:** exactly **1** frozen configuration (V0, or the variant chosen in the pre-paper replay).
-- **Pre-paper replay:** at most **8** variants, all declared here, and the count is reported with any result:
+- **Paper:** exactly 1 frozen configuration per run, and at most 2 runs (5.4).
+- **Pre-paper replay:** at most **8** declared variants. The count is reported with any result.
 
 | ID | Variant |
 |---|---|
@@ -159,85 +327,158 @@ Written 2026-09-29 before any result. Changing any number after the paper run st
 | V3 | Stop 1.5×ATR |
 | V4 | Stop 3×ATR |
 | V5 | No TP (exit on our SL or the trader's exit only) |
-| V6 | Join rank 5 / drop rank 10 |
+| V6 | Join rank 5 / drop rank 9 |
 | V7 | Minimum median hold 60 min |
 
-**Rule:** V0 is kept unless another variant beats it by more than one replay CI half-width. Otherwise the selection is noise.
+- **Selection rule:** V0 is kept unless another variant beats it by more than one replay CI half-width. Otherwise the selection is noise.
+- **Sensitivity runs** use the chosen variant only and don't count as variants:
+  - costs ×1.5 and ×2
+  - delays of 1, 3 and 5 s
 
-**Sensitivity runs:** costs ×1.5 and ×2, and delay of 1, 3 and 5 s. These run on the chosen variant only. They are robustness checks and do not count as variants.
+### 5.9 Operating characteristics of the frozen rule [EXPL, synthetic]
+
+These come from E5 (`feasibility_mc.py` v2, seed 17), E6 (`gate_power.py` v2, seed 23) and E10 (`few_clusters.py`, seed 31). They describe the rule, not the strategy.
+
+| Property | Value | Source |
+|---|---|---|
+| False PASS at zero edge, run 1 (P2 only), no beta | 1.3% [1.0, 1.7] (nominal one-sided 2%) | E6 D2 |
+| False PASS at zero edge, day-factor corr 0.5, 80% long: naive t / v1 rule / frozen P2 / frozen P2 + P2c | 13.3% / 8.0% / 1.2% / **0.1%** | E6 D2 (BT-4, BT-7) |
+| Family-wise false PASS across 2 runs (96% then 99%) vs 2 runs at 95% | **1.6%** [1.3, 2.0] vs 3.2% [2.7, 3.8] | E6 G |
+| Power at +0.10R, independent trades, 96% / 99% | 43% / 24% (realised SD 0.86R); 30% / 13% (realised SD 1.05R) | E6 B |
+| Power at +0.10R with merged positions, no beta: naive t / frozen P2 / frozen P2 + P2c | 41% / 22% / 20%. With day-factor corr 0.3 and 80% long: 43% / 13% / **5.6%** | E6 D2 |
+| **Joint P(PASS) in run 1 at a true +0.10R** (reach 300, no 15% DD, USD > 0, LB > 0) | base 0.29, base with correlation 0.24, optimistic 0.22, 3-5 traders 0.14, pessimistic 0.01. These are **upper bounds**: the bootstrap component, P2c, P6 and real costs are not modelled. | E5 (BT-6) |
+| Joint P(PASS) at zero edge | 0.004-0.015 across scenarios | E5 |
+| Power at +0.10R when the 300 trades fall on 5 / 8 / 10 / 15 days (no beta) | 13 / 16 / 17 / 19% (frozen P2 at 96%). False PASS stays ≤ 1.6%. | E10 |
+
+**Reading:**
+- A real +0.10R edge passes run 1 **at best about 1 time in 3**. With few leaders, or leaders who rarely trade, it almost never does.
+- The price of the honest rule is lower power. The day clusters make the effective sample the number of trading days, not 300 trades. At the synthetic median that is about 8 days (optimistic), 21 days (base) or 43 days (3-5 traders).
+- **The joint figures from E5 are upper bounds.** They omit the day bootstrap, P2c and P6. E6 D2 shows what those cost relative to the frozen P2 alone:
+  - about 10% of the power with no beta (22% falls to 20%)
+  - about 60-70% of the power when copy R carries a strong daily market factor (13% falls to 5.6%, and 10% to 2.9%)
+
+  If our copies are mostly beta, a modest edge is essentially undetectable in one run. That is the intended protection (BT-7), and it means a PASS needs a large edge.
+- **INCONCLUSIVE is the most likely honest outcome** of a run with a modest real edge.
+
+---
 
 ## 6. Validation protocol (D5)
 
-**Stages, in order:**
-1. **Indicative replay.** Run before our own recording exists, over historical fills of today's candidates. It is survivorship-biased, labelled indicative only, and used for kill checks only (K1), never as evidence of an edge.
-2. **Point-in-time replay.** Covers the window from our day-1 snapshots through the start of the paper run. It uses the same engine, the stored snapshots and recorded books where available. This is the pre-paper out-of-sample test.
-3. **Paper run.** A forward, true out-of-sample test with a frozen configuration.
-4. **Walk-forward inside replays.** The score at cycle t is computed from data ≤ t only, and trades after t are the out-of-sample fold. There is no in-sample fit: weights and gates are priors, not fitted. The only fitting is the variant choice in 5.3.
+### 6.1 Stages, in order
 
-**Baselines.** Every baseline runs through the same engine, risk limits, cost model and window.
+1. **Indicative replay.** It runs before our own recording exists, over the historical fills of today's candidates. It is survivorship-biased and labelled indicative only. It is used only for kill checks (K1), never as evidence of an edge. `hl_sample.py` belongs here.
+2. **Point-in-time replay.** It covers the window from our day-1 snapshots to the start of the paper run, using:
+   - the same engine
+   - the stored snapshots
+   - the recorded books
 
-| ID | Baseline | Construction |
-|---|---|---|
-| B0 | **Random entry at matched frequency** | For each taken trade: the same coin, a uniformly random entry time within the same UTC week, a random direction, the same holding time (capped by our SL/TP), and the same sizing and stop rules. 1,000 replications gives a distribution of mean R. |
-| B0b | Random direction at the same time | Same coin and entry time as the real trade, direction flipped by a coin toss. Tests whether direction carries information beyond timing. |
-| B1 | **Top N by raw ROI** | Each hour, follow the top 8 of our leaderboard snapshot by 30-day `roi` (accountValue ≥ $10k), with no gates and no filter. |
-| B2 | **Buy-and-hold BTC** | $300 in BTC perp at 1× from the run start, funding included. Compare USD return and max drawdown. Also a volatility-matched version scaled to our realised volatility. |
-| B3 | Unfiltered copy of our selected traders | This is V1 and the shadow ledger. It isolates what the filter contributes. |
-| B4 | The leaders' own P&L over the window | An upper bound. The gap between B4 and H1 is the cost of copying. |
+   This is the pre-paper out-of-sample test and the only place variants are compared (5.8).
+3. **Paper run(s).** A forward, true out-of-sample test with a frozen configuration, at most 2 runs (5.4).
+4. **Walk-forward inside replays.** The score at cycle t is computed from data ≤ t only, and trades after t form the out-of-sample fold. There is no in-sample fit: weights and gates are priors. The only fitting is the variant choice in 5.8.
 
-**Cost model:**
-- **Fees:** taker 0.045% per side on every paper fill, including SL and TP, which trigger on mark price and fill as market orders. No maker fills or rebates are assumed. HIP-3 markets are excluded, or charged 2× if the PO includes them.
-- **Spread and impact (paper):** the fill walks the live L2 book captured at the decision time plus `paper_ack_delay_ms` (default 1,000 ms, per the median order-to-fill of about 884 ms from Tokyo in market-context 2.4).
-- **Spread and impact (replay):** each coin's median half-spread from our recordings × 1.5. The fallback when unrecorded is 2 bps for majors and 8 bps for alts, per side.
+### 6.2 Baselines
+
+Every baseline runs through the same engine, risk limits, cost model and window.
+
+| ID | Baseline | Construction | Role |
+|---|---|---|---|
+| **B0d** | **Direction-matched, random-time [PO]** | For each trade i in S: same coin and **same direction**. Entry at a time drawn uniformly from the recorded part of `[t0, T_eval − hold_i]`, where hold_i is trade i's actual holding time. Same risk per trade, our ATR stop and TP computed at that time, and the same cost model (recorded spread at that time, taker fees, delay slippage from measured decay). Exit at our SL/TP or after hold_i, whichever comes first; funding hourly. **1,000 replications** per trade, seed stored. `B̄_i` = the mean R over the replications. | **Gating: P2c** on `D_i = R_i − B̄_i`. It removes the direction-profile, beta, regime and cost components shared with random timing; what is left is timing and selection. |
+| B0 | Random entry, random direction | Same coin, uniformly random entry time within the same UTC week, random direction, same holding time and sizing rules. 1,000 replications. | Reported (S3) |
+| B0b | Random direction at the same time | Same coin and entry time as the real trade, direction flipped by a coin toss | Reported: does direction carry information beyond timing? |
+| B1 | **Top 9 by raw ROI** | Each hour, follow the top 9 of our leaderboard snapshot by 30-day `roi` (accountValue ≥ $10k), with no gates and no filter. Trades opened in `[t0, T_eval]`. | **Go-live blocker (S4, K9)** |
+| B2 | Buy-and-hold BTC | $300 in BTC perp at 1× from `t0`, funding included. Compare USD return and max drawdown; also a version scaled to our realised volatility. | Reported |
+| B3 | Unfiltered copy of our selected traders | V1 plus the shadow ledger. Isolates the filter's contribution. | Reported (H3) |
+| B4 | The leaders' own P&L over the window | An upper bound. The gap between B4 and H1 is the cost of copying. | Reported |
+
+**Why P2c is a lower bound and not a point comparison [QR precision of the PO's "beating"].**
+- Suppose a pure-beta strategy has mean R 0.15 in a rising month. Its B0d mean is also about 0.15, so D ≈ 0 ± 0.1.
+- A point comparison would pass it half the time. A lower bound passes it at about the nominal α (E6 D2).
+- Because B0d carries the same costs, P2c is **easier** than P2 when there is no beta, and harder when there is.
+
+### 6.3 Cost model
+
+- **Fees:** taker 0.045% per side on every paper fill, including SL and TP, which trigger on mark price and fill as market orders. No maker fills or rebates are assumed. HIP-3 markets are not traded in v1 [PO].
+- **Spread and impact (paper):** the fill walks the live L2 book captured at decision time plus `paper_ack_delay_ms`. The default is 1,000 ms, from the median order-to-fill of about 884 ms from Tokyo (market-context 2.4).
+- **Spread and impact (replay and baselines):** the **spread recorded at signal time** (BT-13). The fallback, when no recording exists, is each coin's median half-spread from our recordings × 1.5, then 2 bps for majors and 8 bps for alts, per side.
 - **Delay slippage (replay):** our measured `decay(Δ)` at the p95 detection latency. The fallback is 5 bps for majors and 15 bps for alts.
-- **Stops:** fill at the book at trigger + ack delay, with no guaranteed stop price (gap-through is modelled).
-- **Funding:** accrued hourly from actual rates.
+- **Stops:** fill at the book at trigger plus the ack delay, with no guaranteed stop price (gap-through is modelled).
+- **Funding:** accrued hourly from actual rates [PO].
 - **Liquidation:** isolated positions use the mark-price and maintenance-margin model.
+
+**Costs expressed in R (BT-13) [EXPL, arithmetic on the fallback costs].**
+- A round trip costs 2 × 4.5 bps taker, plus 2 × half-spread, plus one delay term: **18 bps for majors and 40 bps for alts**.
+- An exit that follows the leader's close adds a second delay term (up to +5 or +15 bps), which is not in the table.
+- R cost = bps ÷ stop distance in bps.
+
+| Stop distance (2×ATR 1h) | Majors ×1 | ×1.5 | ×2 | Alts ×1 | ×1.5 | ×2 |
+|---|---|---|---|---|---|---|
+| 0.75% | 0.24R | 0.36R | 0.48R | 0.53R | 0.80R | 1.07R |
+| 1.0% | 0.18R | 0.27R | 0.36R | 0.40R | 0.60R | 0.80R |
+| 1.5% | 0.12R | 0.18R | 0.24R | 0.27R | 0.40R | 0.53R |
+| 2.5% | 0.07R | 0.11R | 0.14R | 0.16R | 0.24R | 0.32R |
+| 4.0% | 0.04R | 0.07R | 0.09R | 0.10R | 0.15R | 0.20R |
+
+**Reading:**
+- At typical stops (majors about 1-1.6%, alts about 2-4%), costs are about **0.1-0.2R per trade**. That is the same size as the prior edge (< 0.10R).
+- Tight stops on alts make copying structurally unprofitable. This is why FR3, the cost-fragile flag (5.6), is pre-registered, and why the ×1.5 and ×2 sensitivity runs now have a consequence.
 
 ## 7. Kill criteria (stop, don't build further or don't go live)
 
 | ID | Trigger | Action |
 |---|---|---|
-| K1 | Indicative or point-in-time replay with ≥ 100 trades: mean R CI upper bound < 0 | Stop before paper (this is the PO's kill criterion) |
+| K1 | Indicative or point-in-time replay with ≥ 100 trades: mean R CI upper bound < 0 | Stop before paper (the PO's kill criterion) |
 | K2 | Point-in-time replay with ≥ 150 trades: point estimate ≤ 0 | Stop and review with the PO before paper |
-| K3 | Paper at N = 300: CI upper bound ≤ 0 | FAIL. Recommend kill or redesign, not re-run. |
-| K4 | Paper at N = 300: INCONCLUSIVE with point estimate ≤ 0 | Recommend kill or redesign rather than extension |
-| K5 | Drawdown ≥ 15% at any time | FAIL [PO] |
+| K3 | Paper verdict FAIL through F3 (`UB_r ≤ 0`) | Recommend kill or redesign, not a re-run of the same config |
+| K4 | Paper verdict INCONCLUSIVE with point estimate ≤ 0 | Recommend kill or redesign rather than run 2 with the same config |
+| K5 | Drawdown ≥ 15% at any time | FAIL (F1) [PO] |
 | K6 | Decay: median adverse drift at our p50 latency ≥ 50% of the median leader gross round-trip move | Uncopyable: redesign |
-| K7 | In the 24h dry run plus the first week, fewer than 5 eligible traders on ≥ 50% of scoring cycles | The premise fails. Redesign the gates as a logged variant **before** a new run, never mid-run. |
+| K7 | In the 24h dry run plus the first week, fewer than 5 eligible traders on ≥ 50% of scoring cycles | The premise fails. Redesign the gates as a logged variant **before** a run, never mid-run. |
 | K8 | > 50% of filter-passing signals unexecutable at $300 (below $10 after caps) | The $300 mirror model is invalid: PO decision on sizing |
-| K9 | S3 and S4 both fail while P2 passes | Positive result but no evidence that selection adds value (beta or luck). Do not go live without PO review. |
-| K10 | Hyperliquid data access unavailable or prohibited (including a Brazil geo-block around 2026-10-30) | Stop [PO] |
+| **K9** | **Either** P2c fails (the trades do not beat the direction-matched random-time baseline) **or** S4 fails (they do not beat top-9 by raw ROI) | No evidence that selection adds value beyond beta or luck. A P2c failure prevents PASS (5.3). An S4 failure with PASS blocks go-live until PO review (5.6). |
+| K10 | Hyperliquid data access unavailable or prohibited, including a Brazil geo-block around 2026-10-30 | Alert and pause entries [PO]. Stop if it persists. |
+| K11 | Run register exhausted: run 2 ended without PASS | Close the paper gate for this epic (5.4) |
+| K12 | FR3 cost-fragile at `T_eval` | Go-live blocked pending PO review. Recommend redesign toward longer holds or majors. |
 
 ## 8. Paper-trading plan (D6)
+
+### 8.1 Plan
 
 - **Preconditions:**
   - a 24h dry run with no crash
   - a 1-day latency measurement from the PO's PC
   - at least 1 week of recorded books and leaderboard snapshots, which feeds the point-in-time replay
+  - the incremental candidate backfill (12-24h) done before any wallet is followed [PO]
   - K1 and K2 not triggered
-  - the configuration frozen and its hash written to the ledger
-- **Duration:** until 300 closed taken trades, with a calendar cap of 30 days [PO]. If N < 300 at 30 days, the verdict is INCONCLUSIVE. Extending to 60 days with the same frozen config and the same single look at N = 300 needs PO approval (question Q5).
-- **Minimum trades:** 300 for a verdict. Below 100 at day 30, report "infeasible at this configuration" (feeds K7 and K8).
-- **Frozen config:** any change to scoring, filter, sizing, exits or risk parameters restarts the trade count as a new run. Bug fixes are logged; trades affected by a bug stay in the stats, and the backtest-auditor rules on them.
-- **Tolerated divergence**, with the replay run over the paper window through the same engine:
+  - the run record written (5.1)
+- **Duration:** the sample is the first 300 opened trades.
+  - If fewer than 300 are opened by day 30, the run continues to day 60 with the same frozen config and a **single evaluation** [PO].
+  - With fewer than 300 opened by day 60, the verdict is INCONCLUSIVE.
+  - Otherwise the evaluation happens at `T_eval` (5.3).
+- **Frozen config:** any change to scoring, filter, sizing, exits, risk or cost parameters ends the run as ABORTED, and the run counts [PO]. At most 2 runs (5.4).
+- **Visibility:** see 5.5.
+- **Wallets:** paper **$300**. Live, in a future epic, starts at **≥ $300**, never smaller than the paper-tested size [PO].
+
+### 8.2 Tolerated divergence
+
+The replay is run over the paper window through the same engine.
 
 | Check | Tolerance |
 |---|---|
 | Take/skip decision agreement per signal | ≥ 90% |
 | Per-trade R, paper vs replay, on matched trades | median absolute difference ≤ 0.05R; mean difference ≤ 0.10R |
-| Sign of mean R | Must match [PO] |
+| Sign of mean R | Must match [PO] (this is P6) |
 | Paper fill price vs the replay cost model | median deviation ≤ 3 bps; p90 ≤ 10 bps |
 | Trade count | Replay count within ±10% of paper |
 
-Exceeding any tolerance is a D6 failure: the replay cannot be trusted, so stop before any live step.
-- **After a PASS (future epic):** a small live stage of ≥ 100 trades. Paper-vs-live tolerance is set in that epic. Paper fills are optimistic, with no queue position and no rejects.
+- Exceeding any tolerance is a D6 failure: the replay cannot be trusted, so stop before any live step.
+- **After a PASS (future epic):** a small live stage of ≥ 100 trades. The paper-vs-live tolerance is set in that epic, because paper fills are optimistic: no queue position and no rejects.
 
 ## 9. Config implications (for the PM's config table)
 
 Flags:
 - **OF** = overfitting risk: a prior with few or no data points behind it. It must not be tuned on paper-run data.
 - **CAL** = calibrate once from pre-paper recorded data, then freeze.
+- **FROZEN** = part of the pre-registration (5). It can change only by addendum before a run (5.1).
 
 ### 9.1 Scoring and selection (section 10)
 
@@ -246,14 +487,15 @@ Flags:
 | `scoring.candidates_k` | 200 | wallets | 50-500 | brief | |
 | `scoring.interval_min` | 60 | min | 15-1440 | brief | |
 | `scoring.window_days` | 180 | days | 90-365 | brainstorm | OF |
+| `scoring.dsr_min_daily_days` | 60 | days | ≥ 30 | QR (BT-17) | OF |
 | `gate.min_account_age_days` | 180 | days | ≥ 90 | brainstorm | OF |
 | `gate.min_round_trips` | 150 | count | ≥ 50 | brainstorm | OF |
 | `gate.min_fill_span_days` | 60 | days | ≥ 30 | QR (10k fill cap) | OF |
-| `gate.min_positive_blocks` / `gate.n_blocks` / `gate.block_days` | 4 / 6 / 30 | count, days | | QR (replaces "3 of 4 quarters", which is not observable in 180d) | OF |
+| `gate.min_positive_blocks` / `gate.n_blocks` / `gate.block_days` | 4 / 6 / 30 | count, days | | QR | OF |
 | `gate.max_drawdown` | 0.35 | fraction | ≤ 0.5 | brainstorm | OF |
 | `gate.min_profit_factor` | 1.3 | ratio | ≥ 1.0 | brainstorm | OF |
 | `gate.min_dsr_prob` | 0.95 | probability | 0.5-0.99 | brainstorm / BLdP | |
-| `gate.dsr_n_trials` | 15000 | count | ≥ `candidates_k` | market-context (leaderboard size) | see C14 |
+| `gate.dsr_n_trials` | 15000 | count | ≥ `candidates_k` | market-context (leaderboard size) | see C11 |
 | `gate.min_median_hold_min` | 15 | min | ≥ 20 × p95 latency | brainstorm | OF |
 | `gate.max_top_trade_share` | 0.25 | fraction | | brainstorm | OF |
 | `gate.max_top_asset_share` | 0.50 | fraction | | brainstorm | OF |
@@ -262,7 +504,7 @@ Flags:
 | `gate.min_executable_share` | 0.50 | fraction | | QR | OF |
 | `gate.max_maker_share` | 0.70 | fraction | | QR (excludes market makers) | OF |
 | `gate.max_current_drawdown` | 0.20 | fraction | | QR | OF |
-| `gate.exclude_vaults` | true | bool | | QR | |
+| `gate.exclude_roles` | vault, agent, missing (via `userRole`); plus the HLP address | list | | QR | |
 | `blowup.max_adds_while_losing_share` / `min_adds` | 0.20 / 10 | fraction, count | | brainstorm | OF |
 | `blowup.max_size_after_loss_ratio` / `min_each` | 1.5 / 20 | ratio, count | | QR | OF |
 | `blowup.skew_win_rate` / `skew_loss_mult` | 0.85 / 3.0 | | | brainstorm | OF |
@@ -278,36 +520,56 @@ Flags:
 | `select.join_rank` / `select.drop_rank` | 8 / 15 | rank | join < drop | brief | OF |
 | `select.join_confirm_cycles` / `select.drop_confirm_cycles` | 2 / 2 | cycles | ≥ 1 | QR | |
 | `select.min_follow_hours` | 24 | h | | brief | |
-| `select.min_followed` / `select.max_followed` | 5 / 10 | count | max ≤ WS user cap | brief; market-context Q1 | |
+| `select.min_followed` / `select.max_followed` | 5 / **9** | count | max ≤ WS user cap − 1 | brief; **PO (9 + 1 swap slot)** | |
+| `select.backfill_hours` | 12-24 (incremental) | h | | PO | |
 | `select.swap_margin` | 0.10 | score units [0,1] | | QR | OF |
 | `select.max_swaps_per_cycle` | 1 | count | | QR | |
 | `leader_pause.max_copy_dd` / `leader_pause.max_consec_losses` | 0.10 / 5 | fraction of allocation, count | | brainstorm risk | OF |
 | `copyreplay.delay_ms` | measured p95, else 3000 | ms | ≤ 5000 | QR | CAL |
-| `copyreplay.half_spread_bps` (majors / alts) | recorded median × 1.5, else 2 / 8 | bps | | QR | CAL |
+| `copyreplay.half_spread_bps` (majors / alts) | recorded at signal time; else recorded median × 1.5; else 2 / 8 | bps | | QR (BT-13) | CAL |
 
-### 9.2 Evaluation, costs and the run
+### 9.2 Evaluation, sizing, costs and the run
 
 | Key | Default | Unit | Basis | Flag |
 |---|---|---|---|---|
-| `eval.n_trades` | 300 | trades | PO | |
-| `eval.ci_level` | 0.95 | | PO | |
-| `eval.ci_method` | min(t, cluster_bootstrap) | | QR | |
-| `eval.bootstrap_b` / `eval.bootstrap_seed` | 10000 / stored | | QR | |
-| `eval.max_dd` | 0.15 | fraction | PO | |
-| `eval.calendar_cap_days` | 30 | days | PO | |
-| `eval.extension_days` | 0 (Q5) | days | PO decision pending | |
-| `eval.single_look` | true | bool | QR | |
-| `cost.taker_fee_bps` / `cost.maker_fee_bps` | 4.5 / 1.5 | bps | market-context [T] | |
-| `cost.hip3_fee_mult` | 2.0 | x | market-context [T] | |
-| `paper.ack_delay_ms` | 1000 | ms | market-context | CAL |
-| `paper.mark_interval_s` (for drawdown) | 60 | s | QR | |
-| `decay.deltas_s` | 0.25, 0.5, 1, 2, 3, 5, 10, 30, 60, 300 | s | QR | |
+| `risk.per_trade_fraction` | **0.005** | fraction of equity | **PO** (ceiling 0.01) | FROZEN |
+| `sizing.partial_below_min_action` | **skip_and_log** | enum | **PO** | FROZEN |
+| `sizing.close_all_if_remainder_below_min` | **true** | bool | **PO** | FROZEN |
+| `sizing.min_order_usd` | 10 | USD | exchange | |
+| `paper.wallet_usd` | **300** | USD | **PO** | FROZEN |
+| `live.min_wallet_usd` | **300** | USD | **PO** | |
+| `markets.allowed_dexes` | **core** | list | **PO** (HIP-3 not traded) | FROZEN |
+| `recording.markets` | core + HIP-3 | list | **PO** | |
+| `eval.sample_basis` | **opened** | enum | **PO** | FROZEN |
+| `eval.n_trades` | 300 | trades | PO | FROZEN |
+| `eval.calendar_cap_days` / `eval.extension_days` | 30 / **30** (to 60 total) | days | **PO** | FROZEN |
+| `eval.closeout_max_days` | 7 | days after the 300th open | QR | FROZEN |
+| `eval.ci_level_run1` / `eval.ci_level_run2` | **0.96 / 0.99** | | PO (α split) + QR (split) | FROZEN |
+| `eval.max_runs` | **2** | runs | **PO** | FROZEN |
+| `eval.ci_method` | min over {iid t, day-cluster bootstrap, day-cluster CR t (G−1 df)} | | PO (day clusters) + QR | FROZEN |
+| `eval.cluster_key` | UTC day of the merged position's first entry | | QR (BT-4) | FROZEN |
+| `eval.min_day_clusters` | 5 | days | QR (E10) | FROZEN |
+| `eval.bootstrap_b` / `eval.bootstrap_seed` | 10000 / generated at run start, stored | | QR | FROZEN |
+| `eval.require_usd_pnl_positive` | true | bool | **PO** | FROZEN |
+| `eval.baseline_gate` | direction_matched_random_time | enum | **PO** | FROZEN |
+| `eval.max_dd` / `eval.mark_interval_s` | 0.15 / 60 | fraction / s | PO / QR | FROZEN |
+| `eval.show_interim_stats` | false (trades and USD P&L are shown) | bool | PO + QR | FROZEN |
+| `baseline.dm_reps` | 1000 | replications per trade | QR | FROZEN |
 | `baseline.random_reps` | 1000 | | QR | |
-| `baseline.top_roi_n` | 8 | | QR | |
+| `baseline.top_roi_n` | **9** | wallets | QR (matches `max_followed`) | FROZEN |
+| `fragility.top_k_trades` | 5 | trades | QR (BT-12) | FROZEN |
+| `fragility.cost_stress_mult` | 2.0 | x | QR (BT-13) | FROZEN |
+| `cost.taker_fee_bps` / `cost.maker_fee_bps` | 4.5 / 1.5 | bps | market-context [T] | |
+| `cost.funding_accrual` | hourly, actual rates | | PO | |
+| `paper.ack_delay_ms` | 1000 | ms | market-context | CAL |
+| `decay.deltas_s` | 0.25, 0.5, 1, 2, 3, 5, 10, 30, 60, 300 | s | QR | |
+| `data.paid_s3` | false | bool | PO | |
 
-The risk, filter and exit parameters (`risk_per_trade`, ATR multiple, TP, loss limits, slippage and age guards, event windows) come from the brief and the risk research, and the PM owns them. From a research standpoint:
+The risk, filter and exit parameters come from the brief and the risk research, and the PM owns them. They include the ATR multiple, TP, loss limits, slippage and age guards, and event windows (entries and adds only [PO]).
+
+From a research standpoint:
 - **OF:** every filter threshold (volatility percentile, funding extreme, spread, OI drop). None has data behind it yet.
-- **CAL then freeze:** calibrate each of those thresholds once on pre-paper recorded data, then freeze it.
+- **CAL then freeze:** calibrate each of those thresholds once on pre-paper recorded data, then freeze it before run 1.
 
 ---
 
@@ -316,28 +578,35 @@ The risk, filter and exit parameters (`risk_per_trade`, ATR multiple, TP, loss l
 ### 10.1 Inputs, point-in-time
 
 For wallet w at cycle time t (UTC ms):
-- `F_w(t)` = cached fills with `time ≤ t`, within `window_days`.
-- `P_w(t)` = the latest `portfolio` snapshot fetched at or before t.
-- `C_w(t)` = the latest `clearinghouseState` fetched at or before t.
-- `K(t)` = 1h candles with close time ≤ t.
+- `F_w(t)` = cached fills with `time ≤ t`, within `window_days`
+- `P_w(t)` = the latest `portfolio` snapshot fetched at or before t
+- `C_w(t)` = the latest `clearinghouseState` fetched at or before t
+- `K(t)` = 1h candles with close time ≤ t
 
-Missing or stale inputs, meaning older than `2 × interval_min`, make the wallet **ineligible** (fail closed, A2).
+Missing or stale inputs (older than `2 × interval_min`) make the wallet **ineligible**: fail closed (A2).
 
-**Round-trip reconstruction.** Implemented in `research/scripts/hl_sample.py::reconstruct`, which has a self-test.
+**Round-trip reconstruction.** Implemented in `docs/sdlc/copytrade-v1/research/scripts/hl_sample.py::reconstruct`, which has a self-test.
 - A per-coin position goes from 0, to non-zero, and back to 0. A flip splits into a close and a new open.
 - A position already open at the first available fill is ignored until it is flat.
-- Spot and excluded dexes are skipped.
+- Spot and HIP-3 (`dex:COIN`) fills are skipped.
 - Per round trip j, the reconstruction records:
   - coin, direction s_j, open and close times, entry px and size
   - peak notional `N_j = max|pos| × avg_px`
-  - adds, adds-while-losing, reduce fractions
+  - the sequence of adds and reduces, with times, prices and sizes
+  - adds-while-losing
   - leader net P&L `L_j = Σ closedPnl − Σ fee − funding_j`
+  - a liquidation flag
 
-**Daily returns.** `r_d = ΔpnlHistory_d / AV_{d−1}`.
-- `ΔpnlHistory_d` comes from `perpAllTime` or `perpMonth` `pnlHistory`, step-interpolated at UTC midnights. It is deposit-neutral.
-- `AV_{d-1}` comes from `accountValueHistory`.
-- Days with no change count as 0.
-- T = the number of days in the window.
+**Daily returns for the Sharpe-based metrics (BT-17).** `r_d = ΔPnL_d / AV_{d−1}`. ΔPnL_d is deposit-neutral and comes from the **finest point-in-time source available for day d**, in this order:
+1. Our own hourly `portfolio` snapshots.
+2. `perpMonth` `pnlHistory` (the last ~30 days, sub-daily points).
+3. For older days, **realised** daily P&L from fills: Σ closedPnl − fee − funding by UTC day.
+
+The coarse `perpAllTime` series (about 93 points) is **not** step-interpolated into daily returns. `AV_{d−1}` is the latest account-value point at or before the end of day d−1.
+
+Every wallet records `dsr_resolution`: the number of days from each source. The DSR metrics (M5-M7, G7, component 1) use T = the number of days with a daily-resolution return. If T < `scoring.dsr_min_daily_days` (60), the wallet is ineligible under G7.
+
+Mixing mark-to-market and realised days understates volatility on the realised days. This is a known limitation, reduced as our own snapshots accumulate.
 
 ### 10.2 Metrics (per wallet, per cycle)
 
@@ -347,18 +616,18 @@ Missing or stale inputs, meaning older than `2 × interval_min`, make the wallet
 | M2 | `fill_span_days` | (last fill − first fill) / 1 day, within the window |
 | M3 | `account_age_days` | t − the first `perpAllTime` point |
 | M4 | `profit_factor` | `Σ_{L_j>0} L_j / |Σ_{L_j<0} L_j|`, capped at 10 |
-| M5 | `sr_d` | `mean(r_d) / sd(r_d)`, daily, zeros included |
+| M5 | `sr_d` | `mean(r_d) / sd(r_d)`, daily, zeros included, over the T daily-resolution days (10.1) |
 | M6 | `skew`, `kurt` | sample skewness and (non-excess) kurtosis of r_d |
-| M7 | `dsr_prob` | `Φ((sr_d − SR0)·√(T−1) / √(1 − skew·sr_d + (kurt−1)/4·sr_d²))` with `SR0 = Emax(N)/√T`, `Emax(N) = (1−γ)Φ⁻¹(1−1/N) + γΦ⁻¹(1−1/(N·e))`, γ = 0.5772, N = `dsr_n_trials` (Bailey & López de Prado 2014, with the null variance of the Sharpe estimate taken as 1/T) |
-| M8 | `pos_blocks` | number of the last `n_blocks` blocks of `block_days` with Σ `pnlHistory` change > 0. A block with no data counts as not positive. |
+| M7 | `dsr_prob` | `Φ((sr_d − SR0)·√(T−1) / √(1 − skew·sr_d + (kurt−1)/4·sr_d²))`, where `SR0 = Emax(N)/√T`, `Emax(N) = (1−γ)Φ⁻¹(1−1/N) + γΦ⁻¹(1−1/(N·e))`, γ = 0.5772 and N = `dsr_n_trials`. This is Bailey & López de Prado (2014), with the null variance of the Sharpe estimate taken as 1/T. |
+| M8 | `pos_blocks` | the number of the last `n_blocks` blocks of `block_days` with Σ ΔPnL > 0. A block with no data counts as not positive. |
 | M9 | `max_dd` | max(DD of realised equity `AV_0 + cumΣ L_j`, DD of the mark-to-market curve `AV_0 + pnlHistory`) |
 | M10 | `median_hold_min` | median (close − open) over round trips |
 | M11 | `top_trade_share` | `max_j L_j / Σ_j L_j` (ineligible if Σ ≤ 0) |
 | M12 | `top_asset_share` | `max_coin Σ_{j∈coin} L_j / Σ_j L_j` |
 | M13 | `maker_share` | notional of fills with `crossed = false` / total notional |
-| M14 | **`copy_mean_r`** | **Copy replay.** Each round trip is re-traded as we would trade it: entry at the leader's open px plus a delay cost, our ATR stop (from `K(t)` before entry), our TP, the leader's close or our SL/TP whichever comes first (the high/low of 1h bars; ambiguous bar means stop first), mirrored partial cuts, adds ignored, our costs. Gives `R_copy_j` and `copy_mean_r = mean_j R_copy_j`. |
+| M14 | **`copy_mean_r`** | **Copy replay.** Each round trip is re-traded as we would trade it: entry at the leader's open px plus a delay cost, our ATR stop (from `K(t)` before entry), our TP, and mirrored adds and partials under the $10 rules. The exit is the leader's close or our SL/TP, whichever comes first, checked on the high/low of 1h bars; on an ambiguous bar the stop is assumed first. Our costs are included. Gives `R_copy_j` and `copy_mean_r = mean_j R_copy_j`. |
 | M15 | `copy_edge_ratio` | `mean_j(gross_bps_j) / mean_j(cost_bps_j)`, where `gross_bps_j = Σ closedPnl_j / N_j × 1e4` and `cost_bps_j = 2·taker + 2·half_spread(coin) + delay_bps(coin)` |
-| M16 | `executable_share` | share of opens whose mirrored notional `(open_notional / AV_at_open) × our_equity`, after the risk cap with our stop, is ≥ $10 |
+| M16 | `executable_share` | share of opens whose mirrored notional `(open_notional / AV_at_open) × our_equity`, after the risk cap with our stop, is ≥ $10. AV_at_open is the latest point at or before the open. |
 | M17 | `recent_sr` | `sr_d` over the last 30 days × 30/(30 + `shrink_k_days_recent`) |
 | M18 | `current_dd` | (peak − current) / peak of the mark-to-market curve |
 | M19 | `eff_leverage_median` | median over opens of `N_j / AV_at_open` |
@@ -369,17 +638,17 @@ Missing or stale inputs, meaning older than `2 × interval_min`, make the wallet
 |---|---|
 | G1 | `account_age_days ≥ min_account_age_days` (180) |
 | G2 | `n_rt ≥ min_round_trips` (150) |
-| G3 | `fill_span_days ≥ min_fill_span_days` (60). This handles the 10k-fill cap: very active wallets cannot show 60 days, and are mostly scalpers anyway. |
+| G3 | `fill_span_days ≥ min_fill_span_days` (60). Very active wallets can't show 60 days under the 10k-fill cap, and they are mostly scalpers anyway. |
 | G4 | `pos_blocks ≥ min_positive_blocks` (4 of 6 × 30d) |
 | G5 | `max_dd ≤ 0.35` |
 | G6 | `profit_factor ≥ 1.3` |
-| G7 | `dsr_prob ≥ 0.95` (**luck correction**) |
+| G7 | `dsr_prob ≥ 0.95` with T ≥ 60 daily-resolution days (**luck correction**) |
 | G8 | `median_hold_min ≥ max(15, 20 × p95_latency_min)` |
 | G9 | `top_trade_share ≤ 0.25` and `top_asset_share ≤ 0.50` |
 | G10 | `copy_edge_ratio ≥ 3` **and** `copy_mean_r × n_rt/(n_rt + shrink_k_trades) > 0` |
 | G11 | `AV ≥ $10,000` |
 | G12 | `executable_share ≥ 0.50` |
-| G13 | `maker_share ≤ 0.70`; not a vault; not HLP |
+| G13 | `maker_share ≤ 0.70`; `userRole` not vault, agent or missing; not HLP |
 | G14 | no blow-up flag (10.5) |
 | G15 | `current_dd ≤ 0.20` |
 
@@ -421,19 +690,21 @@ Each component uses **fixed config anchors, not cross-sectional z-scores**. As a
 ### 10.6 Selection and hysteresis (each cycle)
 
 1. Compute eligibility and S for all candidates and currently followed wallets. Rank the eligible by S, descending.
-2. **Safety drop (immediate; ignores the minimum follow time):**
-   - trigger: a followed wallet has any BU flag, fails G15, or our per-leader pause trips (copy DD ≥ 10% of its allocation, or 5 consecutive losses of our copies)
-   - effect: new opens stop at once
+2. **Safety drop** (immediate; ignores the minimum follow time):
+   - Trigger: a followed wallet has any BU flag, fails G15, or our per-leader pause trips (copy DD ≥ 10% of its allocation, or 5 consecutive losses of our copies).
+   - Effect: new opens stop at once.
 3. **Rank drop:**
-   - trigger: a followed wallet has rank > `drop_rank` (15), or fails a non-safety gate, for `drop_confirm_cycles` (2) consecutive cycles, **and** it has been followed ≥ `min_follow_hours` (24)
+   - Trigger: a followed wallet has rank > `drop_rank` (15), or fails a non-safety gate, for `drop_confirm_cycles` (2) consecutive cycles.
+   - Condition: it has been followed ≥ `min_follow_hours` (24).
 4. **Join:**
-   - trigger: an unfollowed wallet is eligible with rank ≤ `join_rank` (8) in `join_confirm_cycles` (2) consecutive cycles, and there is room (followed < `max_followed`)
+   - Trigger: an unfollowed wallet is eligible with rank ≤ `join_rank` (8) in `join_confirm_cycles` (2) consecutive cycles.
+   - Condition: its incremental backfill is complete [PO], and there is room (followed < `max_followed` = 9).
 5. **Swap:**
-   - trigger: followed = `max_followed`, and a join-qualified candidate has `S_cand ≥ S_weakest + swap_margin` (0.10)
-   - condition: the weakest followed wallet has been followed ≥ 24h
-   - effect: the candidate replaces the weakest, at most 1 swap per cycle
-6. If fewer than `min_followed` are eligible, follow all eligible wallets. Never pad the list with ineligible wallets. Alert. With 0 eligible, take no new entries.
-7. **Dropped wallets:** no new opens are copied. Existing shares stay managed by our SL/TP and the wallet's exits (C4), through the risk gate, until they close. The WebSocket slot is held until then (see market-context Q1).
+   - Trigger: followed = `max_followed`, and a join-qualified candidate has `S_cand ≥ S_weakest + swap_margin` (0.10).
+   - Condition: the weakest followed wallet has been followed ≥ 24h.
+   - Effect: the candidate replaces the weakest, at most 1 swap per cycle. The 10th WebSocket slot is used during the handover [PO].
+6. If fewer than `min_followed` are eligible, follow all eligible wallets. Never pad the list with ineligible wallets; alert. With 0 eligible, take no new entries.
+7. **Dropped wallets:** new opens are no longer copied. Existing shares stay managed by our SL/TP and the wallet's exits (C4), through the risk gate, until they close. The WebSocket slot is held until then (see market-context Q1).
 8. **Leaderboard unavailable:** keep the current wallets, add none, alert [PO].
 9. Persist every cycle's inputs, metrics, u_k, S, rank and decision (B5, and point-in-time replay).
 
@@ -445,124 +716,193 @@ Each component uses **fixed config anchors, not cross-sectional z-scores**. As a
 4. The same inputs always give the same S, rank and decisions (determinism, including the tie-break).
 5. **Point-in-time:** adding fills with `time > t` never changes the score at t.
 6. An ineligible wallet is never followed, and a missing input implies ineligible.
-7. The followed count never exceeds `max_followed`. It is below `min_followed` only when fewer are eligible.
+7. The followed count never exceeds `max_followed` (9). It is below `min_followed` only when fewer are eligible.
 8. A wallet ranked in `(join_rank, drop_rank]` keeps its current status (the hysteresis band).
 9. No rank-based drop happens before `min_follow_hours`. A safety drop can happen at any time.
-10. There is at most `max_swaps_per_cycle` swaps per cycle.
+10. There are at most `max_swaps_per_cycle` swaps per cycle.
 11. Each BU detector fires exactly at its threshold boundary (inclusive or exclusive, as specified) and not below its minimum sample.
 12. DSR: `dsr_prob` is non-increasing in `dsr_n_trials` and non-decreasing in `sr_d` (for fixed skew and kurtosis in the valid domain).
 13. `copy_mean_r_shrunk` has the same sign as `copy_mean_r` and a smaller or equal magnitude.
+14. **(BT-17) Resolution:** `r_d` never comes from step-interpolated `perpAllTime` points. Adding or removing an all-time point that falls between two daily-resolution days leaves `sr_d` unchanged. T equals the count of daily-resolution days and matches the `dsr_resolution` record. A wallet with T < `dsr_min_daily_days` is ineligible.
+15. **(BT-3) Account value:** the account value used for any past event is the latest point at or before it. If no such point exists, the event is excluded, and never valued with a later value.
+
+### 10.8 Evaluation tests (for the test designer; from 5.3)
+
+1. The sample is the first 300 trades by entry-fill time. A trade opened after the 300th never enters S, even if it closes first.
+2. `T_eval` = min(last close in S, `t300` + 7 days). Trades still open are marked as specified.
+3. `LB_r` is the minimum of the three methods and `UB_r` the maximum. For a fixed seed the result is deterministic.
+4. The day cluster of every share equals the UTC day of its merged position's first entry.
+5. The run-level CI is 96% for run 1 and 99% for run 2. A third run can't be started.
+6. A config-hash change before `T_eval` ends the run as ABORTED and increments the run count.
+7. No interim mean R, CI or verdict is exposed before `T_eval`.
+8. PASS requires P1-P6 (including P2b and P2c). FAIL requires F1, F2 or F3. Everything else is INCONCLUSIVE.
+9. With G < 5 day clusters in S, the verdict is never PASS.
 
 ---
 
-## 11. Feasibility: is ~300 trades in 30 days realistic?
+## 11. Feasibility: is 300 opened trades within 30 (or 60) days realistic? [EXPL]
 
-**Short answer: not reliably.** It is roughly a coin flip in the base case, near impossible in the pessimistic case, and likely only if leaders are active (≥ 3 opens per trader per day) and have a real edge.
+**Short answer:** yes in the base and optimistic synthetic cases, now that risk is 0.5% and there is a 60-day extension. It is not reliable with 3-5 leaders, and near impossible if leaders make about 1.5 opens a day. Whether the run can **pass** is the harder question (5.9).
 
 **Where the estimate comes from:**
-- `scripts/feasibility_mc.py`, seed 7, 2,000 runs per cell, **[EXPL, synthetic priors, not Hyperliquid data]**.
+- `scripts/feasibility_mc.py` v2 (E5): seed 17, 2,000 runs per cell, **synthetic priors, not Hyperliquid data**.
+- All rows use 0.5% risk and at most 9 followed, except the 1% reference row.
 - Rejections modelled:
   - filter
   - signal age
   - slippage
   - conflicts
   - caps
-  - $10 minimum
+  - the $10 minimum
   - 10 concurrent positions
-  - net daily and weekly loss halts
+  - net daily (2%) and weekly (5%) loss halts
   - the 15% drawdown stop, which ends the run as a FAIL
+- The partial exits follow the PO $10 rule.
 
-| Scenario (followed; opens/trader/day; filter pass) | True mean R | Taken trades in 30d, p10 / p50 / p90 | P(≥ 300 before a 15% DD) | P(DD ≥ 15%) | Partials below $10 |
+| Scenario (followed; opens/trader/day; filter pass) | True mean R | Taken by day 30, p10 / p50 / p90 | P(300 opened by day 30 / 60) | P(DD ≥ 15%) before evaluation: **lower bound** (realised) / **upper bound** (pessimistic MTM) | Joint P(PASS), run 1 (of which evaluated within 30 days) |
 |---|---|---|---|---|---|
-| Pessimistic (5; 1.5; 0.50) | 0.00 | 44 / 72 / 118 | 0.00 | 0.006 | 37% |
-| Pessimistic | +0.10 | 45 / 72 / 120 | 0.00 | 0.000 | 37% |
-| Base (8; 3.0; 0.65) | 0.00 | 115 / 267 / 424 | 0.39 | 0.46 | 16% |
-| Base | +0.10 | 241 / 366 / 523 | 0.75 | 0.07 | 16% |
-| Optimistic (10; 6.0; 0.80) | 0.00 | 92 / 262 / 729 | 0.45 | 0.86 | 6% |
-| Optimistic | +0.10 | 327 / 904 / 1235 | 0.91 | 0.16 | 6% |
-| Base, 0.5% risk per trade | 0.00 | 268 / 387 / 547 | 0.81 | 0.14 | 25% |
-| Base, 0.5% risk per trade | +0.10 | 295 / 430 / 595 | 0.89 | 0.004 | 25% |
+| Pessimistic (5; 1.5; 0.50) | 0.00 | 45 / 73 / 120 | 0.00 / 0.03 | 0.002 / 0.003 | 0.001 (0.000) |
+| Pessimistic | +0.10 | 46 / 74 / 127 | 0.00 / 0.04 | 0.000 / 0.000 | 0.013 (0.000) |
+| **3-5 traders, no activity floor** (3-5; 2.0; 0.65) (BT-10) | 0.00 | 73 / 143 / 253 | 0.05 / 0.43 | 0.045 / 0.052 | 0.004 (0.001) |
+| 3-5 traders, no floor | +0.10 | 73 / 141 / 259 | 0.06 / 0.45 | 0.000 / 0.000 | 0.144 (0.018) |
+| Base (8; 3.0; 0.65) | 0.00 | 259 / 308* / 325* | 0.81 / 0.94 | 0.073 / 0.110 | 0.011 (0.011) |
+| Base | +0.10 | 300* / 309* / 331* | 0.90 / 1.00 | 0.001 / 0.001 | **0.292** (0.265) |
+| Optimistic (9; 6.0; 0.80) | 0.00 | 300* / 313* / 335* | 0.91 / 0.91 | 0.107 / 0.156 | 0.010 (0.010) |
+| Optimistic | +0.10 | 304* / 316* / 344* | 1.00 / 1.00 | 0.001 / 0.004 | 0.223 (0.223) |
+| Base, day-factor corr 0.2, 70% long (BT-8) | 0.00 | 251 / 307* / 328* | 0.78 / 0.91 | 0.099 / 0.141 | 0.015 (0.014) |
+| Base, day-factor corr 0.2, 70% long | +0.10 | 283 / 308* / 329* | 0.86 / 1.00 | 0.003 / 0.005 | 0.237 (0.201) |
+| Reference: base at 1% risk | 0.00 | 128 / 283 / 317* | 0.44 / 0.61 | 0.410 / 0.518 | 0.011 (0.009) |
+| Reference: base at 1% risk | +0.10 | 233 / 306* / 326* | 0.72 / 0.95 | 0.054 / 0.086 | 0.303 (0.242) |
+
+\* The sample is complete at 300 opens, so the simulation stops at `T_eval` and counts above 300 are truncated.
+
+**Mirror and rejection rates, with denominators (BT-9).** Per cell, pooled over the 2,000 runs:
+
+| Scenario | Opens below $10 after the cap (of entries reaching the size check) | Loss-halt blocks (of entries reaching the halt check), mean R 0 / +0.10 | Partials skipped, cut < $10 (of all mirrored partials) | Partials closed in full, remainder < $10 |
+|---|---|---|---|---|
+| Pessimistic | 17.1-17.2% | 0.1% / 0.0% | 23.9% | 16.7% |
+| 3-5 traders | 3.1% | 1.8% / 0.6% | 17.1% | 7.4% |
+| Base | 3.1% | 9.8% / 3.8% | 17.0-17.2% | 7.3% |
+| Optimistic | 0.4% | 32.7% / 12.0% | 13.3% | 3.9% |
+| Base, correlated | 3.1% | 12.5% / 5.0% | 17.0% | 7.3% |
+| Base at 1% risk | 3.1% | 27.0% / 15.8% | 10.1-10.2% | 5.4% |
+
+**Corrections to v1 (BT-9):**
+- v1 said about 1% of opens were rejected below $10 in the base and optimistic cases. The correct figures, with the size-check denominator, were **3.1% (base) and 0.4% (optimistic)**. They are unchanged in v2.
+- v1 said halts "remove 5-20% of candidate entries". Measured against the entries that reach the halt check, halts blocked **17-55%** at 1% risk in v1. In v2 at 0.5% risk they block 0-33%.
 
 **Reading:**
-1. **The binding constraint is leader activity × pass rate, not latency.** The eligibility gates only guarantee ≥ 0.83 opens per trader per day (150 round trips in 180 days). Multi-hour swing traders often make 1-3 trades a day. **My central estimate is 100-300 taken trades in 30 days**, with 300 likely only in the base-to-optimistic range.
-2. **With 1% risk per trade, the drawdown line decides many runs.**
-   - A zero-edge run hits 15% about 46% of the time, which is the gate working as intended.
-   - A +0.10R edge still fails on drawdown 7-16% of the time.
-   - Net daily and weekly loss halts also remove 5-20% of candidate entries.
-3. **The $10 minimum hurts partial exits more than opens.**
-   - Mirrored partial reduces fall below $10 in 6-37% of cases, depending on how large leaders' positions are relative to their accounts.
-   - Opens are rejected mainly when leaders use a small fraction of their account: about 17% of opens that passed the other guards in the pessimistic case (16 of about 95 per run), about 1% in the base and optimistic cases.
-   - This must be measured: `hl_sample.py` does so once network access exists.
-4. More trades per trader share inflates N without adding independent information (concern C1).
+1. **The binding constraint is leader activity × pass rate × the number of eligible leaders, not latency.**
+   - The eligibility gates only guarantee ≥ 0.83 opens per trader per day. Multi-hour swing traders often make 1-3 trades a day.
+   - With 3-5 eligible leaders, which is plausible given G7 (C11), 300 opened trades happens by day 60 in only about 45% of runs.
+   - **100-300 opened trades per 30 days is a prior-driven judgement, not a measurement.** `hl_sample.py` measures it.
+2. **At 0.5% risk, the drawdown line almost never fails a real +0.10R edge:**
+   - 0.1-0.3% (lower bound) to 0.1-0.5% (pessimistic upper bound) in the base and optimistic cases
+   - against 5-9% at 1% risk
+
+   Zero-edge strategies still hit 15% in 7-16% of base and optimistic runs. The realised-only figures are **lower bounds** of the gate's mark-to-market drawdown. The pessimistic bound puts every open position at its worst excursion at the same moment.
+3. **Faster is not better for the verdict.** In the optimistic case 300 trades arrive in a median of about 8 days (21 in the base case). That gives few day clusters, so the day-clustered CI is wide: joint P(PASS) is 0.22, against 0.29 in the base case.
+4. **The $10 rule matters more for partials than for opens.**
+   - 13-24% of mirrored partials are skipped, and another 4-17% become full closes.
+   - Both change the copy's payoff relative to the leader's, and both are logged per trade (mirror fidelity).
+5. More trader shares per merged position inflate N without adding independent information. The day clusters account for this (5.3).
 
 ## 12. Exploratory work log (all EXPL; for the backtest-auditor)
 
-| # | What | Files | Result | Counts as a strategy variant? |
-|---|---|---|---|---|
-| E1 | Reach the Hyperliquid API from the research sandbox | n/a | **Unreachable**: egress proxy CONNECT 403 for `api.hyperliquid.xyz`, `stats-data.hyperliquid.xyz` and `hyperliquid.gitbook.io`. No real data pulled. | no |
-| E2a | `feasibility_mc.py` first run | superseded | **Modelling bug**: loss halts summed gross losses instead of net P&L, and the run did not stop at a 15% drawdown. Results discarded, logged here for honesty. | no (sensitivity) |
-| E2b | `feasibility_mc.py` second run | superseded | Net-P&L halts fixed; still no drawdown stop. Discarded. | no |
-| E2c | `feasibility_mc.py --runs 2000 --seed 7` (final): 4 scenarios × 2 true means | `docs/sdlc/copytrade-v1/research/scripts/feasibility_mc.py`; output `research/data/feasibility_mc_seed7.txt` (gitignored) | Section 11 table | no: 8 sensitivity cells of the synthetic model |
-| E3 | `gate_power.py --sims 4000 --seed 11` | `docs/sdlc/copytrade-v1/research/scripts/gate_power.py`; output `research/data/gate_power_seed11.txt` | Section 13 (C1, C2, C3, C5) | no |
-| E4 | `hl_sample.py --selftest` | `docs/sdlc/copytrade-v1/research/scripts/hl_sample.py` | Self-test OK: round-trip reconstruction, flip split, pre-existing positions skipped, add-while-losing, reduce fraction, $10 checks, drift sign. **Never run against the live API.** | no |
+sha256 values identify each output. `research/data/` is gitignored, so outputs are not committed (BT-15). Scripts live in `docs/sdlc/copytrade-v1/research/scripts/`.
 
-**Strategy variants tried on real data: 0.** The variant budget in 5.3 is untouched.
+| # | What | Script (sha256) | Output (sha256) | Result | Counts as a strategy variant? |
+|---|---|---|---|---|---|
+| E1 | Reach the Hyperliquid API from the research sandbox | n/a | n/a | **Unreachable**: egress proxy CONNECT 403 for `api.hyperliquid.xyz`, `stats-data.hyperliquid.xyz` and `hyperliquid.gitbook.io`. | no |
+| E2a | `feasibility_mc.py` v1, first run | superseded | discarded | **Modelling bug**: loss halts summed gross losses instead of net P&L, and the run did not stop at a 15% drawdown. Results discarded, logged here for honesty. | no |
+| E2b | `feasibility_mc.py` v1, second run | superseded | discarded | Net-P&L halts fixed; still no drawdown stop. Discarded. | no |
+| E2c | `feasibility_mc.py --runs 2000 --seed 7` (v1) | `1b6892986a2bd0fb068f63eea42107f10d595721d41b362ee0a9a949866e42b8` | `research/data/feasibility_mc_seed7.txt` `6c1863609da808e85df99c59f6030995f9e818debeb2232dfc4070b2099945b6` | v1 section 11. **Superseded by E5.** | no |
+| E3 | `gate_power.py --sims 4000 --seed 11` (v1) | `b6f006a260be7acfbd6104f224555fba25d46874a83335170812b320a4408e44` | `research/data/gate_power_seed11.txt` `c1e98cf0682bbc0782dd0d381485c052ecaa12a86e50964dad4e59778fe85c77` | v1 C1-C5. **Superseded by E6.** Its section D covered position clustering only (BT-4). | no |
+| E4 | `hl_sample.py --selftest` (v1) | `bf059a6d9aa26bcc8797f1e2b1aaff372866df1ca11bc3df2c9034669adb81f2` | stdout | `selftest OK`. The v1 test did not cover BT-1, BT-2 or BT-3. **Superseded by E7.** | no |
+| E5 | `feasibility_mc.py --runs 2000 --seed 17` (v2): 6 scenarios × 2 true means | `ed4ef414e3dda9d3f084a6360c7c62985ef96a03dafaa8b0b7147a2a7e60f3eb` | `research/data/feasibility_mc_seed17.txt` `a3b530d22ff1bde9cde4abcf2f537c2f1cfeadf90406b1538e0d70248d9452ad` | Section 11 and 5.9 (joint P(PASS)). Runtime 98 s. | no: 12 sensitivity cells of the synthetic model |
+| E6 | `gate_power.py --sims 4000 --boot 1000 --seed 23 --jobs 3` (v2) | `3d2caa0ab8e7ba11aecb4af665ffdba41631d9e0d8833e36cb7ad0e06a75759d` | `research/data/gate_power_seed23.txt` ``5a3a1b5da70d219d3c26780a86762a33174c60fe15213841ad51d0dad820a59b`` | 5.9 and the key numbers below. Runtime 7 min 46 s wall time on 3 processes. | no |
+| E7 | `hl_sample.py --selftest` (v2) | `280af27baaf8394f38020852785d0743440cb1cee948d5de30da80abb3fcfd7e` | stdout | `selftest OK (13 checks)`. Covers the sparse-wallet rate (BT-1); truncation flag and denominator (BT-1); no prior account value, excluded and counted, never a later value (BT-3); selection sees only fills ≤ t_sel and measurement only opens ≥ t_sel (BT-2); mirrored adds, below-$10 and capped adds (BT-16); the PO $10 partial rule; cheap gates (BT-16); Kaplan-Meier censoring (BT-16); dispersion; ATR without look-ahead; drift sign; rate budget; and an end-to-end offline run with a fake client. **Never run against the live API.** | no |
+| E8 | Re-probe the Hyperliquid API, 2026-09-29 ~17:05 UTC | n/a | n/a | Still blocked: CONNECT 403, organization policy. A web search confirmed the `userRole` role values (user, agent, vault, subAccount, missing) in third-party docs. Weights for `userRole` and `portfolio` are assumed at 60 and 20 (conservative). | no |
+| E9 | Code smoke tests: `gate_power.py --sims 200 --boot 200 --seed 99`; `feasibility_mc.py --runs 100 --seed 5` | the v2 scripts (before E5/E6) | not kept | Used only to check that the code runs. The numbers were seen but are **not reported and not used**. | no |
+| E10 | `few_clusters.py` (seed 31 inside the script; 2,000 sims, B = 1,000 per cell): the frozen rule when the 300 trades fall on 5, 8, 10 or 15 UTC days. Also a 200-run instrumentation of E5's model (seed 123, not kept) measuring the days to the 300th open: median 8 (optimistic), 21 (base), 23 (base correlated), 43 (3-5 traders). | `bf573a2bd973022981c15aae5e3dbdf01b33c6c41fdb5a42e55538fb00409f25` | `research/data/few_clusters_seed31.txt` `bcb404021cbaf9b59e8959fd55dbbd2ef4b60196fc676d8de8e516c6e9cbef16` | Sets `eval.min_day_clusters` = 5, replacing the 10 drafted before this run. That is a method choice made on synthetic data, before any real result. Key numbers are below. | no |
 
-**Key numbers from E3** [EXPL; per-trade R modelled as a normal distribution clipped to −1.05..+3R]:
+**Strategy variants tried on real data: 0.** The variant budget in 5.8 is untouched. **Paper runs started: 0** (run register empty).
+
+**Key numbers from E6** [EXPL; clipped-normal R unless stated; brackets are Wilson 95% Monte Carlo intervals]:
 
 | Topic | Result |
 |---|---|
-| CI half-width at n = 300 | ±0.113R at SD 1.0R; ±0.136R at SD 1.2R; ±0.170R at SD 1.5R |
-| True mean R needed for 80% power | 0.16R (SD 1.0); 0.19R (SD 1.2); 0.24R (SD 1.5) |
-| Power at +0.05R | 10-15% |
-| Power at +0.10R | 34-49% |
-| Power at +0.15R | 64-83% |
-| False PASS at a true mean of 0 | single look 1.9%; checked every 10 trades from 30 to 300: **10.1%**; "keep running" from 300 to 600: 5.4% |
-| Clustered trader shares (mean cluster size 1.5-1.8, within-cluster correlation 0.7-0.9) | naive t-CI false PASS **4.4-6.2%**; cluster bootstrap 1.6-2.4% |
-| Luck (Emax) | E[max z] = 2.77 (N = 200), 3.45 (N = 2,000), 4.12 (N = 30,000). With T = 180 days, SR0 = 0.21 to 0.31 per day, i.e. annualised Sharpe 3.9-5.9 needed just to match luck. |
-| Mean R vs USD | 6 wins of +0.5R on $1 risk and 1 loss of −1R on $9 risk: mean R = **+0.29R**, but USD = **−$6**. |
+| CI half-width at n = 300 (SD 1.0 / 1.2 / 1.5R) | 95%: ±0.113 / 0.136 / 0.170R. 96%: ±0.119 / 0.142 / 0.178R. 99%: ±0.149 / 0.178 / 0.223R. |
+| True mean R for 80% power (iid; SD 1.0 / 1.2 / 1.5R) | 96%: 0.17 / 0.20 / 0.25R. 99%: 0.20 / 0.24 / 0.30R. |
+| Power at +0.10R, iid trades (realised SD 0.86R / 1.05R) | 96%: 0.431 [0.416, 0.446] / 0.297 [0.283, 0.311]. 99%: 0.238 / 0.133. |
+| Peeking (95% t, zero edge) | Single look 1.9% [1.6, 2.4]. Every 10 trades, 30 to 300: **8.9%** [8.1, 9.9]. Every 10 trades, 300 to 600: 5.5%. |
+| v1 model, position clusters only, zero edge (section D; 2,000 sims) | Naive t 5.8-7.6%. v1 rule 1.8-2.5% (v1 reported 1.6-2.4% from 500 sims). |
+| **D2, zero edge**: day-factor corr 0 / 0.2 with 70% long / 0.3 with 80% long / 0.5 with 80% long | Naive 95%: 4.5 / 6.9 / 9.8 / **13.3%**. v1 rule: 2.2 / 3.1 / 5.1 / **8.0%**. **Frozen P2 at 96%: 1.3 / 1.3 / 1.1 / 1.2%.** Frozen at 99%: 0.2-0.3%. **Frozen P2 + P2c at 96%: 1.2 / 0.7 / 0.3 / 0.1%.** |
+| **D2, +0.10R**: same four settings | Naive 95%: 41 / 40 / 43 / 42%. Frozen P2 at 96%: 22 / 17 / 13 / 10%. **Frozen P2 + P2c at 96%: 20 / 13 / 5.6 / 2.9%.** |
+| α split (section G; iid, SD 1.2 pre-clip) | Zero edge: run 1 1.2%; within 2 runs **1.6%** [1.3, 2.0], against 3.2% for two runs at 95%. +0.10R: run 1 34%, within 2 runs 45%. +0.15R: 67% and 81%. |
+| Heavy tails (section H; 6% loss tail to −2.5R, 6% Pareto win tail to +12R; realised SD 1.74R) | Power at +0.10R (96% t): **10%** [9.1, 11.0], against 44% for the clipped normal. +0.15R: 23%. Zero-edge false PASS 1.1%. |
+| Fragility checks FR1 / FR2 (section H) | Given a pass, a flag fires in ≤ 0.1% of homogeneous-edge runs. It fires in 3.5% of runs where one leader with 35% of trades carries all of the edge. The checks cost almost no power, but they catch only extreme concentration. |
+| **Few day clusters (E10)**: 300 trades on 5 / 8 / 10 / 15 days | Frozen P2 at 96%, zero edge: 0.9 / 1.5 / 1.1 / 1.6% (no beta); 0.7-1.0% (corr 0.3, 80% long). The percentile day bootstrap **alone** is 6.4% at 5 days (anti-conservative). Power at +0.10R, no beta: 13 / 16 / 17 / 19%. Hence `eval.min_day_clusters` = 5, not 10. |
+| Luck (section E) | E[max z] = 2.77 (N = 200), 3.45 (N = 2,000), 4.12 (N = 30,000). SR0 is 0.21-0.31 per day at T = 180 days and 0.51-0.75 per day at T = 30 days. |
+| Mean R vs USD (section F toy) | Mean R +0.29R, but USD −$6 and risk-weighted mean R −0.40R |
 
-## 13. Concerns for the PO (statistical soundness; no PO decision has been changed)
+## 13. Concerns for the PO: status after the PO's decisions
 
-| ID | Concern | Evidence | Recommendation (needs PO approval unless marked as method only) |
-|---|---|---|---|
-| C1 | **Counting trader shares as independent trades overstates N.** Several trader shares of one merged position, and BTC-beta trades in the same hour, move together. A naive CI then passes a zero-edge strategy 2-3× too often. | E3: 4.4-6.2% vs 1.9% | Method only, so pre-registered in P2: use the more conservative of the t-interval and the cluster bootstrap. The PO's "95% CI lower bound > 0" is unchanged. |
-| C2 | **Peeking.** Declaring PASS the first time the running CI clears 0 multiplies the false-pass rate by about 5. | E3: 10.1% vs 1.9% | Method only, so pre-registered in P7: one look at N = 300. Please confirm. |
-| C3 | **Mean R can be positive while the account loses money.** Mirrored sizing makes the dollar risk per trade vary widely: a $0.30-risk trade weighs as much as a $3 one. | E3 toy: +0.29R and −$6 | Add S1 (USD P&L > 0) and S2 (risk-weighted mean R > 0) as **co-conditions** of PASS. **PO decision.** |
-| C4 | **R understates risk when the leader adds.** The brief defines R on initial risk, but mirrored adds with the same stop add dollar risk. A trade that tripled in size and won is scored as +3× what was actually risked. | definition | Gate on the PO's R, and also report R_maxrisk. Better: define R on the maximum committed risk. **PO decision.** |
-| C5 | **Low power.** 300 trades detects only edges ≥ about 0.16-0.24R with 80% probability. A realistic copy edge, if one exists, is likely < 0.10R, so **INCONCLUSIVE is the most likely honest outcome even if the strategy works modestly.** | E3 | Accept that INCONCLUSIVE is common. Optionally pre-register a larger fixed N (e.g. 600, one look) with a calendar cap of 60 days. **PO decision (Q5).** |
-| C6 | **1% risk per trade plus a 15% drawdown FAIL** gives a 7-16% chance of failing a real +0.10R edge in one month. Zero-edge strategies fail on drawdown about 46% of the time, which is desirable. | E2c | Consider defaulting `risk_per_trade` to 0.5%, which is within the PO's ≤ 1% ceiling. Drawdown failure at +0.10R falls to 0.4%, but more partial exits fall below $10 (25% vs 16%). **PO decision.** |
-| C7 | **300 trades in 30 days is uncertain.** P ≈ 0.4-0.75 in the base case; about 0 if leaders make about 1.5 opens per day. | E2c | Keep "INCONCLUSIVE if N < 300" [PO]. Decide the extension policy now, not after seeing data (Q5). |
-| C8 | **Paper at $300 does not transfer to a $100 live wallet.** The unexecutable share (below $10) and partial-exit fidelity get worse as the wallet shrinks, which changes which trades are taken. | E2c partial-exit rates | The live wallet should be ≥ the paper wallet, or re-paper at the live size. **PO decision.** |
-| C9 | **Partial exits below $10 cannot be mirrored.** 6-37% of partials in the synthetic model; reduce-only full closes are exempt. | E2c; market-context 1.1 | Needs a rule. Proposal: round the cut up to $10 if the remainder stays ≥ $10; if the remainder would fall below $10, close fully. Log every deviation from a pure mirror. **PO/PM decision.** |
-| C10 | **Our stops change the leader's payoff.** Leaders' historical P&L does not predict our copies. | mechanism | Method only: the scoring model uses the copy-replay R (M14), not the leader's ROI. |
-| C11 | **Deflated Sharpe with N = 15,000** may leave fewer than 5 eligible traders, because a daily Sharpe of about 0.3 is needed. | E3 luck | If that happens, it is evidence that the leaderboard shows no distinguishable skill. Do **not** loosen the gate mid-run. Any relaxation is a logged pre-paper variant. **PO awareness.** |
-| C12 | **Pre-recording replay is survivorship-biased**, because it uses today's leaderboard. | D2 | Use it only for kill checks (K1). Evidence comes from the point-in-time replay and the paper run. |
+| ID | Concern (v1) | Status |
+|---|---|---|
+| C1 | Trader shares counted as independent overstate N | **Resolved:** the day-clustered CI (P2 method). Day clusters nest merged positions and also absorb same-day beta (BT-4). |
+| C2 | Peeking | **Resolved [PO]:** one evaluation of the first 300 opened; no interim statistics (5.5); at most 2 runs with an α split (5.4). |
+| C3 | Mean R positive while the account loses money | **Resolved [PO]:** P2b, USD P&L > 0 |
+| C4 | R understates risk when the leader adds | **Resolved [PO]:** initial-risk R gates; R_maxrisk is reported, and FR5 flags it |
+| C5 | Low power | **Accepted.** The frozen rule has even lower power (5.9), and INCONCLUSIVE is the most likely honest outcome. |
+| C6 | 1% risk plus the 15% DD FAIL | **Resolved [PO]:** 0.5% risk. DD failure at +0.10R is about 0.1-0.5% (E5). |
+| C7 | 300 trades in 30 days uncertain | **Resolved [PO]:** extension to 60 days with one evaluation |
+| C8 | Paper $300 does not transfer to $100 live | **Resolved [PO]:** live ≥ $300 |
+| C9 | Partials below $10 | **Resolved [PO]:** skip and log; close all if the remainder is below $10 |
+| C10 | Our stops change the leader's payoff | Method: copy-replay R (M14) |
+| C11 | DSR with N = 15,000 may leave fewer than 5 eligible | **Open (awareness).** The 3-5 trader scenario (section 11) shows the consequence. Don't loosen gates mid-run (K7). |
+| C12 | Pre-recording replay is survivorship-biased | Method: kill checks only (K1) |
+| C13 (new) | **Joint P(PASS) at a true +0.10R is at most about 0.3 in run 1**, and lower with correlated trades, few leaders or fast accumulation | PO awareness. Nothing to decide: this is the price of a gate that is hard to fool. |
 
 ## 14. Questions for the PO
 
-| # | Question |
-|---|---|
-| Q1 | (C3) Add "net USD P&L > 0" and "risk-weighted mean R > 0" as co-conditions of PASS? |
-| Q2 | (C4) Define R on maximum committed risk (initial + adds) instead of initial risk? Or keep initial risk and report both? |
-| Q3 | (C2, C1) Confirm the single evaluation at exactly N = 300, and the conservative cluster-robust CI? |
-| Q4 | (C6) Default `risk_per_trade` 0.5% (inside your 1% ceiling) for the paper run, or keep 1%? |
-| Q5 | (C5, C7) If N < 300 at day 30: stop as INCONCLUSIVE (your current rule), or extend up to 60 days with the same frozen config and the same single look? Must be decided before the run. |
-| Q6 | (C9) Partial exit mirroring below $10: round up to $10, close fully, or skip (log only)? |
-| Q7 | (C8) Will the live wallet be at least $300? If not, should the paper run use the live size? |
-| Q8 | Allow a one-off ~$1-6 AWS requester-pays S3 pull of historical fills and L2 for a better pre-paper replay? This needs an AWS account that you control, and research agents never handle keys. Or accept replay only from our own recordings? |
-| Q9 | Run `hl_sample.py` once from your PC (public endpoints, no keys) to replace the synthetic priors in section 11 with real trade frequency, holding time, and $10-rejection rates before the PM freezes defaults? |
+None open. Q1-Q9 are answered and encoded in 5.2.
+
+## 15. Backtest-audit findings: closure
+
+| Finding | Severity | Closed by |
+|---|---|---|
+| BT-1 | BLOCKING | `hl_sample.py` v2 `measure_wallet`: the rate uses the observation window. When ≥ 9,000 fills suggest cap truncation, it uses first fill → end with `measurement_window_truncated` flagged. Self-test checks 2 and 3 (sparse wallet = 1/30 per day, not 24). |
+| BT-2 | BLOCKING | `hl_sample.py` v2 selects at `t_sel = end − 30 d`. The pool uses leaderboard P&L earned before the last 30 days, the gates use portfolio points and fills ≤ t_sel, and measurement uses only opens ≥ t_sel. Win rate and P&L are renamed `fwd_leader_*` and labelled post-selection and survivorship-biased. Self-test checks 5 and 13. |
+| BT-3 | BLOCKING | `value_at` returns the latest point ≤ t or None. There is no fallback to the current account value. Opens and adds without a prior point are excluded and counted. Self-test checks 4 and 13 (a wallet that is large now but small at t_sel is excluded). |
+| BT-4 | BLOCKING | The P2 method is now min(iid t, UTC-day cluster bootstrap, UTC-day cluster-robust t with G−1 df), with day clusters nesting merged positions (5.3). The small-cluster issue is handled by the CR t with G−1 df, and G ≥ 5. E10 shows false PASS ≤ 1.6% from 5 days, while the percentile bootstrap alone undercovers. The `gate_power.py` docstring is corrected, and section D2 quantifies the fix (5.9, E6). |
+| BT-5 | BLOCKING | The pre-registration is frozen with a hash in the run record (5.1), and the Q1-Q9 answers are recorded (5.2). At most 2 runs with α 0.04 / 0.01 (5.4). Aborted runs count, and the run register is logged. No interim statistics, and interim numbers can't justify config changes (5.5). |
+| BT-6 | ADVISORY | Joint P(PASS) row in 5.9 and joint columns in section 11 (E5) |
+| BT-7 | BLOCKING | B0d, the direction-matched random-time baseline, is pre-registered as P2c, a lower-bound test on the excess (6.2). K9 fires if **either** B0d or S4 fails (7). E6 D2 shows the effect. |
+| BT-8 | ADVISORY | Drawdown columns are labelled lower bound (realised) and upper bound (pessimistic MTM). A correlated-R scenario is added (section 11). |
+| BT-9 | ADVISORY | $10 and halt figures corrected, with denominators (section 11) |
+| BT-10 | ADVISORY | 3-5 trader, no-floor scenario added. 100-300 is labelled a prior-driven judgement (section 11). |
+| BT-11 | ADVISORY | E6 runs 4,000 sims per cell (2,000 in the v1-model section D) with B = 1,000, and reports Wilson intervals for every rate |
+| BT-12 | ADVISORY | Heavy-tail sensitivity in E6 section H. Fragility checks FR1 and FR2 are pre-registered (5.6). |
+| BT-13 | ADVISORY | Cost-in-R table (6.3). Cost-fragile rule FR3 / K12. Spread recorded at signal time used in replays. |
+| BT-14 | ADVISORY | First 300 **opened** [PO]. P3 window = `[t0, T_eval]` (5.3). |
+| BT-15 | ADVISORY | sha256 of every cited output and script (section 12). Path fixed in 10.1. Outputs not committed. |
+| BT-16 | ADVISORY | `hl_sample.py` v2: Kaplan-Meier holds and censored counts; mirrored adds; the PO partial rule; cheap gates (HLP, `userRole`, account value, age, maker share, hold, round trips, liquidation, selection P&L); per-wallet dispersion; 16 wallets (8 top, 8 random); a 2×ATR(1h) stop instead of a fixed 2.5% (fallback flagged); 0.5% risk. Drift remains coarse at 1 minute (labelled). |
+| BT-17 | ADVISORY | Daily-return resolution rules and `dsr_resolution` record (10.1); property test 14 (10.7) |
 
 ## Sources
 
 - [Hyperliquid 10,000-trader analysis (73.8% losing, Nov 2024)](https://medium.com/@envyprotocol/i-analyzed-10-000-hyperliquid-traders-the-results-are-brutal-a29adcca8c2a)
 - [Only 166 of 1,000 Hyperliquid traders profitable](https://www.thecoinrepublic.com/2025/06/16/hyperliquid-crypto-only-166-of-1000-traders-profitable-whats-going-on/)
 - [userFillsByTime limits (Chainstack)](https://docs.chainstack.com/reference/hyperliquid-info-user-fills-by-time)
+- [userRole (Chainstack)](https://docs.chainstack.com/reference/hyperliquid-info-user-role)
+- [Info endpoint overview incl. userRole (Alchemy)](https://www.alchemy.com/docs/chains/hyperliquid/hyperliquid-info-endpoint)
 - [Hyperliquid S3 backfill discussion](https://github.com/tribulnation/sdk/issues/1)
 - [portfolio endpoint (QuickNode)](https://www.quicknode.com/docs/hyperliquid/info-endpoints/portfolio)
 - [Leaderboard payload (Apify)](https://apify.com/gochujang/hyperliquid-leaderboard)
 - [Hyperliquid fees overview](https://hyperliquidguide.com/guides/fees)
 - [Order precision and minimum order value (Chainstack)](https://docs.chainstack.com/docs/hyperliquid-order-precision)
 - Bailey & López de Prado (2014), "The Deflated Sharpe Ratio"
+- Cameron, Gelbach & Miller (2008), "Bootstrap-based improvements for inference with clustered errors"
 - Apesteguia, Oechssler & Weidenholzer (2020), Management Science
 - Heimer & Imas (2022), Review of Financial Studies
