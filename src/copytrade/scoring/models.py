@@ -1,6 +1,4 @@
-"""Data types and boundary protocols for scoring (F5).
-
-Interface stub written by the test designer: plain data holders only, no logic. The developer owns them.
+"""Data types and boundary protocols for scoring (F5): plain data holders, no logic.
 
 Conventions (decisions recorded in docs/sdlc/copytrade-v1/05-test-plan-F5.md):
 - Money, prices, sizes and every ratio the gates compare are ``Decimal`` (never ``float``). ``None`` in a metric
@@ -15,6 +13,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
+
+MINUTE_MS = 60_000
+HOUR_MS = 3_600_000
+DAY_MS = 86_400_000
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,7 @@ class RoundTrip:
     gross_pnl: Decimal  # sum of closedPnl
     net_pnl: Decimal  # L_j = sum closedPnl - sum fee - funding_j
     liquidated: bool
+    close_px: Decimal | None = None  # price of the fill that closed the trip; None while open
 
 
 @dataclass(frozen=True)
@@ -204,6 +207,7 @@ class Metrics:
     eff_leverage_median: Decimal | None  # M19
     account_value: Decimal | None  # AV from clearinghouseState (G11)
     open_loss_fraction: Decimal | None  # open unrealised loss / AV (BU8)
+    liquidation_fills: int = 0  # liquidation fills on core perps in the window (BU6)
 
 
 @dataclass(frozen=True)
