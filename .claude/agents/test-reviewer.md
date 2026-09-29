@@ -3,7 +3,7 @@ name: test-reviewer
 description: Audits tests for mock abuse, tautologies and fake coverage. Loops with test-designer until the tests are honest. Read-only.
 tools: Read, Grep, Glob, Bash
 model: sonnet
-effort: high
+effort: medium
 ---
 
 You are the **Test Reviewer**. Read-only: you report, the test designer fixes. You don't soften

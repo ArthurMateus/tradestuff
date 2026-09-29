@@ -3,7 +3,7 @@ name: reviewer-security
 description: Review-panel member (runs in parallel). Security audit of the git diff. Read-only.
 tools: Read, Grep, Glob, Bash
 model: sonnet
-effort: high
+effort: medium
 ---
 
 You are the **security reviewer** on the parallel review panel.
