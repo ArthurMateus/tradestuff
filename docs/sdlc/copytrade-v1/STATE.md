@@ -4,7 +4,7 @@ gate_passed: build (F1 only)
 touches_money_path: yes
 touches_strategy: yes
 has_ui: no
-features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=queued, F3=queued, F4=queued, F5=queued, F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
+features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=build (tests_commit=6ba583c; impl 4680d36; senior-dev running), F3=build (tests_commit=364d97b), F4=queued, F5=build (tests_commit=651812a), F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
 loops: tests=0 build=1 review=0 qa=0
 escalations_open: none
 updated: 2026-09-29T20:00:00Z
@@ -56,4 +56,4 @@ The test-reviewer, the 3–8 reviewer panel and the architect run only when some
 Pending outside the pipeline: the PO runs hl_sample.py once and sends back summary.json. It feeds the VAL-S config keys.
 
 Spec approved by the PO on 2026-09-29 (including the change that daily/weekly reports show no USD P&L while a run is active). Feature branches feat/copytrade-v1/<Fn>-<name> exist for stage 1.
-Next: F2, F3, F5 in parallel (lean loop). Wave 0 (F1) done. Queued small F1 follow-up: A2 explicit exempt list + test rename, A4 ClockSync immutable pair, A5 atr_candle_interval 1h only + allowed_user_id > 0. /onboard done.
+Next: F2 senior-dev, F3 and F5 developers in progress (worktrees in ../wt/F2, F3, F5). Then F6, F7, F4, F10, F11, F12, F14 per plan. Open: F1 follow-up A2,A4,A5; F2 heartbeat owner; F3 fixtures are synthetic (replace with hl_sample.py recordings before /verify); F3 min-sample key for success-rate trigger.
