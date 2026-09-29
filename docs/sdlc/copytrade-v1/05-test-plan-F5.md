@@ -62,6 +62,8 @@ Invariants touched: A2 (fail closed: `stale_input`, None gates, latency unknown)
 11. **Persistence** is through a `ScoreStore.append_cycle(CycleResult)` protocol; F2's ledger adapts to it. Input hashes are sha256 over the point-in-time inputs actually used, per kind, and exclude the leaderboard row.
 12. **Fill type.** F5 defines its own `Fill`, `Candle`, `PortfolioSnapshot` and `ClearinghouseState` in `models.py` with HL wire names; F3's adapter must map to them. No recorded real payload exists under `tests/fixtures/exchange/`; the wire-format contract belongs to F3's tests.
 
+13. **Unmeasurable recent SR (round 2).** No gate covers `recent_sr`; when it is None the wallet stays eligible, the persisted metric stays None, and the component is set explicitly to `u = 0` (worst) whatever the anchors. `score_components` still raises on any other missing input.
+
 ## Spec / F1 issues to resolve
 
 1. **F1 config loader rejects weights that sum to 1 within 1e-9.** F5.AC5 says "± 1e-9"; `core/config.py` does `sum(weights) != 1`. `test_F5_AC5_weights_within_1e_9_of_one_load` fails on an F1 assertion, not on a stub. The fix is one line in a shared file, so it needs a CTO-serialized commit before or with the F5 build. Alternatively the PM drops the tolerance.

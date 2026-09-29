@@ -28,22 +28,29 @@ def _require(value: Decimal | None, name: str) -> Decimal:
     return value
 
 
-def score_components(m: Metrics, *, cfg: Config) -> Components:
+def score_components(m: Metrics, *, cfg: Config, recent_sr_unmeasurable_is_worst: bool = False) -> Components:
     """``u_k = clip((x_k - lo_k) / (hi_k - lo_k), 0, 1)`` and ``S = sum w_k * u_k`` (10.4).
 
     ``x`` for ``copy_mean_r`` is shrunk: ``copy_mean_r * n_rt / (n_rt + score.shrink_k_trades)``; for ``pos_blocks``
     it is ``pos_blocks / gate.n_blocks``. Weights and anchors come from ``score.weights.*`` and ``score.anchors.*``.
     The weights sum to 1 only within 1e-9, so S is capped at 1.
 
+    ``recent_sr`` is the one input no gate covers. With ``recent_sr_unmeasurable_is_worst`` and ``m.recent_sr`` None
+    (no measurable recent variance), the component is set explicitly to the worst outcome: ``u = 0`` (its ``x`` is
+    reported as 0), whatever the anchors are. No value is substituted as an input, so a negative ``lo`` cannot turn
+    "unmeasurable" into a partial score.
+
     Raises:
-        ValueError: a component input the score needs is None (only eligible wallets are scored).
+        ValueError: a component input the score needs is None (only eligible wallets are scored). This includes
+            ``recent_sr`` unless ``recent_sr_unmeasurable_is_worst`` is set.
     """
+    recent_unmeasurable = recent_sr_unmeasurable_is_worst and m.recent_sr is None
     x = {
         "dsr_excess": _require(m.dsr_excess, "dsr_excess"),
         "copy_mean_r": shrink_toward_zero(_require(m.copy_mean_r, "copy_mean_r"), m.n_rt, cfg["score.shrink_k_trades"]),
         "pos_blocks": Decimal(m.pos_blocks) / cfg["gate.n_blocks"],
         "max_dd": _require(m.max_dd, "max_dd"),
-        "recent_sr": _require(m.recent_sr, "recent_sr"),
+        "recent_sr": _ZERO if recent_unmeasurable else _require(m.recent_sr, "recent_sr"),
         "executable": _require(m.executable_share, "executable_share"),
     }
     u: dict[str, Decimal] = {}
@@ -51,7 +58,10 @@ def score_components(m: Metrics, *, cfg: Config) -> Components:
     for name in SCORE_COMPONENTS:
         lo: Decimal = cfg[f"score.anchors.{name}.lo"]
         hi: Decimal = cfg[f"score.anchors.{name}.hi"]
-        u[name] = min(_ONE, max(_ZERO, (x[name] - lo) / (hi - lo)))
+        if name == "recent_sr" and recent_unmeasurable:
+            u[name] = _ZERO
+        else:
+            u[name] = min(_ONE, max(_ZERO, (x[name] - lo) / (hi - lo)))
         total += cfg[f"score.weights.{name}"] * u[name]
     return Components(x=x, u=u, score=min(_ONE, total))
 

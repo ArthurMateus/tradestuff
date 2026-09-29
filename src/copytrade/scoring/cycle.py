@@ -114,10 +114,9 @@ def score_wallet(
     reasons = (STALE_REASON, *failed) if _is_stale(inputs, cfg=cfg, t_ms=t_ms) else failed
     components = None
     if not reasons:
-        # No gate covers the recent Sharpe: a wallet with no measurable recent variance scores 0 on it (the worst
-        # anchor at the default config) instead of being unscorable. The stored metrics keep the None.
-        scorable = metrics if metrics.recent_sr is not None else replace(metrics, recent_sr=Decimal(0))
-        components = score_components(scorable, cfg=cfg)
+        # No gate covers the recent Sharpe: a wallet with no measurable recent variance gets u = 0 (the worst outcome)
+        # on that component, set explicitly and not by feeding a value in as input. The stored metric keeps the None.
+        components = score_components(metrics, cfg=cfg, recent_sr_unmeasurable_is_worst=True)
     _, resolution = daily_returns(inputs, cfg=cfg, t_ms=t_ms)
     return WalletScore(
         address=address,
