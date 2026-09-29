@@ -16,6 +16,7 @@ take no lock and work while the engine writes.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import logging
 import os
@@ -64,8 +65,10 @@ if sys.platform == "win32":  # pragma: no cover - exercised on the PO's Windows 
     def _try_lock(fd: int) -> bool:
         try:
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        except OSError:
-            return False
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EDEADLOCK):  # the byte is locked by another process
+                return False
+            raise
         return True
 
 else:
@@ -333,9 +336,7 @@ class Ledger:
     def _write_durably(self, line: bytes) -> None:
         """Write the whole line and fsync it. On any failure mark the ledger failed and try to undo the write."""
         try:
-            view = memoryview(line)
-            while view:
-                view = view[os.write(self._fd, view) :]
+            self._write_all(line)
             os.fsync(self._fd)
         except OSError as exc:
             self._failed = True
@@ -351,6 +352,15 @@ class Ledger:
             self._failed = True
             raise
         self._size += len(line)
+
+    def _write_all(self, line: bytes) -> None:
+        """``os.write`` until the whole line is out; a write that makes no progress is an ``OSError``."""
+        view = memoryview(line)
+        while view:
+            written = os.write(self._fd, view)
+            if written <= 0:
+                raise OSError(errno.EIO, "the write made no progress")
+            view = view[written:]
 
     def _rollback(self) -> None:
         """Best effort: cut the file back to the last acknowledged record. If this fails too, reopening the

@@ -37,7 +37,10 @@ def _utc_instant_ms(text: str) -> int:
         raise argparse.ArgumentTypeError(f"{text!r} has no explicit UTC offset (write e.g. 2026-09-21T14:13:20Z)")
     if instant.microsecond % 1000:
         raise argparse.ArgumentTypeError(f"{text!r} is finer than a millisecond")
-    return (instant.astimezone(UTC) - _EPOCH) // timedelta(milliseconds=1)
+    try:
+        return (instant.astimezone(UTC) - _EPOCH) // timedelta(milliseconds=1)
+    except OverflowError as exc:  # the UTC instant falls outside years 1..9999
+        raise argparse.ArgumentTypeError(f"{text!r} is outside the supported range of instants") from exc
 
 
 def _run_verify(args: argparse.Namespace) -> int:

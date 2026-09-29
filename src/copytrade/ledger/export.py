@@ -15,6 +15,7 @@ from typing import TextIO
 
 from copytrade.core.clock import TimeSource, Timestamp
 from copytrade.core.money import Pnl
+from copytrade.ledger.errors import LedgerError
 from copytrade.ledger.records import KIND_FILL, KIND_TRADE, FillRecord, decode_fill, decode_trade
 from copytrade.ledger.store import read_records
 
@@ -96,11 +97,15 @@ def aggregate_trades(directory: Path) -> TradeAggregate:
 
     Raises:
         LedgerCorruptError: the ledger does not verify.
+        LedgerError: the exact total is not representable (pathological amounts); no total is returned.
     """
     count = 0
     total = Decimal(0)
     for record in read_records(directory):
         if record.kind == KIND_TRADE:
-            total = _EXACT.add(total, decode_trade(record).pnl_usd)
+            try:
+                total = _EXACT.add(total, decode_trade(record).pnl_usd)
+            except ArithmeticError as exc:
+                raise LedgerError(f"trade at seq {record.seq} cannot be summed exactly") from exc
             count += 1
     return TradeAggregate(trade_count=count, total_pnl_usd=Pnl(total))
