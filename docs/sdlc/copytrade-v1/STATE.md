@@ -4,7 +4,7 @@ gate_passed: build (F1 only)
 touches_money_path: yes
 touches_strategy: yes
 has_ui: no
-features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=approved+merged (tests_commit=6ba583c; round-2 tests a6340a7; build loops=2), F3=build (tests_commit=364d97b), F4=queued, F5=build (tests_commit=651812a; round-2 tests in progress), F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
+features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=approved+merged (tests_commit=6ba583c; round-2 tests a6340a7; build loops=2), F3=build (tests_commit=364d97b), F4=queued, F5=approved+merged (tests_commit=651812a; round-2 tests 490d783; build loops=2), F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
 loops: tests=0 build=2 review=0 qa=0
 escalations_open: none
 updated: 2026-09-29T20:00:00Z
