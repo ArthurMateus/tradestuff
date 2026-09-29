@@ -5,11 +5,13 @@
 - **Rules:**
   - Rows are append-only. At most 2 paper runs (edge-hypothesis 5.4).
   - Every mid-run deploy and its backtest-auditor ruling gets a row (A1.2).
+  - Only the recorded commit runs, from the run worktree, until the ruling is in the ledger, whether or not entries are paused (A2.2).
+  - Appending rows here, or any other docs commit, happens outside the run worktree and is never a deploy (A2.2).
 
 ## Runs
 
-| Run | Start (UTC) | End (UTC) | edge-hypothesis.md sha256 | Config sha256 | Engine commit | Dirty | CI level | End reason | Verdict |
-|---|---|---|---|---|---|---|---|---|---|
+| Run | Start (UTC) | End (UTC) | edge-hypothesis.md sha256 | Config sha256 | Engine commit | Dirty (engine path set) | Run worktree | Installed-package list sha256 | Data inputs sha256 (manifest of per-file hashes) | CI level | End reason | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
 ## Mid-run deploys
 

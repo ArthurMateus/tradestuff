@@ -13,6 +13,14 @@ Rows: given a frozen-P2 pass at 96%, the share of runs in which FR6 fires, for 3
 
 Trade model: gate_power.py section D2 (merged positions, day factor x direction), except that in
 part 1 the daily factor has mean `trend` (a trending month). All assumption, not data.
+
+B0d approximation (disclosed in addendum A2.7, BT3-7): each trade's baseline mean B-bar_i is the
+mean of k = 20 synthetic replications (gate_power.baseline_means, default k = 20), NOT the
+1,000 replications of the frozen rule (edge-hypothesis 6.2, `baseline.dm_reps`). With a
+replication SD of about 1.2R, B-bar_i carries extra noise of SD about 1.2 / sqrt(20) = 0.27R
+(0.04R at k = 1,000). The noise is mostly independent across trades (the draws share only the
+month's factor path) and enters the estimated variance of D, so it mainly lowers P2c power rather
+than adding false PASSes. gate_power.py section D2 (E6) and few_clusters.py (E10) use the same k = 20.
 Usage (from this folder): python3 b0d_cost_fr6.py > ../../../../../research/data/b0d_cost_fr6_seed41.txt
 Stdlib only; seed 41 fixed inside; 2 processes; results do not depend on the process count.
 """

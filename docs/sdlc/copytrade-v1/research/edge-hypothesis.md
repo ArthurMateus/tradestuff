@@ -1,18 +1,19 @@
 # Edge hypothesis: copytrade-v1
 
-Date: 2026-09-29. Author: quant-researcher. Version: **v2 + Addendum A1** (A1 dated 2026-09-29, written before run 1 and before any real result).
+Date: 2026-09-29. Author: quant-researcher. Version: **v2 + Addenda A1 and A2** (both dated 2026-09-29, written before run 1 and before any real result).
 
 Status: **PRE-REGISTRATION FROZEN.** No result on real data exists yet. No paper run has started.
 - v2 encodes the PO's research-phase decisions and closes backtest-audit findings BT-1 to BT-17. The closure table is in section 15.
 - **Addendum A1 (5.10)** closes round-2 audit findings BT2-1 to BT2-9. It follows the 5.1 addendum rule: every change to frozen text is listed in 5.10 with the v2 wording it replaces, and the amended text is in place, marked `(A1.n)`.
 - Section 5 is the frozen pre-registration. Section 5.1 says how it is frozen and how it can legitimately change.
-- **Run 1 must not start until the PO has acknowledged the five items in section 14** (pending PO acknowledgement, BT2-5).
+- **Addendum A2 (5.11)** closes round-3 audit findings BT3-1 to BT3-7 (all ADVISORY; the round-3 verdict was VALID). It follows the same rule: every replaced text is quoted verbatim in 5.11, and the amended text is in place, marked `(A2.n)`.
+- **Run 1 must not start until the PO has acknowledged the eight items in section 14** (pending PO acknowledgement, BT2-5; items 6-8 added by A2.4).
 
 Inputs:
 - `01-brief.md`, `02-discovery.md`, `03-answers.md` (including "Research-phase decisions")
 - `docs/product/decisions.md` (2026-09-29 entries)
 - `research/brainstorm-domain-research.md`, `research/market-context.md`
-- `research/backtest-audit.md` (BT-1 to BT-17), `research/backtest-audit-r2.md` (BT2-1 to BT2-9)
+- `research/backtest-audit.md` (BT-1 to BT-17), `research/backtest-audit-r2.md` (BT2-1 to BT2-9), `research/backtest-audit-r3.md` (BT3-1 to BT3-7)
 
 Labels used below:
 - **[PO]** a fixed PO decision, reproduced and not changed
@@ -184,13 +185,17 @@ All metrics come from the append-only ledger. They are net of taker fees, spread
   - the sha256 of this file
   - the sha256 of the frozen config
   - the CI level for that run
-  - the bootstrap seed: 32 bytes from the OS CSPRNG, generated at run start and stored as hex. It seeds every random draw of the evaluation (A1.3 b).
-  - **(A1.2)** the engine's git commit (full 40-hex SHA) and a **dirty flag**. The flag is true if any tracked file differs from that commit, or any untracked file exists outside the ledger and recording directories.
+  - the bootstrap seed: 32 bytes from the OS CSPRNG, generated at run start and stored as hex. It seeds every random draw of the evaluation (A1.3 b). **(A2.7)** The RNG consumes the **32 raw bytes** decoded from that hex string, never the 64 hex characters as text.
+  - **(A1.2, A2.2)** the engine's git commit (full 40-hex SHA) and a **dirty flag** computed over the **engine path set** (below). The flag is true if any tracked file in the engine path set differs from that commit, or any untracked file exists inside it. Files outside the set (`docs/**`, `research/**`, the ledger, the recordings) never make it dirty.
   - **(A1.2)** the sha256 of the dependency lockfile, and the Python version
+  - **(A2.2)** the sha256 of the **installed-package list**: every distribution installed in the engine's Python environment, as `name==version` with the normalised lowercase name, one per line, sorted, UTF-8 with LF line ends (read with `importlib.metadata`). A package installed or upgraded outside the lockfile therefore changes it.
+  - **(A2.2)** the sha256 of **every non-config data input**: each file the engine reads that is not the frozen config, the ledger, or our own recordings and snapshots (for example the macro calendar file). Each is listed by path with its own sha256.
 - **(A1.2)** The engine refuses to write a run record, and so to start a run, when the dirty flag is true (fail closed). A run record with dirty = true makes the run ABORTED.
+- **(A2.2) Engine path set.** The explicit list of paths the engine executes or reads, committed in the repository as a manifest that the PM's spec names: all engine source, the dependency lockfile, the frozen config file, and every non-config data input. `docs/**`, `research/**`, the ledger and the recording directories are never in it. A file the engine reads that is missing from the manifest is a bug; the backtest-auditor treats its discovery like a mid-run deploy (5.3).
+- **(A2.2) Run worktree.** Each run executes from a **dedicated git worktree pinned to the run commit** (detached HEAD, for example `../wt-paper-run<r>`), used for nothing else. Docs commits, run-register appends and development happen in other checkouts, so they never touch the run worktree and are never a deploy. The engine refuses to start a run anywhere else.
 - **Edits after run 1 starts** apply only if they are logged as a dated **addendum** before the next run starts. Past runs are always evaluated under the version hashed in their run record. Any other edit is a D4 violation, and the backtest-auditor must treat it as voiding the run.
 - **Edits before run 1** also use a dated addendum that quotes the replaced text (A1 in 5.10 is the first). Run 1's record hashes the file with all addenda up to that moment.
-- **(A1.4) P2c can't be removed, weakened or made non-gating by any addendum in this epic.** The nominal false-PASS rate of P2 under cross-day correlation depends on it (5.9).
+- **(A1.4) P2c can't be removed, weakened or made non-gating by any addendum in this epic.** The nominal false-PASS rate of P2 under cross-day correlation depends on it (5.9). **(A2.4)** This binds A2 and every later addendum; section 14 states it for the PO.
 - **(A1.3 h)** The run register is not kept in this file, so appending to it never changes the hash in a run record (5.4).
 
 ### 5.2 PO answers to the research questions (2026-09-29)
@@ -230,12 +235,12 @@ All metrics come from the append-only ledger. They are net of taker fees, spread
 | Run start `t0` | Timestamp of the run record (5.1) |
 | Sample S | The **first 300 trades by entry-fill timestamp** opened in `[t0, t0 + 60 days)` [PO]. Ties are broken by client order ID, ascending. Trades opened after the 300th are traded normally but are outside S, and their statistics are reported separately. |
 | `t300` | Entry-fill time of the 300th trade |
-| **`T_eval`** | The moment the last trade in S closes, or `t300 + 7 days`, whichever comes first [QR, PO-ACK pending: section 14 item 4]. A trade in S still open at `t300 + 7 days` is marked for the gate at the recorded mid, minus taker fee and half-spread at that moment. It is flagged "marked" and keeps being managed normally. Its later real outcome is reported separately and never changes the verdict. **(A1.3 f)** For a marked trade: `hold_i = T_eval − entry fill time`; funding counts through the last hourly funding at or before `T_eval`; R and R_maxrisk use the marked exit; its holding interval ends at `T_eval` for merged positions. |
+| **`T_eval`** | The moment the last trade in S closes, or `t300 + 7 days`, whichever comes first [QR, PO-ACK pending: section 14 item 4]. **(A2.1)** For a trade closed by `/flatten`, "closes" means its **shadow exit**, never the moment of the flatten. A trade in S still open at `t300 + 7 days` is marked for the gate at the recorded mid, minus taker fee and half-spread at that moment. It is flagged "marked" and keeps being managed normally. Its later real outcome is reported separately and never changes the verdict. **(A2.1)** A flattened trade whose shadow is still open at `t300 + 7 days` is marked the same way: the shadow is valued with that formula, and the marked shadow R is the shadow R in `min(realised R, shadow R)`. **(A1.3 f)** For a marked trade: `hold_i = T_eval − entry fill time`; funding counts through the last hourly funding at or before `T_eval`; R and R_maxrisk use the marked exit; its holding interval ends at `T_eval` for merged positions. |
 | Evaluation window | `[t0, T_eval]`. P3, P4 and P5 apply to this window. |
-| Day cluster | The UTC calendar day of the **first entry fill of the merged position** the trade belongs to. Every share of a merged position is therefore in one day cluster. G is the number of distinct day clusters in S. **(A1.3 c)** A merged position is a connected component (transitive closure) of the overlap graph over the trades in S with the same symbol and direction. Two trades are linked when their closed holding intervals `[entry fill, min(full close, T_eval)]` intersect; touching at the same millisecond counts. If A overlaps B and B overlaps C, then A, B and C are one merged position even when A and C don't overlap. Trades outside S never link trades in S. |
+| Day cluster | The UTC calendar day of the **first entry fill of the merged position** the trade belongs to. Every share of a merged position is therefore in one day cluster. G is the number of distinct day clusters in S. **(A1.3 c)** A merged position is a connected component (transitive closure) of the overlap graph over the trades in S with the same symbol and direction. Two trades are linked when their closed holding intervals `[entry fill, min(evaluation close, T_eval)]` intersect; touching at the same millisecond counts. **(A2.1)** The evaluation close is the full close, or the shadow exit for a flattened trade. If A overlaps B and B overlaps C, then A, B and C are one merged position even when A and C don't overlap. Trades outside S never link trades in S. |
 | Run level `L_r` | Run 1: **L_1 = 96%** (two-sided α = 0.04). Run 2: **L_2 = 99%** (α = 0.01). See 5.4. [QR, PO-ACK pending: section 14 item 1] |
 | `LB_r(x)` / `UB_r(x)` | For per-trade values x_i over S, the **minimum** of the lower bounds / **maximum** of the upper bounds of three two-sided CIs of the mean, at level `L_r` [QR, PO-ACK pending: section 14 item 2]: (a) the iid t-interval, n − 1 df; (b) a percentile cluster bootstrap resampling day clusters with replacement, B = 10,000, seed from the run record; (c) a cluster-robust t-interval, `V = G/(G−1) · Σ_g (Σ_{i∈g}(x_i − x̄))² / n²`, with G − 1 df. The exact bootstrap is fixed by A1.3 b below. |
-| **Bootstrap, exact (A1.3 b)** | **Statistic:** the pooled trade mean of the resample, `Σ_{picked g} Σ_{i∈g} x_i / Σ_{picked g} n_g`, not the mean of cluster means. **Clusters:** indexed 0..G−1 in ascending UTC day. Resample r ∈ [0, B) picks G indices with replacement; pick j ∈ [0, G) is `rng_uint(seed, tag, (r, j), G)`. **RNG `rng_uint(seed, tag, counters, n)`:** for k = 0, 1, …, take the first 8 bytes (big-endian uint64 x) of `SHA-256(seed ‖ ASCII tag ‖ 0x00 ‖ each counter as uint32 big-endian ‖ k as uint32 big-endian)`. Return `x mod n` for the first k with `x < ⌊2^64/n⌋·n` (rejection sampling, no modulo bias). Tags are `bootR` for R, `bootD` for D, and `b0d` for baseline draws. **Percentile index:** sort the B means ascending (0-based). `k = ⌊B·(100 − L%)/200⌋` in integer arithmetic. LB = element k, UB = element B − 1 − k. With B = 10,000 that is 200 / 9,799 at 96% and 50 / 9,949 at 99%. **Arithmetic:** R_i is the ledger's Decimal quantised to 1e-6, then converted to IEEE-754 binary64. Sums are accumulated in pick order. t quantiles are accurate to at least 1e-9. **Comparison:** LB_r and UB_r are rounded half-even to 1e-6 before `> 0` / `≤ 0`, so a rounded 0.000000 is not > 0. **Reference:** `scripts/eval_reference.py` implements this text and prints test vectors (E13). If the two disagree, this text wins. |
+| **Bootstrap, exact (A1.3 b)** | **Statistic:** the pooled trade mean of the resample, `Σ_{picked g} Σ_{i∈g} x_i / Σ_{picked g} n_g`, not the mean of cluster means. **Clusters:** indexed 0..G−1 in ascending UTC day. Resample r ∈ [0, B) picks G indices with replacement; pick j ∈ [0, G) is `rng_uint(seed, tag, (r, j), G)`. **RNG `rng_uint(seed, tag, counters, n)`:** for k = 0, 1, …, take the first 8 bytes (big-endian uint64 x) of `SHA-256(seed ‖ ASCII tag ‖ 0x00 ‖ each counter as uint32 big-endian ‖ k as uint32 big-endian)`. **(A2.7)** `seed` is the 32 raw bytes decoded from the run record's hex string (for the E14 test vector, the bytes whose hex is `0b233e78…d64a7cce`), never its ASCII hex text; an input that is not exactly 32 bytes is an error. Return `x mod n` for the first k with `x < ⌊2^64/n⌋·n` (rejection sampling, no modulo bias). Tags are `bootR` for R, `bootD` for D, and `b0d` for baseline draws. **Percentile index:** sort the B means ascending (0-based). `k = ⌊B·(100 − L%)/200⌋` in integer arithmetic. LB = element k, UB = element B − 1 − k. With B = 10,000 that is 200 / 9,799 at 96% and 50 / 9,949 at 99%. **Arithmetic:** R_i is the ledger's Decimal quantised to 1e-6, then converted to IEEE-754 binary64. Sums are accumulated in pick order. t quantiles are accurate to at least 1e-9. **Comparison:** LB_r and UB_r are rounded half-even to 1e-6 before `> 0` / `≤ 0`, so a rounded 0.000000 is not > 0. **Reference:** `scripts/eval_reference.py` implements this text and prints test vectors (E14, which supersedes E13 and asserts every printed vector against golden literals, A2.7). If the two disagree, this text wins. |
 
 **At `T_eval`, the verdict is exactly one of:**
 
@@ -246,7 +251,7 @@ All metrics come from the append-only ledger. They are net of taker fees, spread
 | P1 [PO] | S is complete: 300 trades opened before `t0 + 60 days` |
 | P2 [PO + QR method] | `LB_r(R) > 0`, and G ≥ 5 [QR, PO-ACK pending: section 14 item 3]. Below 5 day clusters the cluster variance is degenerate; E10 shows the rule is conservative from G = 5. |
 | P2b [PO] | Σ net USD P&L over S > 0 |
-| P2c [PO + QR precision, PO-ACK pending: section 14 item 5] | `LB_r(D) > 0`, where `D_i = R_i − mean_R(B0d replications of trade i)` (6.2), computed on the same day clusters as P2. **(A1.3 g)** A trade without an admissible B0d window gets `D_i = min(R_i, 0)`. If more than 10% of S (more than 30 trades) have no admissible window, P2c fails. **Non-removable (A1.4).** |
+| P2c [PO + QR precision, PO-ACK pending: section 14 item 5] | `LB_r(D) > 0`, where `D_i = R_i − mean_R(B0d replications of trade i)` (6.2), computed on the same day clusters as P2. **(A1.3 g, A2.3 a)** A trade without an admissible B0d window gets `D_i = min(R_i, 0, R_i − B̄_i^partial)`, with `B̄_i^partial` defined in 6.2. If more than 10% of S (more than 30 trades) have no admissible window, P2c fails. **Non-removable (A1.4).** |
 | P3 [PO] | Mark-to-market drawdown < 15% at every mark in the evaluation window |
 | P4 [PO] | 0 missed exits in the evaluation window |
 | P5 [PO] | Downtime < 2% of the evaluation window. Downtime is time when the engine could not open or manage positions (process down, a data gap before resync, the access-degraded pause) plus any manual `/pause`. Rule-based event blackouts are not downtime. |
@@ -285,22 +290,23 @@ All metrics come from the append-only ledger. They are net of taker fees, spread
 `scripts/eval_reference.py::verdict` implements this order and asserts every adjacent pair (E13).
 
 **Engine changes during a run (A1.2; replaces the v2 "bug fixes" paragraph).**
-- **Deploy record.** Every process start during a run compares four things with the engine version currently in force for the run: the engine commit, the dirty flag, the lockfile hash and the Python version. Any difference is a **mid-run deploy**. The ledger gets a deploy record with:
+- **Deploy record.** Every process start during a run compares six things with the engine version currently in force for the run: the engine commit, the dirty flag (over the engine path set, 5.1), the lockfile hash, the Python version, the installed-package-list hash and the data-input hashes **(A2.2)**. Any difference is a **mid-run deploy**. The ledger gets a deploy record with:
   - the time
   - the old and new commit
   - the full `git diff <old>..<new>`, stored as a patch file with its sha256 in the ledger
   - the lockfile diff
   - the stated reason
-- **No new code without a ruling.** A deploy can't take effect in the run until the backtest-auditor has ruled on it and the ruling is in the ledger. Until then the engine keeps running the recorded commit. Or entries are paused (`/pause`, with open positions still managed) and that time counts as downtime (P5).
+- **No new code without a ruling (A2.2).** A deploy can't take effect in the run until the backtest-auditor has ruled on it and the ruling is in the ledger. Until then **only the recorded commit runs**, from the run worktree, for everything: entries, management of open positions, exits and safety actions, whether entries are paused or not. Pausing entries while waiting is allowed, and that time counts as downtime (P5). If the recorded commit can't manage open positions safely, the route is its own safety actions (kill switch, `/flatten`) or a manual stop of the run (ABORTED). Running the new code before the ruling makes the run ABORTED. Money safety comes first, the run second.
 - **Rulings.** The auditor rules one of two ways:
   - **CONTINUE:** the ruling lists every trade whose decision, fill or R the change could affect. Those trades stay in S and are listed in the verdict report.
   - **ABORTED.**
 - **ABORTED by default.** A change to signal, filter, scoring, sizing, exit, cost or fill logic is ruled ABORTED by default. This includes defaults hard-coded for those parts, data files they read and dependencies they call. The auditor may rule CONTINUE for such a change only if one test holds: replaying the run so far on recorded data through both commits gives identical decisions, fills and R for every trade.
-- **Crash restarts.** A restart on the same commit, clean, with the same lockfile, config and a continuous ledger is not a deploy and not a new run. Its downtime counts toward P5.
+- **Crash restarts.** A restart on the same commit, clean, with the same lockfile, config, **installed-package list and data inputs (A2.2)**, from the run worktree, and a continuous ledger is not a deploy and not a new run. Its downtime counts toward P5.
 
 **`/flatten` inside S (A1.3 d).** `/flatten` (PIN-protected, through the risk gate) is a safety action and is always allowed.
 - **Trades stay in S.** The trades it closes stay in S with exit reason `manual_flatten`.
-- **Shadow outcome.** The engine keeps managing a **shadow** of each flattened trade on recorded data under the frozen exit rules, until its shadow exit.
+- **Shadow outcome.** The engine keeps managing a **shadow** of each flattened trade on recorded data under the frozen exit rules, until its shadow exit. **(A2.1)** The shadow accrues hourly funding and follows the leader's recorded exits as the real trade would have. Over a gap in our recording, its SL/TP path uses exchange 1h candles, with the stop assumed hit first on an ambiguous bar (section 3).
+- **(A2.1) The shadow exit is the trade's close for the evaluation.** `T_eval`, `hold_i`, the merged-position interval (day clusters), the B0d replications' hold and time exit, and P3's shadow equity all use the shadow exit, never the moment of the flatten. A shadow still open at `t300 + 7 days` is marked (`T_eval` row above). A flatten therefore can't end or shorten the evaluation, and choosing when to flatten changes nothing except `min(realised, shadow)`.
 - **Gate R.** For the gate, a flattened trade counts with `min(realised R, shadow R)`, and its USD P&L with the same choice. Manual exits can therefore only hurt the verdict.
 - **P3.** P3 is checked both on the actual marked equity and on the shadow equity, which has flattened trades replaced by their shadows. A breach on either is F1.
 - **Entries after a flatten.** A flatten doesn't pause entries by itself; `/pause` time counts as downtime.
@@ -411,6 +417,7 @@ These come from E5 (`feasibility_mc.py` v2, seed 17), E6 (`gate_power.py` v2, se
 | Power at +0.10R when the 300 trades fall on 5 / 8 / 10 / 15 days (no beta) | 13 / 16 / 17 / 19% (frozen P2 at 96%). False PASS stays ≤ 1.6%. | E10 |
 | **(A1.4) Frozen P2 alone, continuous market factor, holds crossing UTC days**, zero edge | **Under-covers:** 1.7% (4h median hold), 2.5-3.2% (12h), 3.9% (24h), against the nominal one-sided 2%. P2 + P2c: ≤ 0.8%, and ≤ 1.3% with a trend. | backtest-audit-r2 BT2-4 (the auditor's simulation; not reproduced here) |
 | **(A1.1) P2 + P2c at zero net timing value in a trending month**, run 1: corrected B0d cost vs the superseded v2 wording (B0d also charged the copy's delay cost of 0.05R / 0.10R). Day-factor corr 0.3 / 0.5, 80% long, factor trend 0 / +0.25 / +0.50, so beta-only mean copy R is 0 to +0.21R | Corrected: **0.1-0.5%**. Superseded: 0.3-1.8% at 0.05R and 0.8-6.4% at 0.10R. The inflation grows with the trend and the delay cost. The auditor's model gave larger inflation, 2.9-4.7% and 11.6-14.4%. The direction agrees; the size depends on the model. | E11 |
+| **(A2.5) Power at +0.10R with merged positions, run 2** (frozen P2 at 99%), **before P2c** | No beta **8.6%**. Day-factor corr 0.2 / 0.3 / 0.5 with 70-80% long: **6.4 / 4.4 / 2.7%**. P2c at 99% was not simulated; it can only lower these. (v2 + A1 section 14 quoted the iid 13-24%, 2-4× too high: BT3-5.) | E6 D2 (`frozen99`) |
 
 **Reading:**
 - A real +0.10R edge passes run 1 **at best about 1 time in 3**. With few leaders, or leaders who rarely trade, it almost never does.
@@ -427,6 +434,7 @@ These come from E5 (`feasibility_mc.py` v2, seed 17), E6 (`gate_power.py` v2, se
   - The cross-day diagnostics at `T_eval` (5.3) show how exposed a given run is.
 - **(A1.1) With the corrected B0d cost,** P2c tests net timing value after our delay, not the leader's gross timing (6.2). In E11 the corrected rule keeps P2 + P2c at 0.1-0.5% when the copy's net timing value is zero, even in a trending month.
 - **INCONCLUSIVE is the most likely honest outcome** of a run with a modest real edge.
+- **(A2.7) B0d in the simulations.** In E6 D2, E10 and E11, each trade's B0d mean comes from k = 20 synthetic replications, not the frozen 1,000 (`gate_power.baseline_means`). That adds noise of SD ≈ 1.2/√20 ≈ 0.27R to each B̄_i (0.04R at 1,000). The noise is mostly independent across trades and enters the estimated variance of D, so it mainly lowers P2c power: the P2 + P2c power figures are slightly pessimistic, and the false-PASS figures are little affected.
 
 ### 5.10 Addendum A1 (dated 2026-09-29, before run 1)
 
@@ -435,7 +443,7 @@ These come from E5 (`feasibility_mc.py` v2, seed 17), E6 (`gate_power.py` v2, se
 - Written before any paper run started and before any real-data result. The run register is empty, and 0 strategy variants have been tried on real data.
 - No number in A1 was chosen after seeing strategy performance: none exists.
 
-**What it amends:** each item below quotes the v2 text it replaces. The amended text is in place where marked `(A1.n)`.
+**What it amends:** each item below quotes the v2 text it replaces. The amended text is in place where marked `(A1.n)`. **(A2.6)** Some rows describe the replaced v2 text instead of quoting it (BT3-6). The authoritative v2 text is this file at commit `1eba7c6`, sha256 `36e35a032a6792a6182903e34872d7d0370118647b5789595e4e366e68a26fb1` (check: `git show 1eba7c6:docs/sdlc/copytrade-v1/research/edge-hypothesis.md | sha256sum`).
 
 | Item | Finding | v2 text replaced | Amended rule (where) |
 |---|---|---|---|
@@ -443,7 +451,7 @@ These come from E5 (`feasibility_mc.py` v2, seed 17), E6 (`gate_power.py` v2, se
 | **A1.2** | BT2-2 (BLOCKING) | 5.1 run-record list (no engine version); 5.3 "Bug fixes that don't change the config hash are logged, the run continues, and the affected trades stay in S." | The run record adds the engine commit, a dirty flag, the lockfile hash and the Python version. A dirty tree can't start a run. Every mid-run deploy is logged with its full diff and needs a backtest-auditor ruling (CONTINUE with the affected trades listed, or ABORTED) before its code runs in the run. Changes to signal, filter, scoring, sizing, exit, cost or fill logic are ABORTED by default. (5.1, 5.3, 8.1; evaluation test 11) |
 | **A1.3** | BT2-3 | 5.3 left these open: precedence between "G < 5 is INCONCLUSIVE" and F3; the bootstrap statistic, index and RNG; transitivity; `/flatten`; B0d without a window; hold for marked trades. 5.4 put the register in "section 12 of this file". | (a) Verdict precedence list (5.3). (b) Exact bootstrap: statistic, index, SHA-256 counter RNG, rounding (5.3). (c) Transitive merged positions (5.3). (d) `/flatten` counts `min(realised, shadow)` (5.3). (f) Marked-trade hold and funding (5.3). (g) B0d admissible windows, delistings, and missing windows (6.2, P2c). (h) Register in the ledger and `run-register.md` (5.4). Reference implementation with test vectors: `scripts/eval_reference.py` (E13). Evaluation tests 12-18. |
 | **A1.4** | BT2-4 | (none; additions) | The under-coverage of P2 alone is stated (5.9). P2c is non-removable (5.1). Non-gating cross-day diagnostics at `T_eval` (5.3). Evaluation test 20. |
-| **A1.5** | BT2-5 | 9.2 `eval.ci_level_run1/run2` basis "PO (α split) + QR (split)" | Basis relabelled "QR, PO-ACK pending". Five items need the PO's written acknowledgement before run 1 (section 14). The CTO records the answer in `decisions.md`; D11 there still says 95%. |
+| **A1.5** | BT2-5 | 9.2 `eval.ci_level_run1/run2` basis "PO (α split) + QR (split)" | Basis relabelled "QR, PO-ACK pending". Five items need the PO's written acknowledgement before run 1 (section 14). The CTO records the answer in `decisions.md`; D11 there still says 95%. **(A2.5) Correction:** D11 states no level ("CI lower bound > 0"); the 95% is in `01-brief.md:27,127`. |
 | **A1.6** | BT2-8 | (none; additions) | FR6, a go-live blocker: mean R without the best UTC-day cluster ≤ 0 (5.6). S6: weekly mean R (5.7). Evaluation test 19. |
 | **A1.7** | BT2-9 | 5.9 "0.004-0.015"; section 12 E6 doubled backticks; `gate_power.py` docstring "section 5.0" | 0.001-0.015; the backticks fixed; "section 5.3". The docstring-only change leaves the output byte-identical (E6 row). |
 
@@ -455,6 +463,295 @@ These come from E5 (`feasibility_mc.py` v2, seed 17), E6 (`gate_power.py` v2, se
 - **A1.1 makes P2c harder:** B0d no longer carries the copy's delay cost. When our delay eats most of the leader's timing edge, P2c now fails, as it should.
 - **A1.3 d and g can only lower `LB_r(D)` and `LB_r(R)`.**
 - **Nothing in A1 makes a PASS easier.**
+
+### 5.11 Addendum A2 (dated 2026-09-29, before run 1)
+
+**Context:**
+- Written after backtest-audit round 3 (`backtest-audit-r3.md`, verdict VALID, seven ADVISORY findings BT3-1 to BT3-7).
+- Written before any paper run started and before any real-data result. The run register is empty, and 0 strategy variants have been tried on real data.
+- No number in A2 was chosen after seeing strategy performance: none exists. The only new numbers are power figures read from the existing E6 output (`research/data/gate_power_seed23.txt`, unchanged) and the golden values of the reference implementation.
+
+**Versions it amends (A2.6):**
+- **v2:** this file at commit `1eba7c6`, sha256 `36e35a032a6792a6182903e34872d7d0370118647b5789595e4e366e68a26fb1`.
+- **v2 + A1:** this file at commit `75f1fbf` (unchanged at `ce672a7`), sha256 `ce3255e8cbf9b3670874464caa57e7afa530b4c74a38cc6e8faee39dfdf75515`. All quotes below are from this version.
+- The sha256 of v2 + A1 + A2 is not written here, because writing it would change it. Run 1's record stores it (5.1).
+
+**Rule followed (5.1):** every replaced text is quoted verbatim below. The amended text is in place, marked `(A2.n)`. Pure additions are listed by location without a quote.
+
+| Item | Finding | Change (where) |
+|---|---|---|
+| **A2.1** | BT3-1 | A flattened trade's close for the evaluation is its **shadow exit**, for `T_eval`, `hold_i`, merged-position intervals, the B0d hold and P3's shadow equity. A shadow still open at `t300 + 7 days` is marked. (5.3 `T_eval`, day cluster, `/flatten`; 6.2 B0d; 9.2; tests 2 and 15; `eval_reference.py`) |
+| **A2.2** | BT3-2 | The **engine path set** (a committed manifest: code, lockfile, config, non-config data inputs) scopes the dirty flag. Each run executes from a **dedicated worktree pinned to the run commit**. Only the recorded commit runs until a ruling, paused or not. The run record adds the sha256 of the installed-package list and of every non-config data input, and deploy detection compares six things. (5.1, 5.3, 8.1, 9.2, test 11, `run-register.md`) |
+| **A2.3** | BT3-3 | (a) `D_i = min(R_i, 0, R_i − B̄_i^partial)` for a trade without an admissible window, with a three-step `B̄_i^partial`. The false claim "gaps can't help a run pass" is corrected. The recorder gap rate from the pre-paper dry run is reported before run 1. (b) B0d R is computed from fill prices; drift and spread are a reported decomposition, never added. (5.3 P2c, 6.2, 6.3, 8.1, 9.2, tests 10 and 16) |
+| **A2.4** | BT3-4 | Section 14: items 6-8 added, plus a note that A1.4 binds future addenda. Every item gets plain-language wording and an "if you say no" consequence. The header, 8.1 and C14 say eight items. |
+| **A2.5** | BT3-5 | Item 1's run-2 power is ≈ 9% (no beta) and ≈ 3-6% (beta), before P2c, not 13-24%. The 95% is cited from `01-brief.md:27,127`, not D11. (14, 13 C14, 9.2, new 5.9 row, A1.5 row) |
+| **A2.6** | BT3-6 | v2 recorded as commit `1eba7c6` with its sha256 (5.10 and above). Every A2 replacement is quoted verbatim below. |
+| **A2.7** | BT3-7 | `eval_reference.py` v2: labels fixed, golden asserts for every printed vector, new discriminating vectors, 10-mutant check (E14). The seed is the 32 raw bytes (5.1, 5.3, 9.2, test 13). k = 20 B0d replications disclosed for E11, and for E6 D2 and E10 (5.9, section 12, `b0d_cost_fr6.py` v1.0.1 docstring). |
+
+**The E6 figures behind A2.5** (`gate_power_seed23.txt`, section D2, true mean +0.10R, merged positions):
+
+| Setting | Frozen P2 at 96% (run 1) | Frozen P2 + P2c at 96% (run 1) | Frozen P2 at 99% (run 2) |
+|---|---|---|---|
+| No beta (corr 0, 50% long) | 22.1% | 20.1% | **8.6%** |
+| Day-factor corr 0.2, 70% long | 17.3% | 12.5% | **6.4%** |
+| Day-factor corr 0.3, 80% long | 13.1% | 5.6% | **4.4%** |
+| Day-factor corr 0.5, 80% long | 9.6% | 2.9% | **2.7%** |
+
+P2 + P2c at 99% was not simulated. P2c can only lower the run-2 column.
+
+**Replaced text, verbatim (A2.6).** Each block is the exact v2 + A1 text that A2 replaced, in file order. The new text is in place at the named location, marked `(A2.n)`.
+
+1. **A2, header, version line.** Replaced:
+
+```text
+Version: **v2 + Addendum A1** (A1 dated 2026-09-29, written before run 1 and before any real result).
+```
+
+2. **A2.4, header, run-1 precondition.** Replaced:
+
+```text
+- **Run 1 must not start until the PO has acknowledged the five items in section 14** (pending PO acknowledgement, BT2-5).
+```
+
+3. **A2.2, 5.1, run record, engine commit and dirty flag.** Replaced:
+
+```text
+  - **(A1.2)** the engine's git commit (full 40-hex SHA) and a **dirty flag**. The flag is true if any tracked file differs from that commit, or any untracked file exists outside the ledger and recording directories.
+```
+
+4. **A2.1, 5.3, `T_eval` definition.** Replaced:
+
+```text
+| **`T_eval`** | The moment the last trade in S closes, or `t300 + 7 days`, whichever comes first [QR, PO-ACK pending: section 14 item 4]. A trade in S still open at `t300 + 7 days` is marked for the gate at the recorded mid, minus taker fee and half-spread at that moment.
+```
+
+5. **A2.1, 5.3, day cluster, link rule.** Replaced:
+
+```text
+Two trades are linked when their closed holding intervals `[entry fill, min(full close, T_eval)]` intersect; touching at the same millisecond counts.
+```
+
+6. **A2.7, 5.3, bootstrap, reference.** Replaced:
+
+```text
+**Reference:** `scripts/eval_reference.py` implements this text and prints test vectors (E13). If the two disagree, this text wins.
+```
+
+7. **A2.3, 5.3, P2c.** Replaced:
+
+```text
+**(A1.3 g)** A trade without an admissible B0d window gets `D_i = min(R_i, 0)`.
+```
+
+8. **A2.2, 5.3, engine changes, deploy record.** Replaced:
+
+```text
+- **Deploy record.** Every process start during a run compares four things with the engine version currently in force for the run: the engine commit, the dirty flag, the lockfile hash and the Python version. Any difference is a **mid-run deploy**.
+```
+
+9. **A2.2, 5.3, engine changes, no new code without a ruling.** Replaced:
+
+```text
+- **No new code without a ruling.** A deploy can't take effect in the run until the backtest-auditor has ruled on it and the ruling is in the ledger. Until then the engine keeps running the recorded commit. Or entries are paused (`/pause`, with open positions still managed) and that time counts as downtime (P5).
+```
+
+10. **A2.2, 5.3, engine changes, crash restarts.** Replaced:
+
+```text
+- **Crash restarts.** A restart on the same commit, clean, with the same lockfile, config and a continuous ledger is not a deploy and not a new run.
+```
+
+11. **A2.1, 6.2, B0d, hold_i.** Replaced:
+
+```text
+where hold_i is trade i's actual holding time (for a marked trade, `T_eval − entry`).
+```
+
+12. **A2.3, 6.2, B0d, costs.** Replaced:
+
+```text
+hourly funding from actual rates. **No post-signal decay:**
+```
+
+13. **A2.3, 6.2, missing window.** Replaced:
+
+```text
+- **Missing window.** If the admissible set for trade i totals less than 24 hours of start times (or is empty), trade i has no admissible B0d window. It gets `D_i = min(R_i, 0)`: it can count against P2c, never for it.
+  - The count is reported.
+  - If it exceeds 10% of S, P2c fails (5.3).
+  - Gaps in our own recording therefore can't help a run pass.
+```
+
+14. **A2.2, 8.1, frozen engine.** Replaced:
+
+```text
+- **Frozen engine (A1.2):** the run starts from a clean commit.
+```
+
+15. **A2.4, 8.1, precondition.** Replaced:
+
+```text
+- **Precondition (BT2-5):** the PO's acknowledgement of the five section-14 items is recorded in `decisions.md`.
+```
+
+16. **A2.5, 9.2, `eval.ci_level_run1` / `eval.ci_level_run2` basis.** Replaced:
+
+```text
+The PO's decision was ≤ 2 runs and, in D11, a 95% CI.
+```
+
+17. **A2.7, 9.2, `eval.bootstrap_seed`.** Replaced:
+
+```text
+| `eval.bootstrap_b` / `eval.bootstrap_seed` | 10000 / 32 CSPRNG bytes generated at run start, stored as hex |
+```
+
+18. **A2.1, 9.2, `eval.flatten_gate_rule`.** Replaced:
+
+```text
+| `eval.flatten_gate_rule` | `min_realised_shadow` | enum | QR (A1.3 d) | FROZEN |
+```
+
+19. **A2.3, 9.2, `baseline.dm_costs`.** Replaced:
+
+```text
+| `baseline.dm_costs` | fees + own-time spread and impact + own ack drift + funding; **no decay** | | QR (A1.1) | FROZEN |
+```
+
+20. **A2.1, 10.8, test 2.** Replaced:
+
+```text
+2. `T_eval` = min(last close in S, `t300` + 7 days). Trades still open are marked as specified.
+```
+
+21. **A2.2, 10.8, test 11, fourth bullet.** Replaced:
+
+```text
+    - A process start on a different commit or lockfile writes a deploy record with the stored diff and its sha256. The new code does not run inside the run until a ruling is in the ledger; until then the engine runs the recorded commit, or entries are paused and that time counts as downtime.
+```
+
+22. **A2.7, 10.8, test 13.** Replaced:
+
+```text
+13. **(A1.3 b) Bootstrap reproducibility.** For the seed and toy sample in `research/data/eval_reference_vectors.txt` (E13), the implementation reproduces all of these to 1e-6:
+```
+
+23. **A2.7, 10.8, test 14.** Replaced:
+
+```text
+14. **(A1.3 c) Transitive merged positions.** The E13 vector must be reproduced:
+```
+
+24. **A2.1, 10.8, test 15.** Replaced:
+
+```text
+15. **(A1.3 d) `/flatten`.** Flattened trades stay in S. Their gate R and USD are the worse of realised and shadow. P3 is checked on both equity curves. A flatten that improved realised R never raises `LB_r`.
+```
+
+25. **A2.3, 10.8, test 16.** Replaced:
+
+```text
+    - A trade with less than 24 h of admissible starts gets `D_i = min(R_i, 0)`.
+```
+
+26. **A2.7, 12, E6 row.** Replaced:
+
+```text
+| 5.9 and the key numbers below. Runtime 7 min 46 s wall time on 3 processes.
+```
+
+27. **A2.7, 12, E11 row, description.** Replaced:
+
+```text
+| E11 | `b0d_cost_fr6.py` (seed 41 inside the script; 2,000 sims, B = 1,000 per cell; 2 processes).
+```
+
+28. **A2.7, 12, E11 row, script hash.** Replaced:
+
+```text
+| `f0253d92ed29b4d38ce1256741acef126c1a9ef46db2d4fd13901ddc53c20853` | `research/data/b0d_cost_fr6_seed41.txt`
+```
+
+29. **A2.7, 12, E11 row, result.** Replaced:
+
+```text
+Runtime 1 min 49 s. Run once, with no smoke run before it. | no: a check of the rule, not of the strategy |
+```
+
+30. **A2.7, 12, E13 row.** Replaced:
+
+```text
+| E13 | `eval_reference.py` (reference implementation of A1.3; test vectors) |
+```
+
+31. **A2.5, 13, C14.** Replaced:
+
+```text
+| C14 (round 2) | The five precision choices in section 14 were never signed by the PO. Together they roughly halve power: at +0.10R with merged positions, run 1 is 20% against 41% for a naive 95% t, and run 2 is 13-24%. | **Pending PO acknowledgement** (section 14) |
+```
+
+32. **A2.4, A2.5, section 14 (whole section).** Replaced:
+
+```text
+## 14. Items pending PO acknowledgement (BT2-5)
+
+Q1-Q9 are answered and encoded in 5.2. The five items below were research choices. They interpret or tighten PO decisions, and the PO has not yet signed them.
+
+- **Status of each:** pending PO acknowledgement.
+- **Who records the answer:** the CTO, in `docs/product/decisions.md`. D11 there still says 95%.
+- **Precondition:** run 1 must not start until all five are acknowledged or replaced (8.1).
+- **If the PO rejects an item:** it is changed by a further dated addendum before run 1. The consequence for the false-PASS rate or power is stated next to each item.
+
+| # | Item (exact wording for the PO) | What it replaces or interprets | If the PO says no |
+|---|---|---|---|
+| 1 | **CI levels 96% then 99%.** Run 1 is judged at a 96% confidence level, and run 2 (if there is one) at 99%, instead of 95% for each run. This keeps the chance that a strategy with no edge passes in either run at 2.5% or less (simulated 1.6%). That is the same as one look at your original 95%. The price is power: a real +0.10R edge passes run 1 about 20% of the time with merged positions, and run 2 about 13-24%. **Status: pending PO acknowledgement.** | D11, "CI lower bound > 0" at 95%, plus the PO's "at most 2 runs" | Two runs at 95% each: family-wise false PASS 3.2% [2.7, 3.8] instead of 1.6% (E6 G) |
+| 2 | **The most pessimistic of three confidence intervals.** The lower bound we test is the lowest of three methods: a plain t-interval, a bootstrap that resamples whole UTC days, and a day-clustered t-interval. The upper bound is the highest of the three. Each method alone can be too optimistic in some situations (for example, the day bootstrap with few days). Taking the most pessimistic keeps the false-PASS rate at or below target. **Status: pending PO acknowledgement.** | The PO's "day-clustered CI" (method not specified) | Any single method: false PASS up to 6.4% at 5 days (bootstrap alone, E10) |
+| 3 | **At least 5 different trading days.** A PASS needs the 300 trades to fall on at least 5 different UTC days (day clusters). With fewer, the verdict is INCONCLUSIVE: never PASS, and never FAIL by the confidence interval. **Status: pending PO acknowledgement.** | Not covered by a PO decision | No minimum: the clustered interval is degenerate below 5 days, and a verdict there is unreliable in both directions |
+| 4 | **7-day close-out cap with marking.** You decided "evaluated once, after all 300 have closed". We propose to evaluate when the last of the 300 closes **or 7 days after the 300th opened, whichever comes first**. Any of the 300 still open then is valued for the verdict at the market mid minus exit fee and half-spread. It keeps being managed normally, and its real outcome is reported separately. Without a cap, one long-held position could delay the verdict without limit. **Status: pending PO acknowledgement.** | "Evaluated once, after all have closed" | No cap: the verdict waits for the last close, however long that takes |
+| 5 | **"Beating the baseline" means its lower bound is above zero.** "Beating the direction-matched random-time baseline" is read as: the lower end of the 96% (run 1) or 99% (run 2) interval of our per-trade advantage over the baseline must be above zero. It is not enough for our average to beat the baseline's average. A copy that only rides the market's direction beats the baseline's average about half the time by luck. Under the lower-bound reading, such a copy passed the full gate in at most about 1 run in 200 in our simulations (0.1-0.5%, E11). The baseline pays the same fees and spread as us, but not our copy delay (A1.1). **Status: pending PO acknowledgement.** | The PO's "beating a direction-matched baseline" | Point comparison: a beta-only copy passes P2c about 50% of the time |
+```
+
+**Additions (no v2 + A1 text removed):**
+- A2: header, inputs
+- A2.7: 5.1, run record, bootstrap seed
+- A2.2: 5.1, run record, environment hashes
+- A2.2: 5.1, engine path set and run worktree
+- A2.4: 5.1, A1.4 binds A2 and later addenda
+- A2.7: 5.3, bootstrap, RNG seed
+- A2.1: 5.3, `/flatten`, shadow
+- A2.5: 5.9, operating characteristics table (new row)
+- A2.7: 5.9, reading (new bullet)
+- A2.6: 5.10, what A1 amends
+- A2.5: 5.10, row A1.5
+- A2.3: 6.3, random-time baselines
+- A2.2: 9.2, new keys after `eval.require_clean_engine_tree`
+- A2.3: 9.2, new key after `baseline.dm_max_missing_share`
+- A2.3: 10.8, test 10 (new bullet)
+- A2.2: 10.8, test 11 (new bullets)
+- A2.7: 10.8, test 13 (new bullets)
+- A2.7: 12, E10 row
+- A2.7: 12, E14 row (new)
+- A2: 15, round-3 closure table (new)
+- A2.7: 12, a stray blank line between the E10 and E11 rows removed, so rows E11-E14 render inside the table (formatting only; no text removed)
+
+**Outside this file (not hashed in the run record):** `run-register.md` gains columns for the run worktree, the installed-package-list sha256 and the data-inputs sha256, and two rule bullets: only the recorded commit runs until a ruling, and register appends are never a deploy (A2.2). Its replaced header line:
+
+```text
+| Run | Start (UTC) | End (UTC) | edge-hypothesis.md sha256 | Config sha256 | Engine commit | Dirty | CI level | End reason | Verdict |
+```
+
+**Not frozen, logged for completeness:**
+- `scripts/eval_reference.py` v2 and `scripts/b0d_cost_fr6.py` v1.0.1, with their sha256 in section 12 (E14, E11). `scripts/README.md` describes E14.
+- `research/data/eval_reference_vectors.txt` was regenerated (E14). `research/data/b0d_cost_fr6_seed41.txt` is byte-identical after the re-run.
+
+**What A2 costs the verdict:**
+- **A2.1 removes a PO-controlled stopping time.** The shadow exit is at or after the flatten. So `T_eval` can only stay the same or move later, merged positions can only grow, and the flatten time affects nothing except `min(realised, shadow)`.
+  - One side effect goes the other way, stated for honesty: a longer evaluation window slightly lowers the downtime fraction in P5.
+- **A2.2 is stricter.** More things count as a deploy, and new code can't run before a ruling in any mode.
+- **A2.3 (a) can only lower `D_i`,** so it can only lower `LB_r(D)`.
+- **A2.3 (b) removes a reading that made P2c easier.** Under that reading, B0d could pay its drift and spread twice, which lowers B̄ and raises D.
+- **A2.4, A2.5 and A2.6 change no rule.** A2.7 changes no rule either: it pins the seed encoding that "32 bytes" already implied, and adds tests.
+- **Nothing else in A2 makes a PASS easier.** P2c keeps its gating status (A1.4).
 
 ---
 
@@ -478,7 +775,7 @@ Every baseline runs through the same engine, risk limits, cost model and window.
 
 | ID | Baseline | Construction | Role |
 |---|---|---|---|
-| **B0d** | **Direction-matched, random-time [PO]** | For each trade i in S: same coin and **same direction**. The decision time t is drawn uniformly from the **admissible** part of `[t0, T_eval − hold_i]` (A1.3 g below), where hold_i is trade i's actual holding time (for a marked trade, `T_eval − entry`). It uses the same risk per trade, and our ATR stop and TP computed from 1h candles closed before t. **Costs (A1.1):** taker fees on both legs; the spread and book impact from walking **the book recorded at the replication's own fill times** (t + `paper_ack_delay_ms` at entry; trigger or time exit + ack delay at exit) with the replication's own size; the mid drift between its own decision and fill times (the ack-delay drift at a random time, ≈ 0 in expectation, measured, not assumed); hourly funding from actual rates. **No post-signal decay:** no `decay(Δ)`, no slippage against any leader fill, no second delay term at exit. Exit at our SL/TP (trigger on mark, fill at book + ack delay) or at hold_i, whichever comes first. For a marked trade, the replications' time exit uses the same marking formula (mid − taker fee − half-spread). **1,000 replications** per trade. Draws use `rng_uint` with tag `b0d` and counters (trade index in S, replication), over the admissible set in ms (`eval_reference.py::b0d_start`). The replications are per trade and ignore portfolio state (concurrency, loss halts). `B̄_i` = the mean R over the replications. | **Gating: P2c** on `D_i = R_i − B̄_i`. It removes the direction-profile, beta, regime, fee and spread components shared with random timing. What is left is our **net** timing value after our own delay (see below). |
+| **B0d** | **Direction-matched, random-time [PO]** | For each trade i in S: same coin and **same direction**. The decision time t is drawn uniformly from the **admissible** part of `[t0, T_eval − hold_i]` (A1.3 g below), where hold_i = `min(evaluation close, T_eval) − entry fill`: trade i's actual holding time, its shadow's for a flattened trade (A2.1), and `T_eval − entry` for a marked trade or marked shadow. It uses the same risk per trade, and our ATR stop and TP computed from 1h candles closed before t. **Costs (A1.1):** taker fees on both legs; the spread and book impact from walking **the book recorded at the replication's own fill times** (t + `paper_ack_delay_ms` at entry; trigger or time exit + ack delay at exit) with the replication's own size; the mid drift between its own decision and fill times (the ack-delay drift at a random time, ≈ 0 in expectation, measured, not assumed); hourly funding from actual rates. **(A2.3 b) R from fill prices:** a replication's R is computed from its simulated entry and exit fill prices (the book walks above), its fees and its funding, exactly like a paper trade. The ack-delay drift (mid at fill − mid at decision) and the spread and impact (fill − mid at fill) are a **reported decomposition** of those fill prices against the decision-time mid; they are never added to R a second time. **No post-signal decay:** no `decay(Δ)`, no slippage against any leader fill, no second delay term at exit. Exit at our SL/TP (trigger on mark, fill at book + ack delay) or at hold_i, whichever comes first. For a marked trade, the replications' time exit uses the same marking formula (mid − taker fee − half-spread). **1,000 replications** per trade. Draws use `rng_uint` with tag `b0d` and counters (trade index in S, replication), over the admissible set in ms (`eval_reference.py::b0d_start`). The replications are per trade and ignore portfolio state (concurrency, loss halts). `B̄_i` = the mean R over the replications. | **Gating: P2c** on `D_i = R_i − B̄_i`. It removes the direction-profile, beta, regime, fee and spread components shared with random timing. What is left is our **net** timing value after our own delay (see below). |
 | B0 | Random entry, random direction | Same coin, uniformly random entry time within the same UTC week, random direction, same holding time and sizing rules. 1,000 replications. | Reported (S3) |
 | B0b | Random direction at the same time | Same coin and entry time as the real trade, direction flipped by a coin toss | Reported: does direction carry information beyond timing? |
 | B1 | **Top 9 by raw ROI** | Each hour, follow the top 9 of our leaderboard snapshot by 30-day `roi` (accountValue ≥ $10k), with no gates and no filter. Trades opened in `[t0, T_eval]`. | **Go-live blocker (S4, K9)** |
@@ -510,10 +807,14 @@ Every baseline runs through the same engine, risk limits, cost model and window.
   - t is not inside a configured entry blackout, because our engine could not have entered then
 - **No extension.** Draws are never taken from outside `[t0, T_eval − hold_i]`: no pre-paper period, and no other coin.
 - **Delisted coin.** Windows must end before the last trading moment. A trade in S that ended by delisting settlement uses its hold to settlement, and its replications exit by time at hold_i.
-- **Missing window.** If the admissible set for trade i totals less than 24 hours of start times (or is empty), trade i has no admissible B0d window. It gets `D_i = min(R_i, 0)`: it can count against P2c, never for it.
-  - The count is reported.
-  - If it exceeds 10% of S, P2c fails (5.3).
-  - Gaps in our own recording therefore can't help a run pass.
+- **Missing window (A1.3 g, A2.3 a).** If the admissible set for trade i totals less than 24 hours of start times (or is empty), trade i has no admissible B0d window. It gets **`D_i = min(R_i, 0, R_i − B̄_i^partial)`**, where `B̄_i^partial` is the first of these that exists:
+  1. the mean R of 1,000 replications drawn (tag `b0d`, the same counters) from trade i's admissible set, however short;
+  2. if that set is empty: the mean R of 1,000 replications drawn from the **relaxed** set, `[t0, T_eval − hold_i]` restricted only by the listing and blackout conditions. Where our book or mid recording is missing, a replication uses the coin's median recorded half-spread without the ×1.5 multiplier (else 2 bps majors, 8 bps alts) and exchange 1h candles for its SL/TP path, with an ambiguous bar resolved in the replication's favour (TP first);
+  3. if the relaxed set is also empty: the largest B̄_j (full or partial) of any trade j in S with the same direction, floored at 0; 0 if there is none (`eval_reference.py::b_partial_last_resort`).
+- **What this bounds, and what it doesn't (A2.3 a).** v2 + A1 used `min(R_i, 0)` and claimed that gaps can't help a run pass. That was false. When `B̄_i > max(R_i, 0)`, for example a long, high-beta hold in a rising market, the true `D_i = R_i − B̄_i` is below `min(R_i, 0)`, and recording gaps concentrate on such long holds (BT3-3). With A2.3 a a missing-window trade never contributes more than 0, nor more than its excess over the partial baseline. A residual leak remains, because a short or relaxed window can estimate B̄_i with bias; the 10% cap bounds it.
+  - The count, and the step (1-3) used for each trade, are reported.
+  - If more than 10% of S (more than 30 trades) have no admissible window, P2c fails (5.3).
+- **(A2.3 a) Recorder gap rate, reported before run 1.** From the 24h dry run and the ≥ 1 week of pre-paper recording (8.1), report per coin: the share of time with no recorded L2 book within 5 s, the share with a mid or mark gap over 60 s, and the projected share of trades that would lack an admissible window (the point-in-time replay's trades run through the admissibility rule). It goes to the PO with section 14 (item 8). It is not a gate. If the projected share is near 10%, fix the recorder before run 1, because P2c would otherwise fail by construction.
 
 ### 6.3 Cost model
 
@@ -521,7 +822,7 @@ Every baseline runs through the same engine, risk limits, cost model and window.
 - **Spread and impact (paper):** the fill walks the live L2 book captured at decision time plus `paper_ack_delay_ms`. The default is 1,000 ms, from the median order-to-fill of about 884 ms from Tokyo (market-context 2.4).
 - **Spread and impact (replay and baselines):** the **spread recorded at signal time** (BT-13). The fallback, when no recording exists, is each coin's median half-spread from our recordings × 1.5, then 2 bps for majors and 8 bps for alts, per side.
 - **Delay slippage (replay):** our measured `decay(Δ)` at the p95 detection latency. The fallback is 5 bps for majors and 15 bps for alts. It applies to copies (our trades, replays, B1, B3), never to random-time baselines.
-- **Random-time baselines (B0d, B0; A1.1):** fees, plus spread and impact from the book recorded at their own fill times, plus their own ack-delay drift, plus funding. **No delay slippage and no decay:** they follow no signal.
+- **Random-time baselines (B0d, B0; A1.1):** fees, plus spread and impact from the book recorded at their own fill times, plus their own ack-delay drift, plus funding. **(A2.3 b)** Their R is computed from their fill prices, fees and funding; the drift and the spread and impact are reported components of those fill prices, never added on top. **No delay slippage and no decay:** they follow no signal.
 - **Stops:** fill at the book at trigger plus the ack delay, with no guaranteed stop price (gap-through is modelled).
 - **Funding:** accrued hourly from actual rates [PO].
 - **Liquidation:** isolated positions use the mark-price and maintenance-margin model.
@@ -576,8 +877,9 @@ Every baseline runs through the same engine, risk limits, cost model and window.
   - With fewer than 300 opened by day 60, the verdict is INCONCLUSIVE.
   - Otherwise the evaluation happens at `T_eval` (5.3).
 - **Frozen config:** any change to scoring, filter, sizing, exits, risk or cost parameters ends the run as ABORTED, and the run counts [PO]. At most 2 runs (5.4).
-- **Frozen engine (A1.2):** the run starts from a clean commit. Any code or dependency change during the run is a deploy and needs a backtest-auditor ruling before it runs. Logic changes are ABORTED by default (5.3).
-- **Precondition (BT2-5):** the PO's acknowledgement of the five section-14 items is recorded in `decisions.md`.
+- **Frozen engine (A1.2, A2.2):** the run starts from a clean commit, in a dedicated worktree pinned to it (5.1). Any code or dependency change during the run is a deploy and needs a backtest-auditor ruling before it runs. Logic changes are ABORTED by default (5.3).
+- **Precondition (BT2-5, A2.4):** the PO's acknowledgement of the eight section-14 items is recorded in `decisions.md`.
+- **Precondition (A2.3 a):** the recorder gap-rate report (6.2) is delivered to the PO with the section-14 items.
 - **Visibility:** see 5.5.
 - **Wallets:** paper **$300**. Live, in a future epic, starts at **≥ $300**, never smaller than the paper-tested size [PO].
 
@@ -667,23 +969,27 @@ Flags:
 | `eval.n_trades` | 300 | trades | PO | FROZEN |
 | `eval.calendar_cap_days` / `eval.extension_days` | 30 / **30** (to 60 total) | days | **PO** | FROZEN |
 | `eval.closeout_max_days` | 7 | days after the 300th open | QR, **PO-ACK pending** (item 4; the PO said "after all have closed") | FROZEN |
-| `eval.ci_level_run1` / `eval.ci_level_run2` | **0.96 / 0.99** | | QR, **PO-ACK pending** (item 1). The PO's decision was ≤ 2 runs and, in D11, a 95% CI. (A1.5; v2 mislabelled this "PO (α split)".) | FROZEN |
+| `eval.ci_level_run1` / `eval.ci_level_run2` | **0.96 / 0.99** | | QR, **PO-ACK pending** (item 1). The PO's decision was ≤ 2 runs and a 95% CI (**A2.5:** the 95% is in `01-brief.md:27,127`; D11 states no level). (A1.5; v2 mislabelled this "PO (α split)".) | FROZEN |
 | `eval.max_runs` | **2** | runs | **PO** | FROZEN |
 | `eval.ci_method` | min over {iid t, day-cluster bootstrap, day-cluster CR t (G−1 df)} | | PO (day clusters) + QR, **PO-ACK pending** (item 2) | FROZEN |
 | `eval.cluster_key` | UTC day of the first entry of the merged position (transitive overlap components, A1.3 c) | | QR (BT-4) | FROZEN |
 | `eval.min_day_clusters` | 5 | days | QR (E10), **PO-ACK pending** (item 3) | FROZEN |
-| `eval.bootstrap_b` / `eval.bootstrap_seed` | 10000 / 32 CSPRNG bytes generated at run start, stored as hex | | QR | FROZEN |
+| `eval.bootstrap_b` / `eval.bootstrap_seed` | 10000 / 32 CSPRNG bytes generated at run start, stored as hex; the RNG consumes the raw bytes (A2.7) | | QR | FROZEN |
 | `eval.bootstrap_statistic` | pooled trade mean of the resample | | QR (A1.3 b) | FROZEN |
 | `eval.rng` | `sha256_counter_rejection` (5.3, A1.3 b) | | QR | FROZEN |
 | `eval.percentile_index` | `floor(B·(100 − L%)/200)`, 0-based ascending; UB at `B − 1 − index` | | QR (A1.3 b) | FROZEN |
 | `eval.gate_round_dp` | 6 | decimal places of R | QR (A1.3 b) | FROZEN |
-| `eval.flatten_gate_rule` | `min_realised_shadow` | enum | QR (A1.3 d) | FROZEN |
+| `eval.flatten_gate_rule` | `min_realised_shadow`; the shadow exit is the evaluation close (A2.1) | enum | QR (A1.3 d, A2.1) | FROZEN |
 | `eval.require_clean_engine_tree` | true | bool | QR (A1.2) | FROZEN |
+| `eval.engine_path_manifest` | path of the committed engine-path-set manifest (named in the spec) | path | QR (A2.2) | FROZEN |
+| `eval.run_worktree_pinned` | true: each run executes from a dedicated worktree at the run commit | bool | QR (A2.2) | FROZEN |
+| `eval.run_record_env_hashes` | installed-package list + every non-config data input | list | QR (A2.2) | FROZEN |
 | `eval.deploy_policy` | `auditor_ruling_required`; logic changes `abort_by_default` | enum | QR (A1.2) | FROZEN |
 | `eval.require_usd_pnl_positive` | true | bool | **PO** | FROZEN |
 | `eval.baseline_gate` | direction_matched_random_time, tested as a lower bound (P2c); non-removable | enum | **PO** (gate) + QR, **PO-ACK pending** (item 5; the lower-bound reading) | FROZEN |
-| `baseline.dm_costs` | fees + own-time spread and impact + own ack drift + funding; **no decay** | | QR (A1.1) | FROZEN |
+| `baseline.dm_costs` | fees + own-time spread and impact + own ack drift + funding; **no decay**; R from fill prices, drift and spread reported, never added (A2.3 b) | | QR (A1.1, A2.3 b) | FROZEN |
 | `baseline.dm_min_admissible_hours` / `baseline.dm_max_missing_share` | 24 / 0.10 | h / fraction of S | QR (A1.3 g) | FROZEN, OF |
+| `baseline.dm_missing_rule` | `min(R, 0, R − B̄_partial)`; B̄_partial from the partial set, else the relaxed set, else the largest same-direction B̄ floored at 0 (6.2) | enum | QR (A2.3 a) | FROZEN |
 | `baseline.dm_max_book_gap_s` / `baseline.dm_max_mid_gap_s` | 5 / 60 | s | QR (A1.3 g) | FROZEN, OF |
 | `eval.max_dd` / `eval.mark_interval_s` | 0.15 / 60 | fraction / s | PO / QR | FROZEN |
 | `eval.show_interim_stats` | false (trades and USD P&L are shown) | bool | PO + QR | FROZEN |
@@ -864,7 +1170,7 @@ Each component uses **fixed config anchors, not cross-sectional z-scores**. As a
 ### 10.8 Evaluation tests (for the test designer; from 5.3)
 
 1. The sample is the first 300 trades by entry-fill time. A trade opened after the 300th never enters S, even if it closes first.
-2. `T_eval` = min(last close in S, `t300` + 7 days). Trades still open are marked as specified.
+2. `T_eval` = min(last close in S, `t300` + 7 days), where a flattened trade's close is its shadow exit (A2.1). Trades still open, and shadows still open, are marked as specified.
 3. `LB_r` is the minimum of the three methods and `UB_r` the maximum. For a fixed seed the result is deterministic.
 4. The day cluster of every share equals the UTC day of its merged position's first entry.
 5. The run-level CI is 96% for run 1 and 99% for run 2. A third run can't be started.
@@ -878,26 +1184,38 @@ Each component uses **fixed config anchors, not cross-sectional z-scores**. As a
     - A replication decided at t fills at the book recorded at t + `paper_ack_delay_ms`, walked with its own size.
     - Its cost breakdown contains exactly: fees, own-time spread and impact, own ack drift, and funding. No decay or leader-relative term exists.
     - Doubling `copyreplay.delay_ms` or the measured decay never changes B̄_i.
+    - **(A2.3 b)** A replication's R equals the R computed from its entry and exit fill prices, fees and funding. Its drift and spread-and-impact components sum to (fill − decision mid) and are not added again: an implementation that adds either on top of the fill price fails this test.
 11. **(A1.2, BT2-2) Engine version and deploys.**
     - The run record contains the 40-hex commit, the dirty flag, the lockfile sha256 and the Python version.
     - A dirty tree can't start a run.
-    - A process start on a different commit or lockfile writes a deploy record with the stored diff and its sha256. The new code does not run inside the run until a ruling is in the ledger; until then the engine runs the recorded commit, or entries are paused and that time counts as downtime.
+    - **(A2.2)** A process start on a different commit, lockfile, installed-package list or data input writes a deploy record with the stored diff and its sha256. The new code does not run inside the run until a ruling is in the ledger; until then only the recorded commit runs, whether or not entries are paused, and paused time counts as downtime.
     - A diff touching signal, filter, scoring, sizing, exit, cost or fill code defaults to ABORTED.
     - Executing new code without a ruling makes the run ABORTED.
     - A same-commit, clean crash restart is not a deploy.
+    - **(A2.2)** The run record also holds the installed-package-list sha256 and the per-file sha256 of every non-config data input. Installing or upgrading a package, or changing a data input, is a deploy.
+    - **(A2.2)** The dirty flag covers only the engine path set: a commit or untracked file under `docs/**` or `research/**`, or a run-register append, is not a deploy and doesn't make the tree dirty. A file the engine reads that is missing from the manifest fails a startup check.
+    - **(A2.2)** The engine refuses to start a run outside a worktree pinned (detached) to the run commit.
+    - **(A2.2)** While a deploy awaits a ruling, only the recorded commit executes, including position management and exits, whether entries are paused or not.
 12. **(A1.3 a) Precedence.** Every ordered pair in the 5.3 precedence list resolves as listed. The implementation matches `eval_reference.py::verdict` on its asserted cases. Among them: G = 3 with UB_r ≤ 0 is INCONCLUSIVE; a voided run with F1 is ABORTED; an LB rounding to 0.000000 is not > 0.
-13. **(A1.3 b) Bootstrap reproducibility.** For the seed and toy sample in `research/data/eval_reference_vectors.txt` (E13), the implementation reproduces all of these to 1e-6:
+13. **(A1.3 b, A2.7) Bootstrap reproducibility.** For the seed and samples in `research/data/eval_reference_vectors.txt` (E14), the implementation reproduces all of these to 1e-6 (the RNG outputs exactly):
     - the `rng_uint` sequence
     - the percentile indices
     - each CI
     - `LB_r` and `UB_r`
+    - **(A2.7)** the rejection vector (n = 2^63 + 1), the unequal-cluster sample, and the order-statistic neighbours of the distinct 40-cluster sample
+    - **(A2.7)** the seed is taken as the 32 raw bytes; passing the hex text is an error
 
     Swapping cluster order in the input doesn't change the result, because clusters are sorted by day.
-14. **(A1.3 c) Transitive merged positions.** The E13 vector must be reproduced: A–B–C chained across midnight, and E touching C, form one component; the opposite direction (D) and another coin (F) stay separate. A trade outside S never links two trades in S.
-15. **(A1.3 d) `/flatten`.** Flattened trades stay in S. Their gate R and USD are the worse of realised and shadow. P3 is checked on both equity curves. A flatten that improved realised R never raises `LB_r`.
+14. **(A1.3 c) Transitive merged positions.** The E13 vector, kept unchanged in E14 **(A2.7)**, must be reproduced: A–B–C chained across midnight, and E touching C, form one component; the opposite direction (D) and another coin (F) stay separate. A trade outside S never links two trades in S.
+15. **(A1.3 d, A2.1) `/flatten`.** Flattened trades stay in S. Their gate R and USD are the worse of realised and shadow. P3 is checked on both equity curves. A flatten that improved realised R never raises `LB_r`.
+    - **(A2.1)** `T_eval`, `hold_i`, the merged-position interval, the B0d replications' hold and P3's shadow equity use the shadow exit. Moving the flatten time, with the shadow unchanged, never changes `T_eval`, the day clusters, G or any B̄_i.
+    - **(A2.1)** A shadow still open at `t300 + 7 days` is marked at mid − taker fee − half-spread, `T_eval = t300 + 7 days`, and the trade's gate R is `min(realised R, marked shadow R)`.
+    - **(A2.1)** A flattened trade whose shadow overlaps a later same-coin, same-direction trade merges with it, even when its real close did not.
+    - The E14 flatten vector is reproduced.
 16. **(A1.3 g) B0d admissibility.**
     - No draw falls outside the admissible set, or inside a blackout, or across a delisting.
-    - A trade with less than 24 h of admissible starts gets `D_i = min(R_i, 0)`.
+    - A trade with less than 24 h of admissible starts gets `D_i = min(R_i, 0, R_i − B̄_i^partial)` (A2.3 a), with B̄_i^partial from the first available of the three steps in 6.2. With `B̄_i^partial > max(R_i, 0)`, D_i is below `min(R_i, 0)`. The E14 D vector is reproduced.
+    - **(A2.3 a)** The report lists the step used for each missing-window trade, and the pre-paper recorder gap-rate report exists.
     - More than 10% such trades fails P2c.
     - Draws reproduce `eval_reference.py::b0d_start` for the same seed and counters.
 17. **(A1.3 f) Marked trades.** `hold_i = T_eval − entry`. Funding stops at the last hourly funding at or before `T_eval`. The replications use the same hold and the marking formula. The trade's merged-position interval ends at `T_eval`. Its later real outcome never changes the stored verdict.
@@ -990,15 +1308,15 @@ sha256 values identify each output. `research/data/` is gitignored, so outputs a
 | E3 | `gate_power.py --sims 4000 --seed 11` (v1) | `b6f006a260be7acfbd6104f224555fba25d46874a83335170812b320a4408e44` | `research/data/gate_power_seed11.txt` `c1e98cf0682bbc0782dd0d381485c052ecaa12a86e50964dad4e59778fe85c77` | v1 C1-C5. **Superseded by E6.** Its section D covered position clustering only (BT-4). | no |
 | E4 | `hl_sample.py --selftest` (v1) | `bf059a6d9aa26bcc8797f1e2b1aaff372866df1ca11bc3df2c9034669adb81f2` | stdout | `selftest OK`. The v1 test did not cover BT-1, BT-2 or BT-3. **Superseded by E7.** | no |
 | E5 | `feasibility_mc.py --runs 2000 --seed 17` (v2): 6 scenarios × 2 true means | `ed4ef414e3dda9d3f084a6360c7c62985ef96a03dafaa8b0b7147a2a7e60f3eb` | `research/data/feasibility_mc_seed17.txt` `a3b530d22ff1bde9cde4abcf2f537c2f1cfeadf90406b1538e0d70248d9452ad` | Section 11 and 5.9 (joint P(PASS)). Runtime 98 s. | no: 12 sensitivity cells of the synthetic model |
-| E6 | `gate_power.py --sims 4000 --boot 1000 --seed 23 --jobs 3` (v2) | v2: `3d2caa0ab8e7ba11aecb4af665ffdba41631d9e0d8833e36cb7ad0e06a75759d`. **Current v2.0.1** (A1.7: the docstring now cites section 5.3 instead of 5.0; no code change): `aa9348eb684f3d19209e56ae03a08266d1171721e1dd8df4b5a78df6113d442a` | `research/data/gate_power_seed23.txt` `5a3a1b5da70d219d3c26780a86762a33174c60fe15213841ad51d0dad820a59b` | 5.9 and the key numbers below. Runtime 7 min 46 s wall time on 3 processes. **Re-run 2026-09-29 with v2.0.1 (`--jobs 2`, 10 min 46 s): byte-identical output.** | no |
+| E6 | `gate_power.py --sims 4000 --boot 1000 --seed 23 --jobs 3` (v2) | v2: `3d2caa0ab8e7ba11aecb4af665ffdba41631d9e0d8833e36cb7ad0e06a75759d`. **Current v2.0.1** (A1.7: the docstring now cites section 5.3 instead of 5.0; no code change): `aa9348eb684f3d19209e56ae03a08266d1171721e1dd8df4b5a78df6113d442a` | `research/data/gate_power_seed23.txt` `5a3a1b5da70d219d3c26780a86762a33174c60fe15213841ad51d0dad820a59b` | 5.9 and the key numbers below. **(A2.7)** Section D2's P2 + P2c rows use k = 20 synthetic B0d replications per trade, not 1,000. Runtime 7 min 46 s wall time on 3 processes. **Re-run 2026-09-29 with v2.0.1 (`--jobs 2`, 10 min 46 s): byte-identical output.** | no |
 | E7 | `hl_sample.py --selftest` (v2) | `280af27baaf8394f38020852785d0743440cb1cee948d5de30da80abb3fcfd7e` | stdout | **Superseded by E12.** `selftest OK (13 checks)`. Covers the sparse-wallet rate (BT-1); truncation flag and denominator (BT-1); no prior account value, excluded and counted, never a later value (BT-3); selection sees only fills ≤ t_sel and measurement only opens ≥ t_sel (BT-2); mirrored adds, below-$10 and capped adds (BT-16); the PO $10 partial rule; cheap gates (BT-16); Kaplan-Meier censoring (BT-16); dispersion; ATR without look-ahead; drift sign; rate budget; and an end-to-end offline run with a fake client. **Never run against the live API.** | no |
 | E8 | Re-probe the Hyperliquid API, 2026-09-29 ~17:05 UTC | n/a | n/a | Still blocked: CONNECT 403, organization policy. A web search confirmed the `userRole` role values (user, agent, vault, subAccount, missing) in third-party docs. Weights for `userRole` and `portfolio` are assumed at 60 and 20 (conservative). | no |
 | E9 | Code smoke tests: `gate_power.py --sims 200 --boot 200 --seed 99`; `feasibility_mc.py --runs 100 --seed 5` | the v2 scripts (before E5/E6) | not kept | Used only to check that the code runs. The numbers were seen but are **not reported and not used**. | no |
-| E10 | `few_clusters.py` (seed 31 inside the script; 2,000 sims, B = 1,000 per cell): the frozen rule when the 300 trades fall on 5, 8, 10 or 15 UTC days. Also a 200-run instrumentation of E5's model (seed 123, not kept) measuring the days to the 300th open: median 8 (optimistic), 21 (base), 23 (base correlated), 43 (3-5 traders). | `bf573a2bd973022981c15aae5e3dbdf01b33c6c41fdb5a42e55538fb00409f25` | `research/data/few_clusters_seed31.txt` `bcb404021cbaf9b59e8959fd55dbbd2ef4b60196fc676d8de8e516c6e9cbef16` | Sets `eval.min_day_clusters` = 5, replacing the 10 drafted before this run. That is a method choice made on synthetic data, before any real result. Key numbers are below. | no |
-
-| E11 | `b0d_cost_fr6.py` (seed 41 inside the script; 2,000 sims, B = 1,000 per cell; 2 processes). Two parts: (1) P2 + P2c at zero net timing value in a trending month, with the corrected B0d cost vs the superseded v2 wording (BT2-1); (2) how often FR6 fires given a frozen-P2 pass (BT2-8). | `f0253d92ed29b4d38ce1256741acef126c1a9ef46db2d4fd13901ddc53c20853` | `research/data/b0d_cost_fr6_seed41.txt` `63813d969ba38d4a5cb91f9a8adb0a880dcb6fce28d39e35638a0251d524606b` | **Corrected rule: P2 + P2c 0.1-0.5%.** Superseded: 0.3-1.8% at a 0.05R delay cost and 0.8-6.4% at 0.10R, rising with the trend (5.9). P2 alone in a trending month: 8-34%. FR6 fired in 0 of the passing runs in all 12 cells (upper 95% bounds 0.4-3.6%). Runtime 1 min 49 s. Run once, with no smoke run before it. | no: a check of the rule, not of the strategy |
+| E10 | `few_clusters.py` (seed 31 inside the script; 2,000 sims, B = 1,000 per cell): the frozen rule when the 300 trades fall on 5, 8, 10 or 15 UTC days. Also a 200-run instrumentation of E5's model (seed 123, not kept) measuring the days to the 300th open: median 8 (optimistic), 21 (base), 23 (base correlated), 43 (3-5 traders). | `bf573a2bd973022981c15aae5e3dbdf01b33c6c41fdb5a42e55538fb00409f25` | `research/data/few_clusters_seed31.txt` `bcb404021cbaf9b59e8959fd55dbbd2ef4b60196fc676d8de8e516c6e9cbef16` | Sets `eval.min_day_clusters` = 5, replacing the 10 drafted before this run. **(A2.7)** Its P2c column uses k = 20 synthetic B0d replications per trade. That is a method choice made on synthetic data, before any real result. Key numbers are below. | no |
+| E11 | `b0d_cost_fr6.py` (seed 41 inside the script; 2,000 sims, B = 1,000 per cell; 2 processes; **each trade's B0d mean from k = 20 synthetic replications, not 1,000, A2.7**). Two parts: (1) P2 + P2c at zero net timing value in a trending month, with the corrected B0d cost vs the superseded v2 wording (BT2-1); (2) how often FR6 fires given a frozen-P2 pass (BT2-8). | v1.0: `f0253d92ed29b4d38ce1256741acef126c1a9ef46db2d4fd13901ddc53c20853`. **Current v1.0.1** (A2.7: the docstring discloses k = 20; no code change): `8078673aea7684076e919524b14d36bdd062d1ff3fcea16ab117dfbd1ea70d8c` | `research/data/b0d_cost_fr6_seed41.txt` `63813d969ba38d4a5cb91f9a8adb0a880dcb6fce28d39e35638a0251d524606b` | **Corrected rule: P2 + P2c 0.1-0.5%.** Superseded: 0.3-1.8% at a 0.05R delay cost and 0.8-6.4% at 0.10R, rising with the trend (5.9). P2 alone in a trending month: 8-34%. FR6 fired in 0 of the passing runs in all 12 cells (upper 95% bounds 0.4-3.6%). Runtime 1 min 49 s. Run once, with no smoke run before it. **Re-run 2026-09-29 after the A2.7 docstring change, twice (an intermediate docstring draft, then v1.0.1): byte-identical output both times (1 min 46 s).** | no: a check of the rule, not of the strategy |
 | E12 | `hl_sample.py --selftest` (v2.1, BT2-6, BT2-7) | `88992c74a8fc85700eb71baa97f2b6a19c4ce8fd2063aa6869dd85ce4cc9616b` | stdout | `selftest OK (18 checks)`. Adds five checks: (14) cursor = max time plus dedupe keeps fills sharing the page-boundary millisecond, a stuck page is flagged and ends, a descending page is detected; (15) the second truncation rule (full page and first fill > start + 1 day); (16) the role gate fails closed (`unknown`, empty; `subAccount` passes); (17) an unknown role is excluded and counted end to end; (18) `summary.json` holds per-wallet first/last fill ms, pages, unique fills, duplicates = full pages, the ascending check, and the leaderboard month check. **Mutation check:** four mutants were each run against the self-test (cursor back to max + 1; role gate fail-open; second truncation rule removed; ascending check forced true). All four fail it. **Never run against the live API.** | no |
-| E13 | `eval_reference.py` (reference implementation of A1.3; test vectors) | `30fc0522a9935310853a7c8d46eeaac05101e0b9242f3ad9d4ae9a526502e932` | `research/data/eval_reference_vectors.txt` `f335b6c2182b01fc21ea5c676d25e47c583b3adb1f3f4b53727978d0d893f294` | `selftest OK`; two runs are byte-identical. The toy sample (30 trades on 6 days) shows the percentile day bootstrap far narrower than t at few clusters, as E10 found, which is why the rule takes the minimum. | no |
+| E13 | `eval_reference.py` (reference implementation of A1.3; test vectors). **Superseded by E14 (A2.7).** | `30fc0522a9935310853a7c8d46eeaac05101e0b9242f3ad9d4ae9a526502e932` | `research/data/eval_reference_vectors.txt` `f335b6c2182b01fc21ea5c676d25e47c583b3adb1f3f4b53727978d0d893f294` | `selftest OK`; two runs are byte-identical. The toy sample (30 trades on 6 days) shows the percentile day bootstrap far narrower than t at few clusters, as E10 found, which is why the rule takes the minimum. | no |
+| E14 | `eval_reference.py` v2 (A2.1, A2.3 a, A2.7): section labels fixed; the shadow exit as the evaluation close (`eval_close_ms`, `t_eval_ms`, `hold_ms`, `is_marked`); `D_i = min(R_i, 0, R_i − B̄_partial)` with the last-resort step; the seed must be 32 raw bytes; **golden asserts** for every printed vector. New vectors: RNG rejection (n = 2^63 + 1; blocks rejected at i = 0 and 4), the percentile floor at a non-integer B·α/2, unequal cluster sizes, the order-statistic neighbours of a 40-cluster sample, D_i, and `/flatten`. | `570b152ae4b483663154bfa2dabc03863e5134d1bf43566f5bc81c14022859bc` | `research/data/eval_reference_vectors.txt` `fbe80bb0ee65b785ed8fe16743debf250830fd4a9ded883286345c67fe828b8f` | `selftest OK (golden vectors asserted)`; two runs byte-identical; about 5 s. The E13 lines are unchanged and now asserted: the RNG list, day clusters, toy CIs and B0d draws are the values the auditor reproduced independently in round 3. **Mutation check:** 10 mutants, all fail the self-test: bootstrap lower index +1; upper index +1; percentile index rounded up; D reverted to `min(R, 0)`; flattened trade closed at its real close; hex-text seed accepted; open shadow not marked; RNG without rejection; bootstrap mean of cluster means; cluster-robust t without G/(G−1). Before the rejection and non-integer-index vectors were added, the no-rejection and rounded-index mutants survived; the mean-of-cluster-means mutant is equivalent on the equal-size toy sample. That is why those vectors exist. | no |
 
 **Strategy variants tried on real data: 0.** The variant budget in 5.8 is untouched. **Paper runs started: 0.** The run register lives in the ledger and in `run-register.md` (A1.3 h), not in this file.
 
@@ -1037,24 +1355,106 @@ sha256 values identify each output. `research/data/` is gitignored, so outputs a
 | C11 | DSR with N = 15,000 may leave fewer than 5 eligible | **Open (awareness).** The 3-5 trader scenario (section 11) shows the consequence. Don't loosen gates mid-run (K7). |
 | C12 | Pre-recording replay is survivorship-biased | Method: kill checks only (K1) |
 | C13 (new) | **Joint P(PASS) at a true +0.10R is at most about 0.3 in run 1**, and lower with correlated trades, few leaders or fast accumulation | PO awareness. Nothing to decide: this is the price of a gate that is hard to fool. |
-| C14 (round 2) | The five precision choices in section 14 were never signed by the PO. Together they roughly halve power: at +0.10R with merged positions, run 1 is 20% against 41% for a naive 95% t, and run 2 is 13-24%. | **Pending PO acknowledgement** (section 14) |
+| C14 (round 2) | The precision choices in section 14 were never signed by the PO. Together they roughly halve power: at +0.10R with merged positions, run 1 is 20% against 41% for a naive 95% t, and run 2 is about 9% (no beta) and 3-6% (with beta) before P2c **(A2.5; v2 + A1 said 13-24%, the iid figure)**. A2.4 adds three items (6-8). | **Pending PO acknowledgement** (section 14, eight items) |
 
-## 14. Items pending PO acknowledgement (BT2-5)
+## 14. Items pending PO acknowledgement (BT2-5; A2.4, A2.5)
 
-Q1-Q9 are answered and encoded in 5.2. The five items below were research choices. They interpret or tighten PO decisions, and the PO has not yet signed them.
+Q1-Q9 are answered and encoded in 5.2. The eight items below are research choices, or plain consequences of the rules, that interpret or tighten your decisions. You haven't signed them yet. (A2.4: v2 + A1 listed five; items 6-8 and the closing note are new, and every item is reworded in plain language.)
 
 - **Status of each:** pending PO acknowledgement.
-- **Who records the answer:** the CTO, in `docs/product/decisions.md`. D11 there still says 95%.
-- **Precondition:** run 1 must not start until all five are acknowledged or replaced (8.1).
-- **If the PO rejects an item:** it is changed by a further dated addendum before run 1. The consequence for the false-PASS rate or power is stated next to each item.
+- **Who records the answer:** the CTO, in `docs/product/decisions.md`.
+- **Where your "95%" comes from (A2.5):** the brief, `01-brief.md` lines 27 and 127. D11 in `decisions.md` says "CI lower bound > 0" and gives no level.
+- **Precondition:** run 1 must not start until all eight are acknowledged or replaced (8.1).
+- **If you reject an item:** it is changed by a further dated addendum before run 1. What would change is stated under each item.
 
-| # | Item (exact wording for the PO) | What it replaces or interprets | If the PO says no |
-|---|---|---|---|
-| 1 | **CI levels 96% then 99%.** Run 1 is judged at a 96% confidence level, and run 2 (if there is one) at 99%, instead of 95% for each run. This keeps the chance that a strategy with no edge passes in either run at 2.5% or less (simulated 1.6%). That is the same as one look at your original 95%. The price is power: a real +0.10R edge passes run 1 about 20% of the time with merged positions, and run 2 about 13-24%. **Status: pending PO acknowledgement.** | D11, "CI lower bound > 0" at 95%, plus the PO's "at most 2 runs" | Two runs at 95% each: family-wise false PASS 3.2% [2.7, 3.8] instead of 1.6% (E6 G) |
-| 2 | **The most pessimistic of three confidence intervals.** The lower bound we test is the lowest of three methods: a plain t-interval, a bootstrap that resamples whole UTC days, and a day-clustered t-interval. The upper bound is the highest of the three. Each method alone can be too optimistic in some situations (for example, the day bootstrap with few days). Taking the most pessimistic keeps the false-PASS rate at or below target. **Status: pending PO acknowledgement.** | The PO's "day-clustered CI" (method not specified) | Any single method: false PASS up to 6.4% at 5 days (bootstrap alone, E10) |
-| 3 | **At least 5 different trading days.** A PASS needs the 300 trades to fall on at least 5 different UTC days (day clusters). With fewer, the verdict is INCONCLUSIVE: never PASS, and never FAIL by the confidence interval. **Status: pending PO acknowledgement.** | Not covered by a PO decision | No minimum: the clustered interval is degenerate below 5 days, and a verdict there is unreliable in both directions |
-| 4 | **7-day close-out cap with marking.** You decided "evaluated once, after all 300 have closed". We propose to evaluate when the last of the 300 closes **or 7 days after the 300th opened, whichever comes first**. Any of the 300 still open then is valued for the verdict at the market mid minus exit fee and half-spread. It keeps being managed normally, and its real outcome is reported separately. Without a cap, one long-held position could delay the verdict without limit. **Status: pending PO acknowledgement.** | "Evaluated once, after all have closed" | No cap: the verdict waits for the last close, however long that takes |
-| 5 | **"Beating the baseline" means its lower bound is above zero.** "Beating the direction-matched random-time baseline" is read as: the lower end of the 96% (run 1) or 99% (run 2) interval of our per-trade advantage over the baseline must be above zero. It is not enough for our average to beat the baseline's average. A copy that only rides the market's direction beats the baseline's average about half the time by luck. Under the lower-bound reading, such a copy passed the full gate in at most about 1 run in 200 in our simulations (0.1-0.5%, E11). The baseline pays the same fees and spread as us, but not our copy delay (A1.1). **Status: pending PO acknowledgement.** | The PO's "beating a direction-matched baseline" | Point comparison: a beta-only copy passes P2c about 50% of the time |
+**Words used below:**
+- **R:** a trade's profit or loss divided by the amount it planned to risk. "+0.10R per trade" means that, on average, each trade earns a tenth of what it risked, after all costs.
+- **Run:** one paper-trading test, judged once on its first 300 trades, which must open within 60 days. You allowed at most 2 runs.
+- **Pass by luck:** a strategy with no real edge that passes anyway.
+- **Market ties:** trades that are open at the same time, or that ride the same market move, win and lose together. That makes 300 such trades worth less evidence than 300 independent ones.
+
+**1. Stricter confidence per run: 96% in run 1, 99% in run 2.** (A2.5 corrects the run-2 figures.)
+- **What it means:** You asked for 95% confidence. Because you also allowed two runs, a strategy with no edge gets two chances to pass by luck. Run 1 is judged at 96% and run 2, if there is one, at 99%. That keeps the total chance of passing by luck at 2.5% or less, the same as a single test at your 95%. In our simulations the total came out at 1.6%.
+- **The price:** a real but small edge (+0.10R per trade) is hard to prove.
+  - Run 1: it passes about 20 times in 100 when the trades have no market ties, and only about 3 to 13 times in 100 when they do.
+  - Run 2: about 9 times in 100 without market ties, and about 3 to 6 times in 100 with them. These run-2 figures don't yet include the baseline test in item 5, which can only lower them.
+  - Earlier drafts said 13-24% for run 2. That figure assumed fully independent trades and was 2 to 4 times too high.
+- **Replaces or interprets:** your 95% from the brief, plus your "at most 2 runs".
+- **If you say no:** two runs at 95% each. A no-edge strategy then passes one of them about 3.2 times in 100 instead of 1.6, roughly double. Run 2 becomes as easy to pass as run 1.
+- **Status:** pending PO acknowledgement.
+
+**2. Use the most cautious of three ways to measure the uncertainty.**
+- **What it means:** The verdict looks at the average R per trade and at how uncertain that average is. There are three standard ways to measure the uncertainty:
+  - one treats every trade as independent
+  - one reshuffles whole trading days
+  - one groups trades by day
+
+  Each can be too optimistic in some situations. For example, reshuffling days is too optimistic when the trades fall on only a few days. We always use the most cautious of the three.
+- **The price:** it keeps the chance of passing by luck at or below target, and costs some ability to detect a real edge.
+- **Replaces or interprets:** your "confidence interval clustered by UTC day", which didn't say which method.
+- **If you say no:** we would use one method. With trades on only 5 days, the day-reshuffling method alone lets a no-edge strategy pass about 6.4 times in 100, instead of about 1.
+- **Status:** pending PO acknowledgement.
+
+**3. The 300 trades must fall on at least 5 different days.**
+- **What it means:** Trades opened on the same day tend to win or lose together, because they ride the same market. If the 300 trades fall on fewer than 5 different calendar days (UTC), the uncertainty can't be measured reliably. The verdict is then INCONCLUSIVE: never a pass, and never a fail on the numbers. The run can still fail on the 15% drawdown limit or a missed exit.
+- **Replaces or interprets:** nothing; your decisions didn't cover this case.
+- **If you say no:** no minimum. With 2 to 4 days, a pass or a fail would rest on a measurement that is unreliable in both directions.
+- **Status:** pending PO acknowledgement.
+
+**4. Judge the run no later than 7 days after the 300th trade opens.**
+- **What it means:** You decided the run is judged once, after all 300 trades have closed. We propose to judge it when the last of the 300 closes, or 7 days after the 300th trade opened, whichever comes first.
+  - A trade still open at that moment is valued at the market price minus the exit fee and half the spread, as if it had closed then.
+  - The bot keeps managing it normally. Its real result is reported separately and never changes the verdict.
+- **Why:** without a cap, one long-held position could delay the verdict without limit.
+- **Replaces or interprets:** your "evaluated once, after all have closed".
+- **If you say no:** no cap. The verdict waits for the last close, however long that takes.
+- **Status:** pending PO acknowledgement.
+
+**5. "Beating the baseline" means clearly beating it, not just on average.**
+- **What it means:** You asked that our trades beat a baseline that trades the same coins in the same direction, but at random times. The baseline separates skill at picking the moment from simply riding the market: in a rising month, buying at random times also makes money.
+  - We read "beating" strictly: we must be confident (96% in run 1, 99% in run 2) that our advantage per trade over the baseline is above zero.
+  - Beating the baseline's average is not enough, because a bot that only rides the market does that about half the time by luck.
+- **The effect:** with the strict reading, a bot that only rides the market passed the full test at most about 1 time in 200 in our simulations. The baseline pays the same fees and spreads as we do, but not the cost of our copy delay. So if our delay eats our advantage, this test fails, as it should.
+- **Replaces or interprets:** your "beat a direction-matched, random-time baseline".
+- **If you say no:** a simple comparison of averages. A bot that only rides the market passes this check about half the time.
+- **Status:** pending PO acknowledgement.
+
+**6. An emergency code change during a run usually uses up that run, and waiting for a ruling counts as downtime.** (New, A2.4.)
+- **What it means:** If the bot's code has to change during a run, for example to fix a bug, the change is logged and the backtest-auditor decides whether the run can continue.
+  - A change to how the bot picks, filters, sizes, exits or prices trades ends the run as ABORTED by default. The auditor lets the run continue only if replaying the run so far through the old and the new code gives exactly the same trades and results.
+  - An aborted run counts as one of your 2 runs, as you already decided for a config change.
+  - Until the auditor rules, only the old code runs, including for open positions. You may pause new entries while waiting, but paused time counts as downtime.
+  - A run with more than 2% downtime can't pass. That is about 14 hours in a 30-day run, less in a shorter one, and about 32 hours at the longest possible run (60 days plus the 7-day close-out).
+  - The kill switch and `/flatten` always work.
+- **Replaces or interprets:** extends your rule "a config change mid-run restarts the run and counts as a run" to code changes, and your 2% downtime rule to time spent waiting for a ruling.
+- **If you say no:**
+  - If aborted code changes didn't count as runs, more than 2 runs would be possible. Each extra run is another chance to pass by luck (up to about 0.5 in 100 more per extra run at 99%), so the 2.5% limit in item 1 would no longer hold. The rulebook would then need another change before run 1, with a stricter level for every run.
+  - If waiting time didn't count as downtime, the bot could sit out parts of the market and still be judged as if it had traded through them.
+- **Status:** pending PO acknowledgement.
+
+**7. A manual `/flatten` can only count against the result.** (New, A2.4; A2.1.)
+- **What it means:** `/flatten` closes positions. It is a safety action and is always allowed. For the verdict, each trade closed this way counts at the worse of two results:
+  - what it actually made
+  - what it would have made if the bot had kept managing it (the "shadow" result, simulated on recorded market data)
+
+  The run is also judged as if those trades had stayed open until their shadow closed, so a flatten never ends or shortens the run. Manual action can protect your money, but it can never improve the verdict.
+- **Replaces or interprets:** nothing you decided; it follows from your "safety actions are always allowed".
+- **If you say no:** a flattened trade would count at its actual result. You could then close trades while they happen to be in profit, or end the run at a moment of your choosing. The verdict would partly measure your decisions, not the bot's, and the 2.5% limit on passing by luck would no longer hold.
+- **Status:** pending PO acknowledgement.
+
+**8. Gaps in our market recordings can make the run INCONCLUSIVE.** (New, A2.4; A2.3.)
+- **What it means:** The baseline test in item 5 needs our own recordings of the order book and prices for each trade's coin. If a trade's recordings have too many gaps to build its baseline, that trade can only count against us: at most zero, and lower if a partial baseline shows the market was carrying it.
+  - If more than 10% of the 300 trades (more than 30) lack a proper baseline, the baseline test fails. The verdict is then INCONCLUSIVE even if the bot made money, and the run still counts as one of your 2.
+  - Before run 1 we report how often the recorder had gaps during the 24-hour dry run and the first week of recording, so you can judge this risk. If the gaps come near the 10% line, the recorder gets fixed before run 1.
+- **Replaces or interprets:** your "market data recorded from day 1" and "beat a direction-matched baseline".
+- **If you say no:** trades without a proper baseline would simply be dropped. The gaps tend to hit long trades that ride the market, which are exactly the trades this test is meant to catch. A bot that only rides the market would then pass more often than the 1 in 200 stated in item 5.
+- **Status:** pending PO acknowledgement.
+
+**Note: the baseline test is permanent in this epic (A1.4, binds future addenda).**
+- No later change to this rulebook in this epic can remove, weaken or make optional the baseline test in item 5. That includes a change made before run 1.
+- The luck limit in item 1 depends on it. Without it, the main test alone lets a no-edge bot pass up to about 4 times in 100 when trades are held across midnight.
+- Acknowledging the items above includes this note.
+- **If you say no:** the only honest way to drop the baseline test is a new epic, with a new rulebook and new data.
 
 ## 15. Backtest-audit findings: closure
 
@@ -1091,6 +1491,18 @@ Q1-Q9 are answered and encoded in 5.2. The five items below were research choice
 | BT2-7 | ADVISORY | `hl_sample.py` v2.1 `month_pnl_check`. For every pool wallet it logs the leaderboard `month.pnl`, the portfolio `perpMonth` and `month` P&L change, the window start and its age in days. The aggregate is `leaderboard_month_check`. The PO's single run will show whether the pool ranking is pre-`t_sel`. |
 | BT2-8 | ADVISORY | A1.6. FR6, a go-live blocker: mean R without the best UTC-day cluster ≤ 0 (5.6). S6, weekly mean R (5.7). E11: FR6 costs essentially no power under a homogeneous edge. Evaluation test 19. |
 | BT2-9 | ADVISORY | A1.7: 0.001-0.015 (5.9), the E6 backticks, and the `gate_power.py` docstring now citing 5.3 (output re-verified in the E6 row). |
+
+**Round 3 (`backtest-audit-r3.md`, VALID), closed by Addendum A2 (5.11):**
+
+| Finding | Severity | Closed by |
+|---|---|---|
+| BT3-1 | ADVISORY | A2.1. A flattened trade's shadow exit is its close for `T_eval`, `hold_i`, merged positions, B0d and P3; an open shadow at `t300 + 7 days` is marked (5.3, 6.2, 9.2). Tests 2 and 15; E14 flatten vector and mutant M5/M7. |
+| BT3-2 | ADVISORY | A2.2. Engine path set (manifest) scopes the dirty flag; a dedicated worktree pinned to the run commit; only the recorded commit runs until a ruling, paused or not; the run record hashes the installed-package list and every non-config data input; deploys compare six things (5.1, 5.3, 8.1, 9.2, `run-register.md`). Test 11. |
+| BT3-3 | ADVISORY | A2.3. (a) `D_i = min(R_i, 0, R_i − B̄_i^partial)` with a three-step B̄_i^partial; the false "gaps can't help" claim corrected; the recorder gap rate reported before run 1 (5.3, 6.2, 8.1, 9.2; test 16; E14). (b) B0d R from fill prices; drift and spread are a reported decomposition, never added (6.2, 6.3, 9.2; test 10). |
+| BT3-4 | ADVISORY | A2.4. Section 14 items 6-8 and the A1.4 note, all in plain language with an "if you say no" consequence; header, 8.1 and C14 say eight items. |
+| BT3-5 | ADVISORY | A2.5. Run-2 power ≈ 9% (no beta) and ≈ 3-6% (beta), before P2c (section 14 item 1, C14, new 5.9 row); the 95% cited from `01-brief.md:27,127` (section 14, 9.2, A1.5 row). |
+| BT3-6 | ADVISORY | A2.6. v2 recorded as commit `1eba7c6`, sha256 `36e35a032a6792a6182903e34872d7d0370118647b5789595e4e366e68a26fb1` (5.10, 5.11); every A2 replacement is quoted verbatim in 5.11. |
+| BT3-7 | ADVISORY | A2.7. `eval_reference.py` v2: labels fixed, golden asserts, discriminating vectors, 10-mutant check (E14). The seed is 32 raw bytes (5.1, 5.3, 9.2, test 13). k = 20 disclosed for E11, E6 D2 and E10 (5.9, section 12, `b0d_cost_fr6.py` v1.0.1). |
 
 ## Sources
 
