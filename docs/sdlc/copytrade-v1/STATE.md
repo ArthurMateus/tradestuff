@@ -76,3 +76,10 @@ F3 senior-dev round 1 = CHANGES REQUIRED:
 Route: test-designer (items 1-3 tests plus advisory boundaries), then developer, then senior-dev re-review (round 2 of 3). Then merge F3 into epic.
 Next after F3: F6, F7, F4 (then F10, F11, F12, F14). Cost so far about 0.5M subagent tokens per feature; consider batching all test gaps into one round and limiting mutant runs to money-path modules.
 Other open follow-ups are listed above.
+
+## Cost-cutting rules (PO approved 2026-09-29; apply from the F3 fix round on; they refine the lean plan)
+1. **One complete first review.** The senior-dev prompt must ask for ALL findings in round 1: every blocking test gap, code bug and advisory, each tagged test-designer or developer, so there is one designer round then one developer round. A round-2 review only verifies; it does not open new blocking items unless a fix regressed something.
+2. **Mutation checks only on money-path modules** (risk, paper, positions, evaluation, baselines; F10/F11/F12 and later F13, F17-F20). Other features: senior-dev reads the code and runs the suite, ruff and mypy, with at most ~10 targeted hand mutants on fail-closed guards. No broad mutant sweeps.
+3. **Advisory-only gaps do not get a second designer round.** Only blocking items (code bug, spec-semantics, money or fail-closed guard gaps) go back to the test-designer. Advisories are logged as follow-ups in STATE.md.
+4. **Combine small features in one pass** where dependencies allow (one test-designer, one developer, one senior-dev for the pair): candidates F6+F7 (after F3 and F5 are merged), F4+F14 if independent. Per-feature branches and ACs stay separate; the agents share one worktree per pair. Money-path features (F10, F11, F12) are never combined and always get reviewer-risk.
+5. Never run mutation tools or the test suite from the CTO session; senior-dev verifies.
