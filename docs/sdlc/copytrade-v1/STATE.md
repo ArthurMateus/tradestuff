@@ -54,4 +54,4 @@ The test-reviewer, the 3–8 reviewer panel and the architect run only when some
 
 Pending outside the pipeline: the PO runs hl_sample.py once and sends back summary.json. It feeds the VAL-S config keys.
 
-Next: commit A4 and run a light audit of A4, then have the PM align the spec with A4, then get PO approval of the spec, then /tests.
+Next: /build copytrade-v1 F1 (developer, senior-dev). Open spec issues from 05-test-plan.md: AC5 secret-regex vs §3 keys, env var names, config ownership. PM to confirm.
