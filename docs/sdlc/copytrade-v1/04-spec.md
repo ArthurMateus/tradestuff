@@ -1,6 +1,10 @@
 # Spec: copytrade-v1 (AI-filtered copy-trading bot, Hyperliquid + Telegram, paper)
 
-Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 4 applied
+Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 5 applied
+
+## Amendment 5 (2026-09-29, PO)
+
+- **F1.AC5:** the secret-key check `(?i)(token|secret|api_key|pin)` exempts keys whose §3 type is a number or a timing (`telegram.pin_max_attempts`, `telegram.pin_lockout_min`, `hl.ws_ping_interval_s`, `llm.price_usd_per_1k_tokens.*`). The nine env var names are fixed in the F1 table below. F1 also ships the project tooling (uv, pytest, ruff, type check); mutation testing runs only on the money-path modules (risk, paper, positions, evaluation, baselines).
 
 ## Amendment 4 (2026-09-29)
 
@@ -296,7 +300,20 @@ The PO wants to know, **honestly and cheaply**, whether automatically copying ev
   - Vectors: (67123.45, sz 5) → 67123; (0.01234567, sz 0) → 0.012346; size 0.123456 at sz 3 → 0.123.
 - **F1.AC5 [unit]** Secrets come only from environment variables: the Telegram token, the PIN hash and salt, the LLM key, the object-storage endpoint, bucket, key ID and secret key, and the ledger-backup encryption key.
   - *Given* canary secret values injected for the whole test suite: 0 occurrences appear in logs, ledger records, Telegram payloads, LLM prompts or exception traces.
-  - A config file that contains a key matching `(?i)(token|secret|api_key|pin)` with a non-empty value fails to load.
+  - A config file that contains a key matching `(?i)(token|secret|api_key|pin)` with a non-empty value fails to load, unless the key is a §3 number or timing key (Amendment 5).
+  - **Env var names (Amendment 5):**
+
+    | Secret | Variable |
+    |---|---|
+    | Telegram token | `COPYTRADE_TELEGRAM_TOKEN` |
+    | Telegram PIN hash | `COPYTRADE_TELEGRAM_PIN_HASH` |
+    | Telegram PIN salt | `COPYTRADE_TELEGRAM_PIN_SALT` |
+    | LLM key | `COPYTRADE_LLM_API_KEY` |
+    | Storage endpoint | `COPYTRADE_STORAGE_ENDPOINT` |
+    | Storage bucket | `COPYTRADE_STORAGE_BUCKET` |
+    | Storage key ID | `COPYTRADE_STORAGE_KEY_ID` |
+    | Storage secret key | `COPYTRADE_STORAGE_SECRET_KEY` |
+    | Ledger-backup encryption key | `COPYTRADE_BACKUP_ENCRYPTION_KEY` |
 - **F1.AC6 [unit]** Every timestamp is UTC epoch ms and carries a source tag: `exchange`, `local` or `derived`.
   - The clock offset is re-estimated every `clock.offset_interval_s`.
   - *Given* offset uncertainty above `clock.max_offset_uncertainty_ms`, or no estimate for more than `clock.max_estimate_age_s`, *then*:

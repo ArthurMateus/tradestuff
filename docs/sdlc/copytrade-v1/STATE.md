@@ -1,21 +1,22 @@
 epic: copytrade-v1
 branch: epic/copytrade-v1
-gate_passed: research
+gate_passed: tests
 touches_money_path: yes
 touches_strategy: yes
 has_ui: no
-features: pending PO approval of 04-spec.md (F1-F21, F23; F22 dropped)
+features: F1=build (F1.tests_commit=75c3221), F2=queued, F3=queued, F4=queued, F5=queued, F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
 loops: tests=0 build=0 review=0 qa=0
 escalations_open: none
-updated: 2026-09-29T18:00:00Z
+updated: 2026-09-29T20:00:00Z
 
 Research artifacts:
 - research/market-context.md
-- research/edge-hypothesis.md (frozen, with addenda A1, A2 and A3; A4 in progress)
+- research/edge-hypothesis.md (frozen, with addenda A1-A4; A5 pending, see follow-ups)
 - research/backtest-audit.md: INCONCLUSIVE
 - research/backtest-audit-r2.md: INCONCLUSIVE
 - research/backtest-audit-r3.md: VALID
 - research/backtest-audit-r4.md: VALID
+- research/backtest-audit-r5.md: VALID (light)
 - research/run-register.md
 - trading-compliance skipped (no paid users, no third-party accounts, no live money). It re-runs at /go-live.
 
@@ -54,4 +55,5 @@ The test-reviewer, the 3–8 reviewer panel and the architect run only when some
 
 Pending outside the pipeline: the PO runs hl_sample.py once and sends back summary.json. It feeds the VAL-S config keys.
 
-Next: /build copytrade-v1 F1 (developer, senior-dev). Open spec issues from 05-test-plan.md: AC5 secret-regex vs §3 keys, env var names, config ownership. PM to confirm.
+Spec approved by the PO on 2026-09-29 (including the change that daily/weekly reports show no USD P&L while a run is active). Feature branches feat/copytrade-v1/<Fn>-<name> exist for stage 1.
+Next: F1 build (developer, senior-dev) on feat/copytrade-v1/F1-core; then /onboard; then F2, F3, F5 in parallel. Amendment 5 in 04-spec.md. Mutation testing only on risk, paper, positions, evaluation, baselines.
