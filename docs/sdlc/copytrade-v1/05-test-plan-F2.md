@@ -58,3 +58,21 @@ Files: `tests/ledger/test_chain.py` (C), `test_payload.py` (P), `test_decisions.
 
 ## Shared-file note
 No shared file was edited. The ledger sink is registered from `tests/ledger/conftest.py` via the public `SECRET_SINKS` dict, so no CTO-serialized commit is needed. If the CTO prefers registering it in `tests/conftest.py`, it is a two-line change.
+
+## Round 2 (mutation-driven additions)
+New files only: `tests/ledger/test_canonical_form.py` (AC1) and `tests/ledger/test_exactness_and_failures.py` (AC4, AC5, AC6). 78 new tests: 69 pass on 4680d36, **9 fail on purpose** until the developer fixes three defects:
+- 5x AC5 `aggregate_trades` on pathological Decimals (`1E+2000` + 1, overflow, span wider than the 1000-digit context) leaks a raw `decimal.Rounded`/`Inexact`; must be a `LedgerError`.
+- 1x AC6 `_write_durably` spins forever if `os.write` returns 0; must raise `OSError` (surfaced as `LedgerWriteError`, ledger failed). The test caps retries at 100 and fails instead of hanging.
+- 3x AC4 CLI `export fills` with an instant whose UTC conversion leaves years 1..9999 (`0001-01-01T00:00:00+05:00`, `9999-12-31T23:59:59-05:00`) raises `OverflowError`; must be an argparse error (exit 2, no traceback).
+
+| Mutant | Killed by |
+|---|---|
+| drop `encode_line(record) != line` check | `test_F2_AC1_non_canonical_rewrite_with_a_valid_hash_...` (11 rewrites x 3 seqs: whitespace, reordered keys, duplicate key, `\u` escapes, `\r`, `-0`) |
+| no `$` escape on encode / no unescape on decode | `test_F2_AC1_dollar_keys_*`, property round-trip, forged-line test |
+| accept bare `$foo` / `$dec` with siblings | `test_F2_AC1_decoding_an_unescaped_reserved_key_is_refused`, `..._malformed_stored_decimal_marker_is_refused`, forged-line verify test |
+| aggregate with 28-digit context | `test_F2_AC5_a_sum_needing_more_than_28_...`, `..._tiny_loss_next_to_a_huge_gain...`, rational-sum property |
+| no rollback / wrong rollback size / id recorded before write / `_size` not advanced | `test_F2_AC6_a_failed_append_is_rolled_back_...` (rollback fsync ok and also failing), partial-write test |
+| no BaseException latch | `test_F2_AC6_a_base_exception_during_an_append_latches_...` (fsync, write) |
+| depth guard off / off-by-one both ways (encode, decode) / RecursionError unmapped | `test_F2_AC1_nesting_exactly_at_the_limit_...`, `..._absurdly_deep_...`, too-deep append, deep stored line |
+
+Mutants ran in a scratch copy outside the repo with `pytest -o pythonpath=<mutant src>`.
