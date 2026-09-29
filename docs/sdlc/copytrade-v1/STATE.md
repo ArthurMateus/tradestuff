@@ -4,7 +4,7 @@ gate_passed: build (F1 only)
 touches_money_path: yes
 touches_strategy: yes
 has_ui: no
-features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=approved+merged (tests_commit=6ba583c; round-2 tests a6340a7; build loops=2), F3=build (tests_commit=364d97b), F4=queued, F5=build (tests_commit=651812a), F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
+features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=approved+merged (tests_commit=6ba583c; round-2 tests a6340a7; build loops=2), F3=build (tests_commit=364d97b), F4=queued, F5=build (tests_commit=651812a; round-2 tests in progress), F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
 loops: tests=0 build=2 review=0 qa=0
 escalations_open: none
 updated: 2026-09-29T20:00:00Z
@@ -57,3 +57,11 @@ Pending outside the pipeline: the PO runs hl_sample.py once and sends back summa
 
 Spec approved by the PO on 2026-09-29 (including the change that daily/weekly reports show no USD P&L while a run is active). Feature branches feat/copytrade-v1/<Fn>-<name> exist for stage 1.
 Next: F2 senior-dev, F3 and F5 developers in progress (worktrees in ../wt/F2, F3, F5). Then F6, F7, F4, F10, F11, F12, F14 per plan. Open: F1 follow-up A2,A4,A5; F2 heartbeat owner; F3 fixtures are synthetic (replace with hl_sample.py recordings before /verify); F3 min-sample key for success-rate trigger.
+
+## Open follow-ups (logged by CTO)
+- F5 M14 copy replay omits the trailing stop and mirrored adds/partials, but EH M14 and F5.AC1 include them. Spec deviation: PO/PM to accept, or a follow-up sharing F12's exit code. Resolve before go-live (feeds G10 and score component 2).
+- F5 hard-coded gaps (own-snapshot 1 h, perpMonth 6 h) should become `scoring.*` config keys (F1 schema + spec change). The 30-day recent window is normative in EH M17.
+- F5 input hash excludes tid (an existing test relies on it); revisit with a tid-ordering hash.
+- F3 adapter contract: Fill.liquidation is set by F3 (also `"iquidat" in dir`); F3 must map isSnapshot and liquidation into F5's Fill.
+- F3: no concrete WsConnector (dependency decision for F21); success-rate trigger has no min-sample key; F1 cross-key check ping interval < feed.stale_after_s.
+- Brazil: on/off-ramp, tax, and HL geo status unverified; check before /go-live (BCB deadline 2026-10-30).
