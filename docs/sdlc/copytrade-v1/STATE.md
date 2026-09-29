@@ -27,6 +27,28 @@ PO acknowledgements: section 14 items 1-10, with the corrected wording of 9-10 p
 - **Rulebook audits:** none after the A4 check, unless the verdict logic changes.
 - **F22:** dropped.
 
+## Lean two-stage build plan (PO decision 2026-09-29: working product in about 1 week on Claude Pro)
+This replaces the review-panel and test-design rules above wherever they conflict.
+
+**Stage 1 (week 1): the bot runs in paper mode and posts to Telegram.**
+Features: F1, F2, F3, F4, F5, F6, F7, F10, F11, F12, F14. Also included:
+- the simple economic-event pause (F8) folded into F10
+- F23 cut to "compress, then upload each finished day"
+
+Stage 2 (weeks 2–3, while the recorder collects its 7 days): F17, F18, F19, F20, F13, F16, F21, F9 (advanced filters) and F15.
+
+**Per feature (lean loop):**
+1. one test-designer writes failing tests
+2. developer
+3. senior-dev
+4. reviewer-risk, on money-path features only (F10, F11, F12; later F13, F17–F20)
+
+The test-reviewer, the 3–8 reviewer panel and the architect run only when something is stuck. `/qa` runs once at the end of stage 1. No rulebook audits.
+
+**Model:** the main session runs on Sonnet 5.5. Opus is only for reviewer-risk, quant-researcher and backtest-auditor. All agents run at medium effort. A new session for the build is recommended (small context, reads the repo).
+
+**Honest caveats:** "1 week" is a target, since Pro usage limits can't be seen from here. Lighter review means more bugs surface at QA or in the dry run. That is acceptable in paper mode, and the rulebook still blocks real money.
+
 ## Follow-ups before run 1 (not blocking the build)
 - BT5-1, BT5-2 and BT5-3 (`research/backtest-audit-r5.md`, VALID): fix them in a short Addendum A5 while building F18, with no new audit (token-economy rule). Correct item 9's wording for BT5-1, and have the PO confirm it.
 
