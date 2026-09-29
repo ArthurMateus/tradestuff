@@ -1,9 +1,8 @@
-"""Error types raised by the platform core (F1).
-
-Interface stub written by the test designer. The developer owns the implementation.
-"""
+"""Error types raised by the platform core (F1)."""
 
 from __future__ import annotations
+
+MODE_NOT_PERMITTED_MESSAGE = "mode not permitted in this build"
 
 
 class CopytradeError(Exception):
@@ -23,7 +22,12 @@ class ConfigError(CopytradeError):
     """
 
     def __init__(self, message: str, *, key: str | None = None, file: str | None = None) -> None:
-        raise NotImplementedError
+        where = [f"key: {key}"] if key is not None else []
+        if file is not None:
+            where.append(f"file: {file}")
+        super().__init__(f"{message} ({', '.join(where)})" if where else message)
+        self.key = key
+        self.file = file
 
 
 class ModeNotPermittedError(ConfigError):
@@ -31,6 +35,9 @@ class ModeNotPermittedError(ConfigError):
 
     ``str(error)`` contains the exact phrase ``mode not permitted in this build`` and ``key == "mode"``.
     """
+
+    def __init__(self, *, file: str | None = None) -> None:
+        super().__init__(MODE_NOT_PERMITTED_MESSAGE, key="mode", file=file)
 
 
 class EnginePathError(CopytradeError):
@@ -42,4 +49,9 @@ class EnginePathError(CopytradeError):
     """
 
     def __init__(self, message: str, *, path: str) -> None:
-        raise NotImplementedError
+        super().__init__(f"{message}: {path}")
+        self.path = path
+
+
+class ClockUnsyncedError(CopytradeError):
+    """The clock offset has never been estimated, so no exchange-corrected time exists (F1.AC6)."""
