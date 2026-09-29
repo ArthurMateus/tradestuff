@@ -5,3 +5,7 @@ research/data/
 __pycache__/
 *.pyc
 .venv/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/

@@ -14,6 +14,8 @@ dev = [
     "pytest>=8.3",
     "hypothesis>=6.100",
     "tomli-w>=1.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
 ]
 
 [build-system]
@@ -31,3 +33,41 @@ markers = [
     "unit: fast, in-process test (spec tag [unit])",
     "integration: crosses a process, CLI or filesystem boundary (spec tag [integration])",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = ["docs", "research", "qa-artifacts"]  # research scripts are not engine code
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "PT", "RUF", "S", "T20", "PL", "TRY", "DTZ", "ARG", "RET"]
+ignore = [
+    "PLR2004",  # magic values: the compiled ceilings table is the one place numbers belong
+    "TRY003",   # messages are short and specific to the raise site
+    "TRY300",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The tests are owned by the test designer and are not reformatted or restyled; only real errors are linted there.
+"tests/**" = ["A", "ARG", "B", "C4", "DTZ", "E501", "I", "N", "PL", "PT", "RET", "RUF", "S", "SIM", "T20", "TRY", "UP"]
+"src/copytrade/cli/*.py" = ["T201"]  # command-line programs print
+
+[tool.ruff.format]
+quote-style = "double"
+exclude = ["tests/**"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "tests"]
+mypy_path = "src"
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+warn_return_any = false
+warn_unreachable = false
+warn_unused_ignores = false  # the tests carry ignores for the strict settings we relax here
+disable_error_code = ["arg-type", "redundant-expr"]
