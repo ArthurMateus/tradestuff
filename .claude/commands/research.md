@@ -8,6 +8,8 @@ You are the CTO. Epic: $ARGUMENTS. Gate check: `gate_passed: discovery`.
    - **market-analyst** in REQUIREMENTS mode → it writes `research/market-context.md`
    - **quant-researcher** → it writes `research/edge-hypothesis.md`
      (If only `touches_money_path` is set and strategy isn't touched, skip the quant-researcher.)
+   - **trading-compliance**, if the epic involves paid users, third-party accounts, publishing
+     traders' data, or live money → save its output to `research/legal-risk.md`
 2. Relay any `EXPLORE REQUEST` to explore and re-invoke the agent that asked.
 3. If the quant-researcher produced exploratory results, dispatch the **backtest-auditor** on them.
    Save the output to `research/backtest-audit.md`.

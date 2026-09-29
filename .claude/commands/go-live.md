@@ -23,6 +23,8 @@ checklist and evidence. The PO acts.
    - [ ] **PO manual checks:** API key is trade-only, withdrawals disabled, IP whitelist on,
          `.env` not in git, 2FA on the exchange account
    - [ ] Capital ramp plan: the criteria for moving to the next size tier and for stepping back down
+   - [ ] **trading-compliance** re-run on the current state: its launch-gate checklist passes, and
+         any item it says needs counsel has a recorded counsel answer in `docs/product/decisions.md`
 4. Present it to the PO. Say plainly whether you recommend go or no-go.
 5. **Only if the PO replies with the exact phrase `I approve go-live for <slug>`**: record the
    approval with a timestamp in `08-go-live.md`, set `gate_passed: go-live`, and tell the PO which
