@@ -78,3 +78,18 @@ Invariants touched: A2 (fail closed: `stale_input`, None gates, latency unknown)
 - Ledger record format for `append_cycle`: F2 / F21 wiring.
 - Scoring on real leaderboards (VAL-S numbers, `summary.json`): the PO's `hl_sample.py` run and the readiness report, not a unit test.
 - Mutation testing is not required for scoring (not a money-path module); the test-reviewer may still ask for it.
+
+## Round 2: tests that kill surviving hand-made mutants
+
+New files only (`tests/scoring/test_r2_*.py`, 4 files, 86 tests); no existing test or source file was touched. Full suite: 2128 tests, 2126 pass, 2 fail on purpose (below). ruff and mypy clean.
+
+| File | Covers |
+|---|---|
+| `test_r2_blowup_score.py` | BU6 single liquidation fill (incl. an open position) and `any_liquidation=false`; BU2 zero-P&L previous trip; score cap at 1 with weights summing to 1 + 5e-10; mixed-case address tie-break |
+| `test_r2_replay.py` | M14 exact taker fee on both legs (long and short); TP fires once; stop at exactly the bar boundary; ATR needs 15 closed bars; ATR 0 gives no replay and no crash; a bar closing at the entry or after t is not used |
+| `test_r2_metrics.py` | window edges; M8 oldest block; M9 realised > MTM; M16 exactly the minimum and the risk cap; M17 30-day boundary; non-positive AV (returns, BU8); 1 h / 6 h gap edges for own / perpMonth; look-ahead guards |
+| `test_r2_reconstruct_stale_recent.py` | funding on the flip millisecond; add at avg_px is not losing; `fills_fetched_ms` / `candles_fetched_ms` after t is stale; `recent_sr = None` wallet |
+
+Intentional failures (2, both in `test_r2_reconstruct_stale_recent.py`): `..._recent_sr_none_scores_zero_on_that_component_even_when_the_anchor_lo_is_negative` and `..._recent_sr_none_gives_the_same_score_as_the_weighted_sum_without_that_component`. `score_wallet` substitutes `recent_sr = 0` before scoring, so with `score.anchors.recent_sr.lo < 0` the component gets u = 0.5 instead of the worst 0. They pass once the developer sets `u["recent_sr"] = 0` explicitly (the stored metric stays None, which a sibling test pins and which passes now).
+
+Mutants left alive by the new tests, each shown unobservable through the public API: `replay.py: end < atr_period` (with 14 bars the slice holds no true range, so the distance is 0 and the stop is None anyway); `metrics.py` own-snapshot and account-value look-ahead filters and the funding upper bound (every query is at a time <= t and the last complete day ends <= t, so a later point is never selected). The look-ahead behaviour is still pinned on every observable surface (later snapshots, later perpAllTime P&L points, later bars).
