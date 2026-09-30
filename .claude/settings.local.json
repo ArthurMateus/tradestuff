@@ -6,7 +6,8 @@
       "Bash(git commit -qam 'docs\\(sdlc\\): amendment 6 \\(lzma for F4, connector decision open\\); F4/F7 test commits *)",
       "Bash(git pull *)",
       "Bash(git fetch *)",
-      "Bash(git commit -qm 'docs\\(sdlc\\): F7 approved and merged *)"
+      "Bash(git commit -qm 'docs\\(sdlc\\): F7 approved and merged *)",
+      "Bash(git commit -qm 'docs\\(sdlc\\): F4 approved and merged *)"
     ]
   }
 }
