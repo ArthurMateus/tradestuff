@@ -1,6 +1,13 @@
 # Spec: copytrade-v1 (AI-filtered copy-trading bot, Hyperliquid + Telegram, paper)
 
-Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 6 applied
+Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 7 applied
+
+## Amendment 7 (2026-09-30, CTO defaults from the F11 test plan, PO to confirm)
+
+F11 (`05-test-plan-F11.md`, 16 pinned ambiguities) stands on the safest reading until the PO decides:
+- **F11.AC5 liquidation:** the position closes at the liquidation price and the loss is the price move plus fees, bounded by the margin. It is not the full margin (maintenance margin is half the max-leverage initial margin). **PO to confirm; if the PO wants the full margin lost, AC5 changes.**
+- Entries cancel the remainder of a partial fill; exits re-queue and retry every `exits.retry_interval_s`. A zero-depth or one-sided book rejects opens (`no_depth`) and retries exits. Delisting settlement pays the taker fee. Funding: positive rate means longs pay; strict open < boundary < close; missing funding is retried and alerted once (`funding_missing`).
+- Gate token: `GateAuthority` issues a single-use `GateToken` bound to the exact intent (F10 builds against this).
 
 ## Amendment 6 (2026-09-30, CTO default, PO to confirm)
 
