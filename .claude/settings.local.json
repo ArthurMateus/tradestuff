@@ -10,7 +10,8 @@
       "Bash(git commit -qm 'docs\\(sdlc\\): F4 approved and merged *)",
       "Bash(git commit -qm 'docs\\(sdlc\\): F11 escalated to the PO \\(RISK-26\\); follow-ups RISK-27..31 *)",
       "Bash(git commit -qm 'docs\\(sdlc\\): F11 approved and merged; contracts for F10/F12/F13/F18/F21 *)",
-      "Bash(git commit -qm 'docs\\(sdlc\\): v0 resume point *)"
+      "Bash(git commit -qm 'docs\\(sdlc\\): v0 resume point *)",
+      "Bash(git commit -qm 'docs\\(sdlc\\): F10 tests final \\(7427170\\) *)"
     ]
   }
 }
