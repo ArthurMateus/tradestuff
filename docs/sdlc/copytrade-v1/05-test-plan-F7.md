@@ -164,3 +164,18 @@ Invariants: A2 (ledger failure delivers nothing; unsynced clock refuses opens), 
 ## Shared files
 
 None touched. `pyproject.toml`, `tests/conftest.py`, `tests/harness.py`, `tests/hl/**` and `tests/core/**` are untouched (`tests/signals` imports `tests.hl.support` and `tests.core.helpers`). The new CLI module `cli/latency.py` is discovered by the F1 registry without editing `cli/main.py`. Open item for the CTO: S1 (WebSocket connector dependency).
+
+## Round 2 (test designer, after the senior-dev review)
+
+New file `tests/signals/test_round2_guards.py` (25 tests, all pass on the current code; no existing test or source file touched). Each test kills a hand mutant that had survived. Kills were proved on a scratch copy of `src/copytrade` outside the repo, run with `-o pythonpath=<mutant src>`.
+
+| Mutant | Tests that kill it | Result |
+|---|---|---|
+| `CORE_DEX not in allowed_dexes` replaced by `False` (`_is_out_of_scope`) | `test_F7_AC4_a_plain_coin_is_out_of_scope_when_core_is_not_an_allowed_dex`, `test_F7_AC4_a_flip_on_a_plain_coin_is_one_out_of_scope_signal_when_core_is_not_allowed` (control: `..._stays_in_scope_when_core_is_allowed`) | 2 failed |
+| `side not in ("B","A")` check removed (`classify_fill`) | `test_F7_AC1_classify_fill_rejects_a_side_that_is_neither_B_nor_A[*]`, `test_F7_AC1_an_unknown_side_is_unparseable_with_an_alert_never_a_sell[*]` | 13 failed |
+| `sync.refusal_reason(OPEN)` guard removed (`_current_offset_ms`) | stale estimate (`..._stale_offset_estimate_gives_no_age...`, `..._follows_the_configured_max_age`, `..._an_add_is_refused...`, `..._fresh_estimate_restores...`), over-uncertainty (`..._offset_uncertainty_over_the_max...`, `..._the_uncertainty_limit_follows_config`) | 6 failed |
+
+Notes.
+- The config loader fixes `markets.allowed_dexes` to `["core"]`, so the scope tests hand the detector a plain mapping (its constructor takes a `Mapping`) with the key changed. Everything else is real.
+- Clock boundaries use ClockSync's own conditions: an estimate exactly `max_estimate_age_s` old and one ms younger are trusted, one ms older is not; uncertainty equal to the max is trusted, max + 1 is not. The config minimum for `max_estimate_age_s` is 600 s.
+- Side cases: `X`, lowercase `b`/`a`, empty, `BUY`, `SELL`, padded, and a Cyrillic look-alike. The detector test uses a known `dir`, so only the side is wrong.
