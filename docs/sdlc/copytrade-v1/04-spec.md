@@ -1,6 +1,14 @@
 # Spec: copytrade-v1 (AI-filtered copy-trading bot, Hyperliquid + Telegram, paper)
 
-Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 9 applied
+Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 10 applied
+
+## Amendment 10 (2026-09-30, CTO default from the F11 verify round; PO to confirm)
+
+Source: reviewer-risk RISK-17 (blocking, reproduced: one BTC mark stamped one hour ahead froze every stop and every close on every coin, and a stop-loss loss of about 5.5 USD became a full-margin liquidation of 20.08 USD).
+- **F11 time is never moved by one bad timestamp.** An external timestamp (a mark, a delist, an exit's `decided_at_ms`) more than `filter.max_signal_age_ms` (existing key, ceiling 5,000 ms; no new config key) ahead of the broker's trusted time is treated as bad data: it is ignored with an error log and the alert path, it never advances broker time, and it never delays an exit or a stop. The broker's trusted time is the time given to `advance_to` by its caller (F21 supervisor, from the F1 clock); marks may advance it only within that tolerance. A mark or time that is merely late never blocks an exit.
+- **The `exit_unfilled` alert** is timed from the exit's own decision time (the intent's `decided_at_ms`, or the mark's own time for a stop trigger), never from a clamped or advanced time (spec: one alert after `exits.alert_after_s`).
+- **F21 contract:** the supervisor must call `advance_to` with the F1 clock time on every loop, and F10 must stamp `decided_at_ms` in the same time base (RISK-18).
+- Logged, not fixed now: RISK-16 (stranded dust after an szDecimals cut), RISK-19 (far-future exit `decided_at_ms`, covered by the rule above), RISK-20 (maximum meta age for entries), RISK-8/10/11/12 as before.
 
 ## Amendment 9 (2026-09-30, PO decision)
 
