@@ -64,3 +64,14 @@ def lot_qty_down(*, notional_usd: Decimal, px: Price, sz_decimals: int) -> Qty:
     if notional_usd < 0:
         raise ValueError("the notional must not be negative")
     return round_size(_FLOOR.divide(notional_usd, px), sz_decimals)
+
+
+def add_qty(*, our_share_qty: Qty, leader_add_size: Qty, leader_pre_add_position: Qty) -> Decimal:
+    """``our_share_qty x (leader_add_size / leader_pre_add_position)`` (F10.AC9), rounded down.
+
+    Raises:
+        ValueError: the leader's pre-add position is not positive.
+    """
+    if leader_pre_add_position <= 0:
+        raise ValueError("the leader's pre-add position must be positive")
+    return _FLOOR.divide(_FLOOR.multiply(our_share_qty, leader_add_size), leader_pre_add_position)

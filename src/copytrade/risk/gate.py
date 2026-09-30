@@ -43,7 +43,13 @@ from copytrade.risk.leverage import LeveragePlan, leverage_ceiling, plan_leverag
 from copytrade.risk.limits import DAILY_LOSS, DRAWDOWN, WEEKLY_LOSS, Halt, apply_mark
 from copytrade.risk.ports import AccountView, EntryCalendar, ExchangeTime, ReturnsSource, ShareBook
 from copytrade.risk.settings import RiskSettings
-from copytrade.risk.sizing import lot_qty_down, mirror_notional_usd, risk_notional_usd, stop_distance_fraction
+from copytrade.risk.sizing import (
+    add_qty,
+    lot_qty_down,
+    mirror_notional_usd,
+    risk_notional_usd,
+    stop_distance_fraction,
+)
 from copytrade.risk.state import RiskState, load_state, save_state
 from copytrade.risk.types import (
     AddRequest,
@@ -255,6 +261,8 @@ class RiskGate:
     def flatten(self, *, run_id: str) -> Sequence[Outcome]:
         """Close every open share in the share book through the gate (full ``CLOSE``, reason ``flatten``, at the
         share's mark), whatever the pause, halt or equity state. Re-running it sends no second order for a share.
+        Nothing is caught: when the share book itself cannot be read there is nothing to flatten from, and a broker or
+        ledger failure is a system failure the caller must see.
 
         The client order ID of a flatten close is fixed by ``run_id``, the share and the action, so a second call in
         the same run finds it already sent and refuses it ``duplicate_order``; a fresh ``run_id`` flattens again."""
@@ -366,7 +374,7 @@ class RiskGate:
             desired_usd, share_used_usd = self._size_open(request, entry, stop_fraction, draft), _ZERO
             liquidation_stops = [s.stop_px for s in entry.shares if s.coin == entry.coin]
             liquidation_stops.append(request.stop_px)
-        qty = self._apply_caps(entry, desired_usd, stop_fraction, share_used_usd, is_add=is_add, draft=draft)
+        qty = self._apply_caps(entry, desired_usd, request.stop_px, share_used_usd, is_add=is_add, draft=draft)
         leverage = self._plan_leverage(entry, qty, liquidation_stops, draft)
         order = OrderIntent(
             client_order_id=cid,
@@ -522,22 +530,27 @@ class RiskGate:
             draft.fail("unknown_share", "the share being added to is not in the share book")
         if entry.position is None:
             draft.fail("position_unknown", "the broker holds no position on the coin")
-        ctx = MONEY_CONTEXT
-        qty = ctx.divide(ctx.multiply(request.our_share_qty, request.leader_add_size), request.leader_pre_add_position)
+        qty = add_qty(
+            our_share_qty=request.our_share_qty,
+            leader_add_size=request.leader_add_size,
+            leader_pre_add_position=request.leader_pre_add_position,
+        )
         draft.ok("sizing", f"add quantity {qty}")
-        return ctx.multiply(qty, request.decision_px), share.open_risk_usd
+        return MONEY_CONTEXT.multiply(qty, request.decision_px), share.open_risk_usd
 
     def _apply_caps(  # noqa: PLR0913
         self,
         entry: _Entry,
         desired_usd: Decimal,
-        stop_fraction: Decimal,
+        stop_px: Price,
         share_used_usd: Decimal,
         *,
         is_add: bool,
         draft: _Draft,
     ) -> Qty:
-        """Reduce to the largest size every cap allows, round down to the lot and re-apply the minimum order."""
+        """Reduce to the largest size every cap allows, round down to the lot and re-apply the minimum order. The
+        order's initial risk is its quantity times the distance to its stop (exact, not via the rounded fraction)."""
+        stop_fraction = stop_distance_fraction(decision_px=entry.decision_px, stop_px=stop_px)
         caps = entry_caps(
             settings=self._settings,
             equity_usd=entry.equity_usd,
@@ -557,7 +570,7 @@ class RiskGate:
         qty = lot_qty_down(notional_usd=allowed_usd, px=entry.decision_px, sz_decimals=entry.meta.sz_decimals)
         final_usd = MONEY_CONTEXT.multiply(qty, entry.decision_px)
         draft.qty, draft.final_notional_usd = qty, final_usd
-        draft.initial_risk_usd = MONEY_CONTEXT.multiply(final_usd, stop_fraction)
+        draft.initial_risk_usd = MONEY_CONTEXT.multiply(qty, abs(MONEY_CONTEXT.subtract(entry.decision_px, stop_px)))
         minimum = self._settings.min_order_usd
         if final_usd < minimum:
             draft.fail("add_below_min" if is_add else "unexecutable", f"final notional {final_usd} is below {minimum}")
