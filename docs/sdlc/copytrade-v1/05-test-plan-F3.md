@@ -234,3 +234,47 @@ Invariants touched: A2 (fail closed: unknown wallet, unresolved gap, degraded ac
 | D14 | F3.AC2 "at most 1 request/s to that endpoint". | Pinned for an endpoint that keeps returning 429, across back-to-back calls (a cooldown after a 429), not for healthy traffic. | PM: confirm. |
 
 `ESCALATE:` none. `EXPLORE REQUEST:` none.
+
+## Round 2 (senior-dev round-1 findings; one batched designer round)
+
+New files only (no existing test edited): `tests/hl/test_r2_ws_gap_on_bad_frame.py`, `test_r2_ws_timing.py`, `test_r2_access_thresholds.py`, `test_r2_boundaries.py`. 73 new test cases; whole suite 2754 tests, **17 fail on purpose**, 2737 pass. ruff and mypy clean.
+
+### Intentional failures (developer must fix `src/copytrade/hl/ws.py`)
+
+| Item | Tests (all in `test_r2_ws_gap_on_bad_frame.py` or `test_r2_ws_timing.py`) | Cases | Why it fails today |
+|---|---|---|---|
+| BLOCKING 1 (code bug) | `test_F3_AC4_a_malformed_fill_message_for_a_known_wallet_opens_a_gap_and_resyncs_only_that_wallet`, `..._after_a_malformed_message_the_resync_delivers_each_fill_exactly_once_and_ledgers_the_gap`, `..._a_malformed_message_with_a_healthy_rest_resyncs_at_once`, `..._an_unreadable_frame_opens_a_gap_for_every_wallet_on_the_connection` (x10 frames: not JSON, empty, null, list, channel not a string, no channel, userFills without data / data not an object / without user / user not a string) | 13 | `_handle_message` calls `record_failure` and returns: no gap, no resync, opens not refused. Pinned: identified wallet resynced alone; unidentifiable frame resyncs every wallet on the connection; opens/adds refused (`feed_stale`) until the resync succeeded, exits never; a good live fill during the gap is held; each fill delivered exactly once; one `data_gap` per affected wallet. |
+| BLOCKING 2 (spec semantics) | `test_F3_AC3_is_stale_boundary_one_ms_before_exactly_at_and_one_ms_after[0-True-*]`, `test_F3_AC3_tick_closes_a_silent_connection_one_ms_before_exactly_at_and_one_ms_after[0-True-*]` (stale_after 5 and 30) | 4 | Code uses `>`; the tests pin stale AT exactly `feed.stale_after_s` (spec: "no message or pong for feed.stale_after_s"). **Spec-semantics decision for the CTO to confirm.** If the CTO keeps `>`, re-pin only the `offset 0` cases to `False`. The `-1 ms` and `+1 ms` cases already pass. |
+
+Verified satisfiable: a scratch-copy sketch of the gap fix (outside the repo, not committed) turns all 13 gap tests green with every existing `tests/hl` test still passing; scratch `>=` on both stale sites turns the 4 stale tests green (each half of the fix is needed: changing only `tick` or only `is_stale` leaves one of the two tests red).
+
+### Coverage (AC -> new tests)
+
+- F3.AC3: `test_r2_ws_timing.py` stale boundary (is_stale, tick), `..._ping_goes_out_exactly_when_the_interval_has_elapsed`, `..._ping_interval_is_clamped_to_three_quarters_of_stale_after` (interval 50 s vs stale 10 s), `..._a_healthy_idle_link_with_a_long_ping_interval_never_goes_stale_thanks_to_the_clamp`, `..._a_connect_attempt_leaves_the_per_minute_window_after_exactly_60_seconds`.
+- F3.AC4: `test_r2_ws_gap_on_bad_frame.py` (above).
+- F3.AC5 (BLOCKING 3): `test_r2_access_thresholds.py`: recovery bucket at exactly 95% (95/5, 19/1, 190/10) healthy; under 95% (94/6, 189/11, 92/8, 90/10, 0/1) never clears; a just-under minute restarts the run of healthy minutes; access-error window expiry 1 ms before / exactly / 1 ms after for windows 1, 5, 30 min with 403 and 451 mixes; success-sample expiry at exactly the window; multi-minute gap without ticks is not counted healthy.
+- F3.AC1: `test_r2_boundaries.py`: request weighing exactly the whole budget (served on empty window; waits, not "never", when 1 is used); scoring request exactly at the scoring cap.
+- F3.AC6: `test_r2_boundaries.py`: failure exactly 10 min old no longer counts (and 1 ms short still does); a later burst after a quiet period re-alerts; sustained stream is one episode.
+
+### Kill table (scratch copy of `src`, run with `-o pythonpath=<mutant src> .`; each mutant killed by the named test)
+
+| Mutant | Killed by |
+|---|---|
+| access `RECOVERY_MIN_SUCCESS_PERCENT` 95 -> 90 | `..._just_under_95_percent_success_is_not_healthy_and_never_clears`, `..._restarts_the_recovery_count` |
+| 95 -> 96 | `..._a_minute_at_exactly_95_percent_success_counts_as_healthy`, `..._restarts_the_recovery_count` |
+| bucket `>=` -> `>` | same two |
+| access-error expiry `>=` -> `>` | `..._an_access_error_leaves_the_count_window_after_exactly_the_window` (10 cases) |
+| success-sample expiry `>=` -> `>` | `..._a_success_leaves_the_success_rate_sample_after_exactly_the_window` |
+| multi-minute gap counted healthy | `..._a_multi_minute_gap_without_ticks_never_counts_as_consecutive_healthy_minutes` |
+| ping `>=` -> `>` | `..._ping_goes_out_exactly_when_the_interval_has_elapsed`, `..._clamped_...` |
+| ping clamp removed / 3/4 -> 1/1 | `..._ping_interval_is_clamped_...`, `..._never_goes_stale_thanks_to_the_clamp` (removed only) |
+| connect window `>=` -> `>` | `..._a_connect_attempt_leaves_the_per_minute_window_after_exactly_60_seconds` |
+| schema window `>=` -> `>` | `..._a_failure_exactly_ten_minutes_old_no_longer_counts` |
+| schema episode never resets | `..._a_later_burst_after_a_quiet_period_alerts_again` |
+| budget `weight > budget` -> `>=` | both whole-budget tests |
+| scoring cap `>` -> `>=` | `..._weighing_exactly_the_scoring_cap_...` |
+| gap on bad frame | fails on the unmodified code (BLOCKING 1) |
+
+Interaction note: the existing tests `test_F3_AC4_a_message_with_a_bad_fill_is_rejected_whole_and_later_messages_still_flow` and `..._junk_and_unknown_messages_do_not_crash_the_tick` still pass once the gap fix exists (REST fixtures resync in the same tick and the held fill is released); verified with the scratch sketch.
+
+Not added (logged follow-ups per the cost-cutting rules): pagination, `seen_tids` eviction, tick blocking, snapshot flag, min-sample rule, host allow-list.
