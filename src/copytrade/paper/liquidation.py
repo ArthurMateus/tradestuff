@@ -20,6 +20,17 @@ def liquidation_price(*, side: str, avg_entry_px: Price, leverage: int, max_leve
         ValueError: ``side`` is not ``"long"`` or ``"short"``, ``leverage`` or ``max_leverage`` is not an integer
             with ``1 <= leverage <= max_leverage``, or the price is not representable (``round_price``).
     """
+    exact = exact_liquidation_price(side=side, avg_entry_px=avg_entry_px, leverage=leverage, max_leverage=max_leverage)
+    return round_price(exact, sz_decimals)
+
+
+def exact_liquidation_price(*, side: str, avg_entry_px: Price, leverage: int, max_leverage: int) -> Price:
+    """The liquidation price before it is snapped to the price grid: the fallback trigger of a position whose grid
+    price is not representable. It is finite and positive for any valid input.
+
+    Raises:
+        ValueError: as ``liquidation_price``, except for the grid.
+    """
     if side not in _SIDES:
         raise ValueError("side must be 'long' or 'short'")
     for name, value in (("leverage", leverage), ("max_leverage", max_leverage)):
@@ -30,7 +41,7 @@ def liquidation_price(*, side: str, avg_entry_px: Price, leverage: int, max_leve
     one = Decimal(1)
     distance = _PRECISE.subtract(_PRECISE.divide(one, leverage), _PRECISE.divide(one, 2 * max_leverage))
     factor = _PRECISE.subtract(one, distance) if side == "long" else _PRECISE.add(one, distance)
-    return round_price(_PRECISE.multiply(avg_entry_px, factor), sz_decimals)
+    return Price(_PRECISE.multiply(avg_entry_px, factor))
 
 
 def bankruptcy_price(*, side: str, avg_entry_px: Price, leverage: int) -> Price:

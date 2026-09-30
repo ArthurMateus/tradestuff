@@ -13,7 +13,7 @@ from decimal import Decimal, localcontext
 
 from copytrade.core.domain import ActionKind
 from copytrade.core.money import Price, Qty
-from copytrade.paper.liquidation import liquidation_price
+from copytrade.paper.liquidation import exact_liquidation_price, liquidation_price
 from copytrade.paper.settings import MONEY_CONTEXT
 from copytrade.paper.types import PositionView
 
@@ -115,7 +115,7 @@ class Position:
         return next(iter(self.shares.values())).sign
 
     def view(self) -> PositionView:
-        """The merged view. Raises ``ValueError`` when the liquidation price is not representable."""
+        """The merged view. Never raises for an off-grid liquidation price (see ``merged_view``)."""
         return merged_view(
             self.coin,
             self.shares.values(),
@@ -125,29 +125,43 @@ class Position:
         )
 
 
+def merged_average_entry(shares: Iterable[Share]) -> Price:
+    """The quantity-weighted entry price of ``shares`` (all the same direction, at least one)."""
+    held = tuple(shares)
+    with localcontext(MONEY_CONTEXT):
+        return Price(sum((s.cost for s in held), ZERO) / abs(sum((s.qty for s in held), ZERO)))
+
+
 def merged_view(
     coin: str, shares: Iterable[Share], *, leverage: int, max_leverage: int, sz_decimals: int
 ) -> PositionView:
-    """Merge ``shares`` (all the same direction, at least one) into one isolated position."""
+    """Merge ``shares`` (all the same direction, at least one) into one isolated position.
+
+    When the liquidation price is not on the exchange grid (a merged average entry that no tick fits), the view
+    carries the exact, unrounded liquidation price instead of raising: it keeps the position's leverage, is finite
+    and positive, and is what ``on_mark`` compares against, so the position can still liquidate."""
     held = tuple(shares)
     with localcontext(MONEY_CONTEXT):
         signed_qty = sum((s.qty for s in held), ZERO)
         total_cost = sum((s.cost for s in held), ZERO)
         avg_entry = Price(total_cost / abs(signed_qty))
         margin = total_cost / leverage
+    side = "long" if signed_qty > 0 else "short"
+    try:
+        liquidation_px = liquidation_price(
+            side=side, avg_entry_px=avg_entry, leverage=leverage, max_leverage=max_leverage, sz_decimals=sz_decimals
+        )
+    except ValueError:
+        liquidation_px = exact_liquidation_price(
+            side=side, avg_entry_px=avg_entry, leverage=leverage, max_leverage=max_leverage
+        )
     return PositionView(
         coin=coin,
         qty=Qty(signed_qty),
         avg_entry_px=avg_entry,
         leverage=leverage,
         margin_usd=margin,
-        liquidation_px=liquidation_price(
-            side="long" if signed_qty > 0 else "short",
-            avg_entry_px=avg_entry,
-            leverage=leverage,
-            max_leverage=max_leverage,
-            sz_decimals=sz_decimals,
-        ),
+        liquidation_px=liquidation_px,
         share_ids=tuple(s.share_id for s in held),
     )
 
