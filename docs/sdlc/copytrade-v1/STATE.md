@@ -128,3 +128,15 @@ Senior-dev approved (133fcdf, 27/27 new mutants killed); reviewer-risk PASS afte
 - F18: late funding (rate missing at close) posts to cash and the ledger (`paper_funding` with share_id) but NOT into the closed trade's P&L (RISK-10): include `paper_funding` by `share_id` or add a `trade_funding_adjustment`.
 Open F11 follow-ups (logged, not blocking): RISK-16 stranded dust after an szDecimals cut, RISK-20 maximum meta age for entries, RISK-24 no ledger record of clamps (ledger times can be out of order, RISK-28), RISK-30 funding edge case of at most one hour on one share, alert-once logic and paper_stop_trigger ledger time coverage, RISK-11 verify-only broker interface and a minimum key length.
 Merged features: F1, F2, F3, F4, F5, F7, F11. Next: F10 (needs F11, now unblocked), F6 (needs F4, F3, F5: unblocked), then F12 (needs F7, F10, F11), F14 (needs F2, F10, F12). Open PO items: minimal supervisor question, WebSocket connector dependency, Amendment 6 (lzma) and Amendments 7-11 confirmation.
+
+## v0 evidence gate (PO decision 2026-09-30; supersedes the stage-2 plan until decided)
+**Stage 2 is ON HOLD pending the v0 gate.** Do NOT start F8, F9, F13, F15-F21, F23, the verdict/baseline/run-control machinery, or any edge-hypothesis evaluation tooling. Real money stays OFF; paper mode only until the gate is decided.
+v0 = F1-F5, F7, F11 (merged) + F6 (selection), F10 (risk), F12 (positions), F14 (Telegram, minimal), built in the lean loop with a cap of TWO review rounds per feature (anything still open is logged as a follow-up, except a BLOCKING money-path finding). Tests run as `pytest -q -x --tb=short`.
+When v0 is built and passes review: (1) run /qa once on the v0 bot (paper mode only); (2) tell the PO exactly how to start the bot and the recorder on the Windows PC and what to watch in Telegram (the CTO never starts it); (3) ask the PO to run hl_sample.py (docs/sdlc/copytrade-v1/research/scripts/README.md) and send back summary.json; (4) after 2-4 weeks of paper running, help the PO analyse the results with simple tools (a short script or a spreadsheet), not the full evaluation machinery.
+Gate criteria (starting suggestions, the PO may adjust):
+- Trade flow: enough paper trades to judge (for example 50-100 or more), and not many signals lost to the $10 minimum order.
+- Reliability: no missed exits and no unexplained position mismatches.
+- Results: paper P&L after fees, funding and slippage is positive, or at least not clearly negative, compared with simply holding BTC.
+- Safety: all risk limits and kill switches worked.
+- Decision: clearly negative, stop; promising, continue with stage 2; unclear, run longer before deciding.
+Note: the v0 bot needs minimal wiring to run (a supervisor/runner) that the lean plan assigned to F21. The PO has not decided how v0 gets started; see the open question raised by the CTO (minimal runner in v0 scope vs none).
