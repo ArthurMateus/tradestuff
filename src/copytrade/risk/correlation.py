@@ -24,10 +24,12 @@ def pearson(xs: Sequence[Decimal], ys: Sequence[Decimal]) -> Decimal | None:
     out a hair above 1.
 
     Raises:
-        ValueError: the series have different lengths.
+        ValueError: the series have different lengths or a value is not finite.
     """
     if len(xs) != len(ys):
         raise ValueError("the series must have the same length")
+    if not all(value.is_finite() for value in (*xs, *ys)):
+        raise ValueError("every return must be finite")
     n = len(xs)
     if n < _MIN_POINTS:
         return None

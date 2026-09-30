@@ -1,7 +1,4 @@
-"""Value types of the risk gate (F10). Data only; every amount is Decimal-based (A6), units are in the names (A9).
-
-Interface stubs written by the test designer: the developer owns them from here on.
-"""
+"""Value types of the risk gate (F10). Data only; every amount is Decimal-based (A6), units are in the names (A9)."""
 
 from __future__ import annotations
 
@@ -11,7 +8,7 @@ from decimal import Decimal
 from copytrade.core.domain import ActionKind
 from copytrade.core.money import Price, Qty
 from copytrade.ledger.records import RiskCheckResult
-from copytrade.paper.types import SubmitResult
+from copytrade.paper.types import BrokerEvent, SubmitResult
 
 
 @dataclass(frozen=True)
@@ -143,7 +140,13 @@ class Decision:
 
 @dataclass(frozen=True)
 class Outcome:
-    """``decision`` and the broker's synchronous answer (``None`` when the gate refused and nothing was sent)."""
+    """``decision`` and the broker's synchronous answer (``None`` when the gate refused and nothing was sent).
+
+    ``broker_events`` are the events (fills, rejects, liquidations) that ``broker.advance_to`` produced when the gate
+    moved the broker to exchange time before deciding. They happen whatever the decision was and nothing else hands
+    them out, so the position manager (F12) must consume them from here as well as from its own ``advance_to`` calls.
+    """
 
     decision: Decision
     result: SubmitResult | None
+    broker_events: tuple[BrokerEvent, ...] = ()
