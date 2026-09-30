@@ -20,7 +20,7 @@ from copytrade.ledger.store import Ledger
 from copytrade.paper.book import BookWalk, walk_book
 from copytrade.paper.errors import PaperBrokerFailedError
 from copytrade.paper.gate import GateAuthority
-from copytrade.paper.liquidation import bankruptcy_price
+from copytrade.paper.liquidation import bankruptcy_price, liquidation_price
 from copytrade.paper.ports import BookSource, FundingSource, MetaSource
 from copytrade.paper.settings import BPS_DIVISOR, MAX_FUNDING_RATE_PER_HOUR, MONEY_CONTEXT, PaperSettings
 from copytrade.paper.state import (
@@ -31,7 +31,7 @@ from copytrade.paper.state import (
     Position,
     RegisteredStop,
     Share,
-    merged_view,
+    merged_average_entry,
     sign_of_side,
 )
 from copytrade.paper.types import (
@@ -147,6 +147,7 @@ class PaperBroker:
         self._dues: list[FundingDue] = []
         self._missing_alerted: dict[str, int] = {}
         self._retired: set[tuple[str, str]] = set()
+        self._bad_time_alerted: set[tuple[str, str]] = set()
         self._next_boundary_ms: int | None = None
         self._now_ms = 0
         self._failed = False
@@ -190,10 +191,12 @@ class PaperBroker:
             },
             client_order_id=cid,
         )
-        decided_at_ms = (
-            intent.decided_at_ms if intent.action in ENTRY_ACTIONS else max(intent.decided_at_ms, self._now_ms)
+        decided_at_ms = intent.decided_at_ms
+        if intent.action not in ENTRY_ACTIONS and not self._time_is_plausible("exit", intent.coin, decided_at_ms):
+            decided_at_ms = self._now_ms  # a far-future decision is not waited for: the exit runs at the normal time
+        fill_at_ms = (decided_at_ms if intent.action in ENTRY_ACTIONS else max(decided_at_ms, self._now_ms)) + (
+            self._settings.ack_delay_ms
         )
-        fill_at_ms = decided_at_ms + self._settings.ack_delay_ms
         self._pending[cid] = PendingOrder(
             client_order_id=cid,
             coin=intent.coin,
@@ -274,6 +277,8 @@ class PaperBroker:
     def on_mark(self, update: MarkUpdate) -> Sequence[BrokerEvent]:
         """Trigger stops and liquidate positions whose liquidation price the mark reached."""
         events: list[BrokerEvent] = []
+        if not self._time_is_plausible("mark", update.coin, update.time_ms):
+            return ()
         time_ms = max(update.time_ms, self._now_ms)
         self._run_until(time_ms, events)
         position = self._positions.get(update.coin)
@@ -282,11 +287,9 @@ class PaperBroker:
         if update.mark <= 0:
             _log.warning("ignoring a non-positive mark", extra={"event": "paper_bad_mark", "coin": update.coin})
             return tuple(events)
-        view = self._guarded_view(position)
-        reached = view is not None and (
-            update.mark <= view.liquidation_px if position.sign > 0 else update.mark >= view.liquidation_px
-        )
-        if view is not None and reached:
+        view = position.view()
+        reached = update.mark <= view.liquidation_px if position.sign > 0 else update.mark >= view.liquidation_px
+        if reached:
             price = bankruptcy_price(
                 side="long" if position.sign > 0 else "short",
                 avg_entry_px=view.avg_entry_px,
@@ -298,21 +301,35 @@ class PaperBroker:
                 f"{update.coin} position liquidated at {price} (mark {update.mark}, trigger {view.liquidation_px})",
             )
         else:
-            self._trigger_stops(update.coin, update.mark, time_ms)
+            self._trigger_stops(update.coin, update.mark, update.time_ms, time_ms)
         return tuple(events)
 
-    @staticmethod
-    def _guarded_view(position: Position) -> PositionView | None:
-        """The merged view, or ``None`` (logged) if its liquidation price is not representable: the mark then cannot
-        liquidate, but stops still work."""
-        try:
-            return position.view()
-        except ValueError:
-            _log.error(
-                "paper position has no representable liquidation price",
-                extra={"event": "paper_bad_view", "coin": position.coin},
+    def _time_is_plausible(self, source: str, coin: str, time_ms: int) -> bool:
+        """Whether an external timestamp (a mark, a delisting or an exit decision) can be believed: it is at most
+        ``filter.max_signal_age_ms`` ahead of the broker's trusted time (the time last given to ``advance_to``, which
+        a plausible mark or delisting may move forward). One that is further ahead is bad data (Amendment 10): it is
+        logged as an error and alerted (once per source and coin until a plausible one arrives), and the caller
+        ignores it, so it can never move the broker's time, delay an exit or stamp a fill. Late is always plausible."""
+        key = (source, coin)
+        if time_ms <= self._now_ms + self._settings.max_time_skew_ms:
+            self._bad_time_alerted.discard(key)
+            return True
+        _log.error(
+            "paper broker ignored a timestamp too far ahead of its time",
+            extra={
+                "event": "paper_bad_timestamp",
+                "source": source,
+                "coin": coin,
+                "ahead_ms": time_ms - self._now_ms,
+            },
+        )
+        if key not in self._bad_time_alerted:
+            self._bad_time_alerted.add(key)
+            self._send_alert(
+                "bad_timestamp",
+                f"{source} timestamp for {coin} is {time_ms - self._now_ms} ms ahead of the broker's time: ignored",
             )
-            return None
+        return False
 
     def on_delist(self, coin: str, settlement_px: Price, time_ms: int) -> Sequence[BrokerEvent]:
         """Force-settle every share on ``coin`` at ``settlement_px``.
@@ -320,6 +337,9 @@ class PaperBroker:
         Raises:
             ValueError: ``settlement_px`` is not a positive finite price. Nothing changes and the broker is not
                 latched: the caller passed bad data, and a delisting settled at nothing would be a made-up loss.
+
+        A ``time_ms`` more than ``filter.max_signal_age_ms`` ahead of the broker's time is bad data too: the
+        delisting is ignored (error log, alert, no events, no state change).
         """
         if not settlement_px.is_finite() or settlement_px <= 0:
             raise ValueError("settlement_px must be a positive finite price")
@@ -327,6 +347,8 @@ class PaperBroker:
 
     @_fail_closed
     def _settle_delisting(self, coin: str, settlement_px: Price, time_ms: int) -> Sequence[BrokerEvent]:
+        if not self._time_is_plausible("delist", coin, time_ms):
+            return ()
         events: list[BrokerEvent] = []
         time_ms = max(time_ms, self._now_ms)
         self._run_until(time_ms, events)
@@ -665,9 +687,9 @@ class PaperBroker:
         shares = dict(position.shares) if position is not None else {}
         shares[updated.share_id] = updated
         try:
-            merged_view(
-                order.coin,
-                shares.values(),
+            liquidation_price(
+                side="long" if updated.sign > 0 else "short",
+                avg_entry_px=merged_average_entry(shares.values()),
                 leverage=position.leverage if position is not None else order.leverage,
                 max_leverage=order.max_leverage,
                 sz_decimals=order.sz_decimals,
@@ -746,9 +768,13 @@ class PaperBroker:
         """A share closed: its exit orders and stops are moot, its ID is never opened again by a pending entry, and
         a coin with no share has no position."""
         self._retired.add((share.share_id, share.coin))
-        for order in [o for o in self._pending.values() if o.share_id == share.share_id and not o.is_entry]:
+        for order in [
+            o
+            for o in self._pending.values()
+            if o.share_id == share.share_id and o.coin == share.coin and not o.is_entry
+        ]:
             self._cancel_order(order, "share_closed")
-        for stop in [s for s in self._stops.values() if s.share_id == share.share_id]:
+        for stop in [s for s in self._stops.values() if s.share_id == share.share_id and s.coin == share.coin]:
             self._drop_stop(stop, "share_closed")
         position = self._positions.get(share.coin)
         if position is not None and not position.shares:
@@ -758,9 +784,10 @@ class PaperBroker:
 
     # ------------------------------------------------------------------------------- stops, cancels
 
-    def _trigger_stops(self, coin: str, mark: Price, time_ms: int) -> None:
+    def _trigger_stops(self, coin: str, mark: Price, mark_time_ms: int, time_ms: int) -> None:
         """Turn every stop the mark has reached into an exit order decided now, to fill at the book
-        ``paper.ack_delay_ms`` later. The stop is spent: it cannot fire twice."""
+        ``paper.ack_delay_ms`` later (``time_ms``: the mark's time, never earlier than the broker's). The stop is spent:
+        it cannot fire twice. The exit's alert is timed from the mark's own time ``mark_time_ms``."""
         position = self._positions.get(coin)
         for stop in [s for s in self._stops.values() if s.coin == coin and s.triggered_by(mark)]:
             share = None if position is None else position.shares.get(stop.share_id)
@@ -772,7 +799,7 @@ class PaperBroker:
                 continue
             self._ledger.append(
                 "paper_stop_trigger",
-                {"client_order_id": stop.client_order_id, "coin": coin, "mark": mark, "time_ms": time_ms},
+                {"client_order_id": stop.client_order_id, "coin": coin, "mark": mark, "time_ms": mark_time_ms},
             )
             del self._stops[stop.client_order_id]
             fill_at_ms = time_ms + self._settings.ack_delay_ms
@@ -783,7 +810,7 @@ class PaperBroker:
                 requested_qty=qty,
                 remaining=qty,
                 action=ActionKind.CLOSE if qty == abs(share.qty) else ActionKind.REDUCE,
-                decided_at_ms=time_ms,
+                decided_at_ms=mark_time_ms,
                 fill_at_ms=fill_at_ms,
                 share_id=stop.share_id,
                 trade_id=stop.trade_id,
@@ -792,7 +819,7 @@ class PaperBroker:
                 sz_decimals=stop.sz_decimals,
                 max_leverage=stop.max_leverage,
                 next_attempt_ms=fill_at_ms,
-                alert_due_ms=time_ms + self._settings.alert_after_ms,
+                alert_due_ms=mark_time_ms + self._settings.alert_after_ms,
             )
 
     def _drop_stop(self, stop: RegisteredStop, reason: str) -> None:

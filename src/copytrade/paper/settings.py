@@ -23,7 +23,8 @@ MAX_FUNDING_RATE_PER_HOUR = Decimal("0.04")
 
 @dataclass(frozen=True)
 class PaperSettings:
-    """Every value the broker reads from config, in the units its name states."""
+    """Every value the broker reads from config, in the units its name states. ``max_time_skew_ms`` is the F1 key
+    ``filter.max_signal_age_ms`` reused as the tolerance for an external timestamp ahead of the broker's time."""
 
     wallet_usd: Decimal
     ack_delay_ms: int
@@ -33,6 +34,7 @@ class PaperSettings:
     min_order_usd: Decimal
     retry_interval_ms: int
     alert_after_ms: int
+    max_time_skew_ms: int
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> PaperSettings:
@@ -55,6 +57,7 @@ class PaperSettings:
             min_order_usd=_decimal(config, "sizing.min_order_usd"),
             retry_interval_ms=_whole(config, "exits.retry_interval_s") * MS_PER_SECOND,
             alert_after_ms=_whole(config, "exits.alert_after_s") * MS_PER_SECOND,
+            max_time_skew_ms=_whole(config, "filter.max_signal_age_ms"),
         )
 
 
