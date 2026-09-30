@@ -4,7 +4,7 @@ gate_passed: build (F1 only)
 touches_money_path: yes
 touches_strategy: yes
 has_ui: no
-features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=approved+merged (tests_commit=6ba583c; round-2 tests a6340a7; build loops=2), F3=approved+merged (tests_commit=364d97b; round-2 tests d223541; fix 9c0bb2c; build loops=2), F4=queued, F5=approved+merged (tests_commit=651812a; round-2 tests 490d783; build loops=2), F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
+features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=approved+merged (tests_commit=6ba583c; round-2 tests a6340a7; build loops=2), F3=approved+merged (tests_commit=364d97b; round-2 tests d223541; fix 9c0bb2c; build loops=2), F4=build (tests_commit=5206439), F5=approved+merged (tests_commit=651812a; round-2 tests 490d783; build loops=2), F6=queued, F7=build (tests_commit=621c934), F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
 loops: tests=0 build=2 review=0 qa=0
 escalations_open: none
 updated: 2026-09-29T20:00:00Z
@@ -87,3 +87,7 @@ Other open follow-ups are listed above.
 ## F3 approved and merged (2026-09-30, scheduled fix round done)
 Senior-dev round 2 verify-only: APPROVED. Blocking items 1-3 fixed (bad WS frame opens gap and resync; stale at exactly feed.stale_after_s with `>=`; access thresholds pinned). The PAUSED section above is superseded. Resume point: **F6+F7 as a pair** (deps F3 and F5 now merged), then F4, then F10, F11, F12 (never paired, reviewer-risk), F14; a minimal supervisor question is open with the PO (see chat).
 F3 advisories still open (follow-ups, not blocking): bad-frame flood costs N CRITICAL REST calls per tick (add cooldown or reconnect after K bad frames); no test for the unidentifiable-frame-naming-unsubscribed-wallet branch; no exact `gap.start_ms` assertion or earlier-start-preserved test (senior-dev could not run mutants in round 2); resync pagination past ~2000 fills; seen_tids/held caps; isSnapshot to sink; min-sample rule for access_degraded; host allow-list; sink failure after record_downtime re-writes data_gap; concrete WsConnector needed by F21.
+
+## F4+F7 pair pass (2026-09-30)
+Tests pushed: F4 5206439 (170 cases), F7 621c934 (154 cases). Developer pass next (one agent, both worktrees ../wt/F4, ../wt/F7), then senior-dev (full first review), then F11 (money-path, alone, reviewer-risk), then F6 (needs F4), F10, F12, F14.
+Decisions: Amendment 6 (stdlib lzma for F4.AC7; PO to confirm). PO decision open: WebSocket connector dependency for F7 real latency run / F21. F7 pins: flip of a pre-existing position = close leg `pre_existing`, open leg normal; `latency measure --ledger-dir` must refuse storage.ledger_dir. F4 pins new ledger kinds (recording_segment, recording_file_closed, day_complete, component_start, component_heartbeat, downtime kind disk_low); the F3 downtime adapter must use the same `downtime` kind and keys. F4 candle files are per coin/interval/UTC hour.

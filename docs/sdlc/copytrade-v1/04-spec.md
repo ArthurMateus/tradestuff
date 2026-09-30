@@ -1,6 +1,11 @@
 # Spec: copytrade-v1 (AI-filtered copy-trading bot, Hyperliquid + Telegram, paper)
 
-Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 5 applied
+Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 6 applied
+
+## Amendment 6 (2026-09-30, CTO default, PO to confirm)
+
+- **F4.AC7 compression:** the stdlib `lzma` codec replaces zstd/columnar for v1, so the project adds **no new dependency** (Python 3.11 has no zstd; supply-chain risk). The ≤ 25% size ratio, the stream and transport sha256 and the segment chain are unchanged. Swap to zstd later only with a PO-approved dependency.
+- **Open PO decision:** F7's real `latency measure` run and F21 need a concrete WebSocket connector. Stdlib has none, so this needs a dependency (for example `websockets`) or a hand-written RFC 6455 client. Not added yet.
 
 ## Amendment 5 (2026-09-29, PO)
 
