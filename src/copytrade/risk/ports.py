@@ -48,5 +48,5 @@ class EntryCalendar(Protocol):
 class AlwaysAllowCalendar:
     """The v0 calendar: F8 is on hold, so no entry is ever blocked."""
 
-    def blocks_entries(self, now_ms: int) -> str | None:
-        raise NotImplementedError
+    def blocks_entries(self, now_ms: int) -> str | None:  # noqa: ARG002 - the port's signature
+        return None
