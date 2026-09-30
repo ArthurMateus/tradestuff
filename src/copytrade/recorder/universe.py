@@ -25,4 +25,16 @@ def select_universe(
     Raises:
         ValueError: ``max_coins`` is smaller than ``len(ALWAYS_RECORDED)``.
     """
-    raise NotImplementedError
+    if max_coins < len(ALWAYS_RECORDED):
+        raise ValueError(f"max_coins must be at least {len(ALWAYS_RECORDED)} to keep {', '.join(ALWAYS_RECORDED)}")
+    always = frozenset(ALWAYS_RECORDED)
+    candidates = {coin for coin in traded_coins if _is_core_perp(coin)} | always | set(hip3_markets)
+    if len(candidates) <= max_coins:
+        return tuple(sorted(candidates))
+    others = sorted(candidates - always, key=lambda coin: (-volume_24h_usd.get(coin, Decimal(0)), coin))
+    return tuple(sorted(always | set(others[: max_coins - len(always)])))
+
+
+def _is_core_perp(coin: str) -> bool:
+    """A core perp name: not empty, not a spot name (``@n``, ``A/B``) and not a dex market (``dex:COIN``)."""
+    return bool(coin) and not coin.startswith("@") and "/" not in coin and ":" not in coin

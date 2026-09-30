@@ -1,6 +1,6 @@
 """External boundaries of the recorder (F4). Tests inject fakes; F21 wires real adapters.
 
-Interface stub written by the test designer. Only Protocols and value types live here.
+Only Protocols and value types live here.
 """
 
 from __future__ import annotations
@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Protocol
 
 from copytrade.core.money import Price, Qty
+from copytrade.hl.errors import HlError
 from copytrade.hl.models import Candle, L2Book
+
+# What a REST-style source may raise for "the source failed": the recorder records a gap and carries on.
+# A real adapter over ``HlRestClient`` can simply let ``HlError`` through.
+SOURCE_FAILURES: tuple[type[Exception], ...] = (OSError, HlError)
 
 
 @dataclass(frozen=True)
@@ -101,7 +106,9 @@ class OpenCoinsSource(Protocol):
 
 
 class DiskProbe(Protocol):
-    """Free space of the volume holding ``path`` in GB. An external boundary."""
+    """Free space of the volume holding ``path`` in GB. An external boundary. A path that does not exist yet is probed
+    through its nearest existing parent; ``OSError`` means the space cannot be read, and the recorder then stops
+    recording (A2: unknown free space is treated as none)."""
 
     def free_gb(self, path: Path) -> Decimal: ...
 

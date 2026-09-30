@@ -1,4 +1,5 @@
 """Market-data recorder and leaderboard snapshots (F4).
 
-Interface stubs written by the test designer. The developer owns every body from now on.
+Recorded streams go through ``store.RecordingStore`` (compressed, day-partitioned, hashed); the loop is
+``service.Recorder``; the sources it reads are the Protocols of ``ports``.
 """
