@@ -14,16 +14,20 @@ import hashlib
 import hmac
 import json
 import secrets
-from decimal import Decimal
+from decimal import Context, Decimal, Inexact
 
 from copytrade.paper.types import GateToken, OrderIntent, StopIntent
 
 _TOKEN_ID_BYTES = 16
+# The digest never depends on the ambient Decimal context: ``issue`` runs in F10's context and ``verify`` in the
+# broker's, and a value with more digits than either would otherwise round differently. Losing a digit here
+# raises instead (``Inexact``), so two different values can never share a digest.
+_DIGEST_CONTEXT = Context(prec=120, traps=[Inexact])
 
 
 def _decimal_text(value: Decimal) -> str:
-    """One text per numeric value (``1.0`` and ``1.00`` agree), positional notation."""
-    return format(value.normalize(), "f")
+    """One text per numeric value (``1.0`` and ``1.00`` agree), positional notation, under a fixed context."""
+    return format(_DIGEST_CONTEXT.normalize(value), "f")
 
 
 def intent_digest(intent: OrderIntent | StopIntent) -> str:
