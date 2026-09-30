@@ -1,8 +1,19 @@
 # Spec: copytrade-v1 (AI-filtered copy-trading bot, Hyperliquid + Telegram, paper)
 
-Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 10 applied
+Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 11 applied
 
-## Amendment 10 (2026-09-30, CTO default from the F11 verify round; PO to confirm)
+## Amendment 11 (2026-09-30, architect ruling on the F11 deadlock; supersedes Amendment 10's rule; PO informed, no PO decision needed)
+
+Source: reviewer-risk RISK-21 and RISK-22 (both upheld by the architect): Amendment 10's "ignore a mark whose timestamp is too far ahead, and let marks nudge broker time" rule (a) switches stops, liquidations and one-shot delistings off for good when the supervisor's clock and the exchange clock differ by more than the tolerance, and (b) lets a chain of plausible marks walk broker time forward without limit. Rule: **clamp, never ignore; broker time is only what `advance_to` says.**
+- **F11 broker time** is set only by `advance_to`, as `_now_ms = max(_now_ms, t)`. Marks (`on_mark`) and delistings (`on_delist`) never move it and never call `_run_until`. All times are exchange milliseconds.
+- Marks and delistings are always processed at broker time: a stop that triggers is decided at `min(mark.time_ms, _now_ms)` and fills at `_now_ms + ack_delay`; a liquidation or delisting is stamped `_now_ms`. Nothing is dropped. The `paper_stop_trigger` ledger row keeps the raw mark time.
+- An exit's `decided_at_ms` is clamped to `min(decided_at_ms, _now_ms)`; the alert clock uses that decision time, the fill is `max(decided, now) + ack`.
+- The once-per-(source, coin) `bad_timestamp` alert (now worded "clamped") fires only when a timestamp is more than `filter.max_signal_age_ms` ahead of broker time; it is suppressed while broker time is 0 and cleared when a non-ahead timestamp arrives. No new config key.
+- **RISK-23:** an entry whose `decided_at_ms` is more than `filter.max_signal_age_ms` ahead of broker time (broker time > 0) is refused `bad_decision_time`.
+- **Time-base contract:** F21 owns it: the supervisor calls `advance_to(ClockSync.exchange_now().ms)`, does not advance while the clock is unsynced, calls `advance_to` before feeding marks or delistings each loop, and a heartbeat detects a stalled loop (a stalled `advance_to` means triggered exits queue and never fill: F21 must alert). F10 stamps `decided_at_ms` in the same exchange base. F16 replay drives `advance_to(t)` before `on_mark(t)`. F11 cannot detect skew; it enforces monotonic time, clamped external timestamps, nothing dropped. F21 wiring test: the 24 h dry run shows zero `bad_timestamp` alerts.
+- Status: RISK-17, 19, 21, 22, 23, 25 closed by this rule; RISK-24 (ledger record of clamps) stays logged.
+
+## Amendment 10 (SUPERSEDED by Amendment 11; 2026-09-30, CTO default from the F11 verify round; PO to confirm)
 
 Source: reviewer-risk RISK-17 (blocking, reproduced: one BTC mark stamped one hour ahead froze every stop and every close on every coin, and a stop-loss loss of about 5.5 USD became a full-margin liquidation of 20.08 USD).
 - **F11 time is never moved by one bad timestamp.** An external timestamp (a mark, a delist, an exit's `decided_at_ms`) more than `filter.max_signal_age_ms` (existing key, ceiling 5,000 ms; no new config key) ahead of the broker's trusted time is treated as bad data: it is ignored with an error log and the alert path, it never advances broker time, and it never delays an exit or a stop. The broker's trusted time is the time given to `advance_to` by its caller (F21 supervisor, from the F1 clock); marks may advance it only within that tolerance. A mark or time that is merely late never blocks an exit.
