@@ -3,12 +3,14 @@
 
 Pinned:
 
-* B2: an entry on a coin whose broker position has share IDs different from the share book's shares on that coin is
-  refused ``position_mismatch`` (only when the broker holds a position on the coin; a booked share with no broker
-  position is the round-0 behaviour and is unchanged). This also covers an entry submitted in the same ``submit`` call
-  whose own ``advance_to`` filled an earlier entry on that coin (F12 has not consumed the fill, so the book lacks the
-  share). Free equity is equity minus the margin of ALL broker positions (``PaperBroker.positions()``), listed in the
-  book or not.
+* B2: an entry on a coin whose broker position holds a share the share book does not list on that coin (and that is
+  not one of the entry fills of this same ``submit``'s own ``advance_to``) is refused ``position_mismatch``. The
+  check runs AFTER ``opposite_side_entry`` and ``entry_in_flight``, and after ``duplicate_order``. A booked share the
+  broker does not hold is NOT a mismatch (the book then overstates risk, which is the safe side; round-0 tests rely on
+  it). Fills of the submit's own ``advance_to`` are "handled": their share is known to the gate (its approved open
+  risk, margin and position count keep counting until the share book lists it), so a second entry on that coin is
+  decided normally at the position's leverage. Free equity is equity minus the margin of ALL broker positions
+  (``PaperBroker.positions()``), listed in the book or not.
 * B3: an ADD is sized, capped and risk-recorded at ``current_stop_px`` (the stop the share keeps), never at the add's
   own tighter ``stop_px``; the decision's ``initial_risk_usd`` is ``qty x |decision_px - current_stop_px|``.
 * B5: every cap sum floors each share's ``open_risk_usd`` at 0.
@@ -51,15 +53,22 @@ def test_F10_B2_a_broker_share_missing_from_the_book_refuses_an_add_on_that_coin
 
 
 @pytest.mark.integration
-def test_F10_B2_a_booked_share_the_broker_does_not_hold_refuses_an_entry_when_the_coin_has_a_position(
-    new_risk: NewRisk,
-) -> None:
+def test_F10_B2_a_booked_share_the_broker_does_not_hold_is_not_a_mismatch(new_risk: NewRisk) -> None:
     r = mk(new_risk)
     r.seed("SOL", leader="L1", qty="1.0", entry="100", stop="98.5", share="S1")
-    r.seed_risk_only("SOL", leader="LG", risk="1.0")  # the book lists a ghost share on SOL the broker never held
+    r.seed_risk_only("SOL", leader="LG", risk="1.0")  # the book lists a ghost share on SOL: it only overstates risk
     r.book("SOL", "100")
     out = r.gate.submit(r.open_req(share_id="S2", trade_id="T2"))
-    assert (out.decision.approved, out.decision.reason, out.result) == (False, "position_mismatch", None)
+    assert out.decision.approved, out.decision.reason
+
+
+@pytest.mark.integration
+def test_F10_B2_the_opposite_side_refusal_comes_before_the_mismatch_refusal(new_risk: NewRisk) -> None:
+    r = mk(new_risk)
+    r.seed("SOL", leader="LX", qty="1.0", entry="100", stop="98.5", share="HIDDEN")
+    forget_share(r, "HIDDEN")
+    out = r.gate.check(r.open_req(is_long=False, stop_px="101.5"))
+    assert out.reason == "opposite_side_entry"
 
 
 @pytest.mark.integration
@@ -105,7 +114,9 @@ def test_F10_B2_no_free_equity_left_by_an_unlisted_position_refuses_the_entry(ne
 
 
 @pytest.mark.integration
-def test_F10_B2_an_entry_whose_own_advance_fills_an_earlier_entry_on_its_coin_is_refused(new_risk: NewRisk) -> None:
+def test_F10_B2_an_entry_whose_own_advance_fills_an_earlier_entry_on_its_coin_is_handled_not_refused(
+    new_risk: NewRisk,
+) -> None:
     r = mk(new_risk)
     r.book("SOL", "100")
     first = r.gate.submit(r.open_req(share_id="S1", trade_id="T1", signal_id="a", tids=(1,)))
@@ -114,22 +125,34 @@ def test_F10_B2_an_entry_whose_own_advance_fills_an_earlier_entry_on_its_coin_is
     r.book("SOL", "100")
     second = r.gate.submit(r.open_req(share_id="S2", trade_id="T2", signal_id="b", tids=(2,), leader="L2"))
     assert [e.kind for e in second.broker_events] == ["fill"]
-    assert (second.decision.approved, second.decision.reason, second.result) == (False, "position_mismatch", None)
-    assert sent(r) == 1
+    assert second.decision.approved, second.decision.reason
+    assert second.decision.leverage == first.decision.leverage  # gated at the position's leverage, not a fresh one
 
 
 @pytest.mark.integration
-def test_F10_B2_an_add_whose_own_advance_fills_an_earlier_add_is_refused(new_risk: NewRisk) -> None:
-    r = mk(new_risk)
-    r.seed("SOL", leader="L1", qty="1.0", entry="100", stop="98.5", share="S10")
+def test_F10_B2_a_fill_the_book_has_not_listed_yet_still_counts_against_the_symbol_cap(new_risk: NewRisk) -> None:
+    r = mk(new_risk, risk__max_symbol_open_risk_fraction=D("0.005"))  # symbol cap 1.5 of risk
     r.book("SOL", "100")
-    first = r.gate.submit(r.add_req(share_id="S10", signal_id="a1", tids=(301,)))
-    assert first.result is not None and first.result.accepted
+    first = r.gate.submit(r.open_req(share_id="S1", trade_id="T1", signal_id="a", tids=(1,)))
+    assert first.decision.approved and first.decision.initial_risk_usd == D("1.5")
     r.at(T0 + 1000)
     r.book("SOL", "100")
-    second = r.gate.submit(r.add_req(share_id="S10", signal_id="a2", tids=(302,)))
+    second = r.gate.submit(r.open_req(share_id="S2", trade_id="T2", signal_id="b", tids=(2,), leader="L2"))
     assert [e.kind for e in second.broker_events] == ["fill"]
-    assert (second.decision.approved, second.decision.reason, second.result) == (False, "position_mismatch", None)
+    assert (second.decision.approved, second.decision.reason, second.result) == (False, "unexecutable", None)
+    assert any(c.check == "symbol_risk" and not c.passed for c in second.decision.checks)
+
+
+@pytest.mark.integration
+def test_F10_B2_a_fill_the_book_has_not_listed_yet_still_counts_as_an_open_position(new_risk: NewRisk) -> None:
+    r = mk(new_risk, risk__max_open_positions=1)
+    r.book("SOL", "100")
+    assert r.gate.submit(r.open_req(share_id="S1", trade_id="T1", signal_id="a", tids=(1,))).result is not None
+    r.at(T0 + 1000)
+    r.book("ETH", "100")
+    second = r.gate.submit(r.open_req(coin="ETH", share_id="S2", trade_id="T2", signal_id="b", tids=(2,), leader="L2"))
+    assert [e.kind for e in second.broker_events] == ["fill"]
+    assert (second.decision.approved, second.decision.reason, second.result) == (False, "max_open_positions", None)
 
 
 @pytest.mark.integration
