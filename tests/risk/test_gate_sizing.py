@@ -8,12 +8,15 @@ notional 300.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal as D
 
 import pytest
 
 from copytrade.core.domain import ActionKind
-from copytrade.core.money import Qty
+from copytrade.core.money import Price, Qty
+from copytrade.paper.liquidation import liquidation_price
+from copytrade.paper.types import OrderIntent
 from tests.risk.conftest import NewRisk
 from tests.risk.helpers import (
     RiskEnv,
@@ -473,7 +476,158 @@ def test_F10_AC4_an_add_uses_the_posted_margin_of_the_merged_position(new_risk: 
     d = r.gate.check(r.add_req(share_id="S1"))
     assert d.approved and d.qty == D("0.50") and d.action is ActionKind.ADD
     assert d.posted_margin_usd == D(20)
-    assert d.leverage == 1  # 150 <= 20 + 280
+    # Amendment 12: an ADD keeps the position's leverage (5x here), it does not pick one afresh (the fresh choice
+    # would have been 1x: 150 <= 20 + 280). The intent of the test (posted margin counts) is unchanged.
+    assert d.leverage == 5
+
+
+# ---- Amendment 12: an ADD keeps the position's leverage; only an OPEN chooses afresh -------------------------------------
+
+
+def _long_share_at(r: RiskEnv, leverage: int, *, coin: str = "SOL") -> None:
+    """One long share S1 (1.0 @ 100, stop 98.5) on the real broker, opened at ``leverage``."""
+    isolate_bucket(r, coin)
+    r.seed(coin, leader="L1", qty="1.0", entry="100", stop="98.5", leverage=leverage, share="S1")
+
+
+@pytest.mark.unit
+def test_F10_AC4_an_add_on_a_position_opened_at_3x_computes_margin_and_liquidation_at_3x(new_risk: NewRisk) -> None:
+    r = new_risk()
+    _long_share_at(r, 3)
+    before = r.paper.broker.position("SOL")
+    assert before is not None and before.leverage == 3
+    d = r.gate.check(r.add_req(share_id="S1"))
+    assert d.approved and d.action is ActionKind.ADD
+    assert d.leverage == 3  # a fresh choice would be 1 (150 <= 33.3 + 266.7)
+    assert d.posted_margin_usd == before.margin_usd  # 100 / 3: the margin the broker really holds
+    meta = r.paper.meta.meta["SOL"]
+    # the merged position is 1.5 @ 100: its liquidation price at 3x (the F11 model, to the tick)
+    assert d.liquidation_px == liquidation_price(
+        side="long", avg_entry_px=Price("100"), leverage=3, max_leverage=meta.max_leverage, sz_decimals=meta.sz_decimals
+    )
+    assert r.last_decision_payload()["leverage"] == 3
+
+
+@pytest.mark.integration
+def test_F10_AC4_the_token_of_an_add_binds_the_positions_leverage(new_risk: NewRisk) -> None:
+    r = new_risk()
+    _long_share_at(r, 3)
+    r.book("SOL", "100")
+    out = r.gate.submit(r.add_req(share_id="S1"))
+    assert out.result is not None and out.result.accepted, out
+    (intent, token), = r.authority.issued
+    assert isinstance(intent, OrderIntent) and intent.action is ActionKind.ADD
+    assert intent.leverage == 3
+    assert r.authority.verify(token, intent)
+    assert not r.authority.verify(token, replace(intent, leverage=1))
+    assert not r.authority.verify(token, replace(intent, leverage=4))
+
+
+@pytest.mark.integration
+def test_F10_AC10_the_leverage_the_broker_holds_after_an_add_fills_is_the_one_the_gate_checked(
+    new_risk: NewRisk,
+) -> None:
+    r = new_risk()
+    _long_share_at(r, 3)
+    r.book("SOL", "102")
+    out = r.gate.submit(r.add_req(share_id="S1", decision_px=D("102")))
+    assert out.result is not None and out.result.accepted, out
+    r.fill()
+    pos = r.paper.broker.position("SOL")
+    assert out.decision.qty is not None
+    assert pos is not None and pos.qty == D(1) + out.decision.qty
+    assert pos.leverage == out.decision.leverage == 3
+    assert pos.liquidation_px == out.decision.liquidation_px  # merged average entry, same leverage, to the tick
+    assert out.decision.final_notional_usd is not None
+    assert abs(pos.margin_usd - (D("100") + out.decision.final_notional_usd) / 3) < D("1e-9")  # merged notional / 3
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stop,ok", [("97.5", True), ("97.4", False)])
+def test_F10_AC4_an_add_is_refused_add_leverage_unsafe_when_the_rule_fails_at_the_positions_leverage(
+    new_risk: NewRisk, stop: str, ok: bool
+) -> None:
+    # at 10x the liquidation distance is 7.5% of the price (1/10 - 1/40): a stop 2.5 away passes (3 x 2.5 = 7.5),
+    # 2.6 away does not. At a fresh 1x the distance is 97.5 and every stop would pass.
+    r = new_risk()
+    _long_share_at(r, 10)
+    req = r.add_req(share_id="S1", stop_px=D(stop), current_stop_px=D(stop))
+    r.book("SOL", "100")
+    orders_before = len(r.paper.records("paper_order"))  # the seed's own order
+    out = r.gate.submit(req)
+    assert out.decision.approved is ok
+    if ok:
+        assert out.decision.leverage == 10 and out.result is not None and out.result.accepted
+        return
+    assert out.decision.reason == "add_leverage_unsafe" and out.result is None
+    assert r.authority.issued == []
+    assert len(r.paper.records("paper_order")) == orders_before and r.paper.records("paper_reject") == []
+    payload = r.last_decision_payload()  # audited (A2, B5)
+    assert payload["approved"] is False and payload["reason"] == "add_leverage_unsafe"
+    position = r.paper.broker.position("SOL")
+    assert position is not None and (position.leverage, position.qty) == (10, D("1.0"))
+
+
+@pytest.mark.unit
+def test_F10_AC4_the_same_add_is_approved_on_a_position_opened_at_a_lower_leverage(new_risk: NewRisk) -> None:
+    r = new_risk()
+    _long_share_at(r, 5)  # liquidation 82.5: 17.5 away, the stop 2.6 away needs 7.8
+    d = r.gate.check(r.add_req(share_id="S1", stop_px=D("97.4"), current_stop_px=D("97.4")))
+    assert d.approved and d.leverage == 5
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("leverage,ok", [(2, False), (3, True)])
+def test_F10_AC4_an_add_is_refused_add_leverage_unsafe_when_the_margin_does_not_fit_at_the_positions_leverage(
+    new_risk: NewRisk, leverage: int, ok: bool
+) -> None:
+    # equity 300; ETH holds 235 of margin. S1 (1.0 @ 100) at 2x posts 50, so 50 + 15 free = 65 is available and the
+    # merged 150 needs 75 at 2x (refused); at 3x it posts 33.33, 65 is still available and 150 needs 50 (fits).
+    # The fresh choice would be 3x in both cases.
+    r = new_risk()
+    _long_share_at(r, leverage)
+    r.seed("ETH", qty="47", entry="100", leverage=20, open_risk="0.1")
+    d = r.gate.check(r.add_req(share_id="S1"))
+    assert d.approved is ok
+    assert d.reason == (None if ok else "add_leverage_unsafe")
+    if ok:
+        assert d.leverage == leverage
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("leverage,ok", [(6, False), (5, True)])
+def test_F10_AC4_an_add_is_refused_add_leverage_unsafe_when_the_positions_leverage_is_over_the_ceiling(
+    new_risk: NewRisk, leverage: int, ok: bool
+) -> None:
+    # SOL is not on the high-tier list here, so its ceiling is the alt ceiling 5 (config)
+    r = new_risk(risk__high_leverage_coins=("BTC",))
+    _long_share_at(r, leverage)
+    d = r.gate.check(r.add_req(share_id="S1"))
+    assert d.approved is ok
+    assert d.reason == (None if ok else "add_leverage_unsafe")
+    assert d.leverage_ceiling == 5 or not ok
+
+
+@pytest.mark.unit
+def test_F10_AC4_an_open_on_a_coin_without_a_position_still_picks_the_lowest_fitting_leverage(
+    new_risk: NewRisk,
+) -> None:
+    r = new_risk()
+    _long_share_at(r, 10)  # a position at 10x elsewhere must not leak into the choice
+    d = r.gate.check(r.open_req(coin="ETH"))
+    assert d.approved and d.leverage == 1  # 100 <= free equity 290
+
+
+@pytest.mark.unit
+def test_F10_AC4_an_open_still_picks_the_lowest_fitting_leverage_even_beside_a_position_on_the_coin(
+    new_risk: NewRisk,
+) -> None:
+    # Amendment 12: leverage is chosen afresh for an OPEN (a new share of another leader on SOL)
+    r = new_risk()
+    isolate_bucket(r, "SOL")
+    r.seed("SOL", leader="LA", qty="1.0", entry="100", stop="98.5", leverage=10)  # margin 10
+    d = r.gate.check(r.open_req(leader="L1", share_id="S10"))
+    assert d.approved and d.leverage == 1  # merged 200 <= 10 + 290
 
 
 # ---- AC9 adds ---------------------------------------------------------------------------------------------------------
@@ -491,6 +645,7 @@ def test_F10_AC9_add_quantity_is_our_share_times_the_leaders_add_fraction(new_ri
     _long_share(r)
     d = r.gate.check(r.add_req(share_id="S1"))  # 1.0 x (0.5 / 1.0)
     assert d.approved and d.qty == D("0.50") and d.final_notional_usd == D(50)
+    assert d.leverage == 5  # Amendment 12: the seeded position's leverage, not a fresh choice
 
 
 @pytest.mark.unit

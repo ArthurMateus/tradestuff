@@ -67,3 +67,25 @@ Files in `tests/risk/`; names abbreviated to their distinguishing part (the full
 3. `client_order_id` exact encoding and truncation ("as the broker requires") are not specified; the broker has no length rule. Pinned: lowercase hex, 32-64 chars, unambiguous, order-insensitive tids, `action` = `ActionKind.value`.
 4. Drawdown `/resume` semantics (does the peak reset?) are unspecified and untested.
 5. "An unverified ledger" is pinned as `Ledger.failed` (A2/F2.AC6); a full chain verify per entry would be expensive.
+
+## Update for Amendment 12 (an ADD keeps the position's leverage)
+
+Spec issue 1 above is settled by Amendment 12: for an ADD the gate uses the EXISTING position's leverage, computes the add's margin and liquidation distance at it and refuses `add_leverage_unsafe` (audit `risk_decision`) when the liquidation-distance rule, the margin or the coin ceiling fail at that leverage; an OPEN still picks the lowest fitting leverage. No src change (stubs untouched). `plan_leverage` and its 10,000-case properties stay as they are: they describe the OPEN choice and the rule itself, and the developer may reuse it for the ADD with the range fixed to one value. Suite is now 321 tests: 319 fail (318 `NotImplementedError`, 1 pre-existing AST scan assertion on the stub gate), 2 pass as before (the float scan, the no-calendar-keys check).
+
+Edited tests (same intent, ruled behaviour), all in `tests/risk/test_gate_sizing.py`:
+- `test_F10_AC4_an_add_uses_the_posted_margin_of_the_merged_position`: expected `leverage == 1` (fresh) became `5` (the seeded position's leverage); the posted margin 20 assertion is unchanged.
+- `test_F10_AC9_add_quantity_is_our_share_times_the_leaders_add_fraction`: added `leverage == 5`. The other AC9 tests do not assert leverage and pass unchanged at the position's 5x (checked against a reference gate).
+
+New tests:
+| Test | Proves |
+|---|---|
+| `..._an_add_on_a_position_opened_at_3x_computes_margin_and_liquidation_at_3x` | decision leverage 3, posted margin = broker's 100/3, liquidation price = F11 model at 3x (fresh would be 1x) |
+| `..._the_token_of_an_add_binds_the_positions_leverage` (AC4) | issued intent has leverage 3; token verifies, fails for 1 and 4 |
+| `..._the_leverage_the_broker_holds_after_an_add_fills_is_the_one_the_gate_checked` (AC10, real F11 broker) | after the fill the broker's leverage, liquidation price and merged margin equal the gate's |
+| `..._refused_add_leverage_unsafe_when_the_rule_fails_at_the_positions_leverage` [97.5 ok, 97.4 refused] | 10x position, boundary exactly 3 x stop distance; refusal has no token, no order, audit reason, position untouched |
+| `..._the_same_add_is_approved_on_a_position_opened_at_a_lower_leverage` | the 97.4 stop passes at 5x, so a lower leverage would have passed |
+| `..._refused_add_leverage_unsafe_when_the_margin_does_not_fit_at_the_positions_leverage` [2x refused, 3x ok] | margin at the position's leverage, where a fresh choice (3x) would fit |
+| `..._refused_add_leverage_unsafe_when_the_positions_leverage_is_over_the_ceiling` [6x refused, 5x ok] | ceiling from config (SOL off the high-tier list) |
+| `..._an_open_on_a_coin_without_a_position_still_picks_the_lowest_fitting_leverage`, `..._even_beside_a_position_on_the_coin` | OPEN is fresh (1x), also for a new share next to a 10x position on the same coin (pinned from Amendment 12's wording; the merged-position mismatch for that OPEN is not addressed by the amendment) |
+
+Mutation proof (scratch copy of src outside the repo, throwaway reference gate, `-o pythonpath`): all six mutants die. ADD chooses leverage afresh: 10 tests fail; any entry (OPEN too) uses the position's leverage: the same-coin OPEN test; ceiling check removed: the 6x case; wrong refusal reason: the 97.4 and 2x cases; margin check skipped on an ADD: the 2x case; liquidation rule skipped on an ADD: the 97.4 case.
