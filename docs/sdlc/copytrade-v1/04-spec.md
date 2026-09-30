@@ -1,6 +1,10 @@
 # Spec: copytrade-v1 (AI-filtered copy-trading bot, Hyperliquid + Telegram, paper)
 
-Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 8 applied
+Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 9 applied
+
+## Amendment 9 (2026-09-30, PO decision)
+
+- **F11.AC5 liquidation (PO approved reading B, replaces the Amendment 7 reading):** when a position is liquidated, the paper broker closes it at the bankruptcy price (entry x (1 -/+ 1/L)), so the whole posted margin is lost, plus the taker fee. Loss = posted margin + fee. The liquidation trigger price is unchanged (entry x (1 -/+ (1/L - 1/(2 x maxLev)))). Reason: real liquidations gap and fill worse than a clean close, so the conservative loss avoids flattering the paper verdict. Amendment 8's open item RISK-9 is closed.
 
 ## Amendment 8 (2026-09-30, CTO defaults from the F11 review round 1; PO to confirm)
 
