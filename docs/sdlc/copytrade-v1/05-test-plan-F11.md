@@ -321,13 +321,24 @@ The reference fix (in a scratch copy of `src` outside the repo, `-o pythonpath=<
 
 Mutant h3 turns the retry loop into an infinite loop, so the tests do not fail: they hang. It is "killed" by a timeout, which a CI timeout also gives.
 
-### Existing tests that will break under a literal Amendment 10 (found with the reference fix; not edited)
+### Existing tests that would break under a literal Amendment 10 (found with the reference fix; now updated, see the next section)
 
 Running the whole existing suite against the reference fix, 61 existing tests in `tests/paper` fail (the reference is a literal reading of the amendment). Two causes:
 - **About 38 tests send a mark or a delisting stamped more than 5 s ahead of the last `advance_to`** (typically `D0 + 30_000` after the broker was advanced to `D0 + 1000`), so the broker now ignores them. Files: `test_delisting.py`, `test_fees.py`, `test_liquidation.py`, `test_paper_only.py`, `test_stops.py`, `test_r2_liquidation.py`, `test_r2_admission.py`, `test_r2_meta_and_failures.py`. Changing `Env.mark` in `tests/paper/helpers.py` to call `broker.advance_to(time_ms)` before `on_mark` fixes 38 of them (my new tests do not use `Env.mark` for bogus marks, so they are unaffected). (Measured: with that one helper change, 23 of the 61 still fail.) The delisting tests call `on_delist` directly and need an `advance` before it.
 - **The rest (the 23 that remain after the helper change) are the direct delistings above, plus tests that count the alert or the fill from the clamped time**, which Amendment 10 says never: `test_rejects.py` (2), `test_r2_stale_and_opposite.py` (5), `test_r2_meta_and_failures.py`, `test_r2_admission.py`.
 
 The developer's round therefore has to be followed by a mechanical update of these tests (the CTO should authorise it). The amendment's intent (a bogus stamp never moves time) is what the new tests pin.
+
+### Mechanical update of the pre-round-3 tests for Amendment 10 (done; no assertion or expected value changed)
+
+Result: all 618 tests in `tests/paper` (the original 155, round 2's 321 and round 3's) pass against the reference fix of Amendments 8 to 10; on the current code (d0c7d2e behaviour) the full suite is 3699 passed and exactly the same 44 round-3 intentional tests fail (identical list before and after the edit). ruff, ruff format and mypy are clean. `src` is untouched.
+
+Edited files and the mechanical change:
+- `tests/paper/helpers.py`: `Env.mark` now calls `broker.advance_to(clock time)` before `on_mark` (the supervisor advances broker time every loop), keeping the returned events unchanged. This fixed 38 of the 61.
+- `test_delisting.py` (7 sites), `test_fees.py` (1), `test_r2_admission.py` (1 delist): an `e.advance(<delist time>)` line before each direct `on_delist`.
+- `test_paper_only.py`, `test_r2_admission.py` (2 tests), `test_r2_meta_and_failures.py` (the book-port test), `test_rejects.py` (`_close_without_book`): an `e.advance(<exit decided_at_ms>)` before the exit is submitted, so the exit's decision time is not ahead of broker time.
+- `test_r2_meta_and_failures.py` scripted latch session: one extra `advance_to(D0 + 10_000)` step before the exit submit (the write count stays 10, so the fail_at range is unchanged).
+- `test_r2_stale_and_opposite.py` (5 tests): the exits there carry an old decision time, so per Amendment 10 the `exit_unfilled` alert event (timed from that decision) may now precede the fill; the events are filtered to drop `exit_unfilled_alert` before the unchanged `== ["fill"]` and fill-time/price assertions.
 
 ### What round 3 deliberately does not cover
 

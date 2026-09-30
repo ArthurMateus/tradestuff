@@ -88,7 +88,8 @@ def test_R2_RISK1_an_exit_with_an_old_decision_time_is_accepted_and_fills_no_ear
     qty = "2.0" if action is ActionKind.CLOSE else "1.0"
     result = e.submit(e.order("sell", qty, coid="x1", action=action, decided=D0 + 1500, share="S1"))
     assert (result.accepted, result.reason) == (True, None)
-    events = e.advance(NOW + 1000)
+    # the exit's own decision time is long past, so its "exit_unfilled" alert event may precede the fill (Amendment 10)
+    events = [ev for ev in e.advance(NOW + 1000) if ev.kind != "exit_unfilled_alert"]
     assert [ev.kind for ev in events] == ["fill"]
     fill = events[0].fill
     assert fill.time.ms == NOW + 1000 and fill.time.ms >= NOW
@@ -103,7 +104,7 @@ def test_R2_RISK1_a_stop_trigger_with_an_old_mark_time_fills_no_earlier_than_bro
     e.flat_book("SOL", D0 + 2000, "100")
     e.flat_book("SOL", NOW + 1000, "94")
     e.mark("SOL", "94", D0 + 3000)  # a mark stamped before the broker's time
-    events = e.advance(NOW + 1000)
+    events = [ev for ev in e.advance(NOW + 1000) if ev.kind != "exit_unfilled_alert"]  # Amendment 10
     assert [ev.kind for ev in events] == ["fill"]
     assert events[0].fill.time.ms >= NOW and events[0].fill.price == Price("94")
     assert events[0].fill.exit_reason == "stop_loss"
@@ -125,7 +126,7 @@ def test_R2_RISK1_no_fill_precedes_a_funding_boundary_that_was_already_charged(n
     assert (add.accepted, add.reason) == (False, "stale_decision")
     exit_ = e.submit(e.order("sell", "1.0", coid="x1", action=ActionKind.REDUCE, decided=b1 - 5000))
     assert exit_.accepted
-    events = e.advance(b1 + 11_000)
+    events = [ev for ev in e.advance(b1 + 11_000) if ev.kind != "exit_unfilled_alert"]  # Amendment 10
     assert [ev.kind for ev in events] == ["fill"] and events[0].fill.time.ms >= b1 + 10_000
     assert all(f.time.ms >= D0 + 1000 for f in e.fills())
     assert [f.time.ms for f in e.fills()][1:] == [b1 + 11_000]
@@ -293,7 +294,8 @@ def test_R2_RISK2_a_pending_opposite_entry_never_counts_as_a_reduction_of_the_sh
     e.advance(D0 + 1000)
     result = e.submit(e.order("sell", "1.0", coid="c2", action=ActionKind.CLOSE, decided=D0 + 11_000))
     assert (result.accepted, result.reason) == (True, None)
-    assert [ev.kind for ev in e.advance(D0 + 12_000)] == ["fill"]
+    events = [ev for ev in e.advance(D0 + 12_000) if ev.kind != "exit_unfilled_alert"]  # Amendment 10
+    assert [ev.kind for ev in events] == ["fill"]
     assert e.broker.position("SOL") is None
 
 

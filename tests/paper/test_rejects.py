@@ -42,6 +42,7 @@ def test_F11_AC8_an_add_with_no_book_is_also_refused_not_retried(new_env: NewEnv
 
 def _close_without_book(e: Env, decided: int = D0 + 10_000) -> int:
     e.open_position("buy", "1.0", px="100")
+    e.advance(decided)  # broker time reaches the exit's decision time (Amendment 10)
     e.submit(e.order("sell", "1.0", coid="x1", action=ActionKind.CLOSE, decided=decided, px="95", reason="manual"))
     return decided
 

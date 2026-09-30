@@ -165,6 +165,9 @@ class Env:
 
     def mark(self, coin: str, px: str, time_ms: int) -> list[BrokerEvent]:
         self.clock.now = max(self.clock.now, time_ms)
+        # the supervisor advances broker time from the F1 clock every loop (Amendment 10), so a mark is
+        # always delivered in the broker's own time base
+        self.events += list(self.broker.advance_to(self.clock.now))
         out = list(self.broker.on_mark(MarkUpdate(coin, Price(px), time_ms)))
         self.events += out
         return out

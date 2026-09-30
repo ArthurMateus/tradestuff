@@ -127,6 +127,7 @@ def test_F1_AC4_money_returned_by_the_broker_is_decimal_typed_never_float(new_en
     e.funding.set("SOL", BASE + HOUR_MS, "0.0001", "100")
     e.advance(BASE + HOUR_MS)
     e.flat_book("SOL", BASE + HOUR_MS + 61_000, "101")
+    e.advance(BASE + HOUR_MS + 60_000)  # broker time reaches the exit's decision time (Amendment 10)
     e.submit(e.order("sell", "1.0", coid="x", action=ActionKind.CLOSE, decided=BASE + HOUR_MS + 60_000, px="101"))
     events = e.advance(BASE + HOUR_MS + 61_000)
     fill = events[0].fill

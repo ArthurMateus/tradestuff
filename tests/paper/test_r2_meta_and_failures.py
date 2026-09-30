@@ -181,6 +181,7 @@ def test_R2_RISK6_an_alert_sink_raising_on_delisting_still_settles_and_stays_usa
     with custom_env(alerts=alerts) as e:
         e.open_position("buy", "1.0", px="100")
         alerts.error = error
+        e.advance(D0 + 10_000)
         events = e.broker.on_delist("SOL", Price("90"), D0 + 10_000)
         assert [ev.kind for ev in events] == ["delisted_force_settle"]
         assert e.broker.position("SOL") is None
@@ -212,6 +213,7 @@ def test_R2_RISK6_a_book_port_raising_a_non_os_error_is_no_data_and_an_exit_stil
     with custom_env(books=books) as e:
         e.open_position("buy", "2.0", px="100")
         e.flat_book("SOL", D0 + 30_000, "100")
+        e.advance(D0 + 10_000)  # broker time reaches the exit's decision time (Amendment 10)
         assert e.submit(e.order("sell", "2.0", coid="x1", action=ActionKind.CLOSE, decided=D0 + 10_000)).accepted
         books.error = error
         e.advance(D0 + 12_000)  # must not raise
@@ -285,6 +287,7 @@ def _session(e: Env) -> list[Callable[[], object]]:
         lambda: e.stop("sl", "sell", "1.0", "90", coid="s1"),
         lambda: e.broker.cancel_stop("s1"),
         lambda: e.stop("sl", "sell", "1.0", "90", coid="s2"),
+        lambda: e.broker.advance_to(D0 + 10_000),  # broker time reaches the exit's decision time (Amendment 10)
         lambda: e.broker.submit(stop_intent, e.token(stop_intent)),
         lambda: e.broker.advance_to(D0 + 12_000),
         lambda: e.broker.on_mark(MarkUpdate("SOL", Price("80"), D0 + 13_000)),

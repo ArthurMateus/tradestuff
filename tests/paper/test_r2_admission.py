@@ -127,6 +127,7 @@ def test_R2_AC8_a_book_from_before_the_attempt_never_fills_an_exit() -> None:
         assert e.submit(e.order("buy", "1.0")).accepted
         assert [ev.kind for ev in e.advance(D0 + 1000)] == ["fill"]
         books.book = make_book("SOL", D0 + 15_000, [("100", "1000")], [("100", "1000")])  # older than the attempt
+        e.advance(D0 + 20_000)  # broker time reaches the exit's decision time (Amendment 10)
         assert e.submit(e.order("sell", "1.0", coid="x1", action=ActionKind.CLOSE, decided=D0 + 20_000)).accepted
         events = e.advance(D0 + 40_000)
         assert [ev.kind for ev in events] == ["exit_unfilled_alert"]
@@ -141,6 +142,7 @@ def test_R2_AC8_a_book_of_another_coin_never_fills_an_exit() -> None:
         assert e.submit(e.order("buy", "1.0")).accepted
         assert [ev.kind for ev in e.advance(D0 + 1000)] == ["fill"]
         books.book = make_book("BTC", D0 + 21_000, [("100", "1000")], [("100", "1000")])
+        e.advance(D0 + 20_000)  # broker time reaches the exit's decision time (Amendment 10)
         assert e.submit(e.order("sell", "1.0", coid="x1", action=ActionKind.CLOSE, decided=D0 + 20_000)).accepted
         events = e.advance(D0 + 40_000)
         assert [ev.kind for ev in events] == ["exit_unfilled_alert"]
@@ -160,6 +162,7 @@ def test_R2_AC6_delisting_cancels_the_coins_stops_with_the_reason_delisted_and_l
     assert e.stop("sl", "sell", "2.0", "90", coid="sol-sl").accepted
     assert e.stop("tp", "sell", "2.0", "120", coid="sol-tp").accepted
     assert e.stop("sl", "sell", "0.1", "900", coin="BTC", coid="btc-sl", share="S2", trade="T2").accepted
+    e.advance(D0 + 20_000)
     e.broker.on_delist("SOL", Price("90"), D0 + 20_000)
     cancels = {r.payload["client_order_id"]: r.payload for r in e.records("paper_cancel")}
     assert {c: cancels[c]["reason"] for c in ("sol-sl", "sol-tp")} == {"sol-sl": "delisted", "sol-tp": "delisted"}

@@ -67,6 +67,7 @@ def test_F11_AC2_every_fill_kind_pays_the_taker_fee_stop_tp_liquidation_delist(n
     e.mark("BTC", "812.5", D0 + 60_000)
     # DOGE long, delisted
     e.open_position("buy", "100", px="0.1", coin="DOGE", coid="o4", share="S4", trade="T4", decided=D0 + 70_000)
+    e.advance(D0 + 80_000)
     e.broker.on_delist("DOGE", Price("0.09"), D0 + 80_000)
     fills = e.fills()
     reasons = sorted(f.exit_reason for f in fills if f.exit_reason)
