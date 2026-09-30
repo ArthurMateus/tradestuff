@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sed -i 's/^loops: tests=0 build=2/loops: tests=0 build=2/' docs/sdlc/copytrade-v1/STATE.md)",
+      "Bash(git commit -qm 'docs\\(sdlc\\): F3 approved and merged; resume at F6+F7 *)"
+    ]
+  }
+}

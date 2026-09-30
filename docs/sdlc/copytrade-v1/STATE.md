@@ -4,7 +4,7 @@ gate_passed: build (F1 only)
 touches_money_path: yes
 touches_strategy: yes
 has_ui: no
-features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=approved+merged (tests_commit=6ba583c; round-2 tests a6340a7; build loops=2), F3=build, PAUSED at round-1 CHANGES REQUIRED (tests_commit=364d97b; impl 506ba0f..006ba87; test fix b8c2f94; branch pushed, NOT merged), F4=queued, F5=approved+merged (tests_commit=651812a; round-2 tests 490d783; build loops=2), F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
+features: F1=approved+merged (F1.tests_commit=75c3221; advisories A2,A4,A5 queued), F2=approved+merged (tests_commit=6ba583c; round-2 tests a6340a7; build loops=2), F3=approved+merged (tests_commit=364d97b; round-2 tests d223541; fix 9c0bb2c; build loops=2), F4=queued, F5=approved+merged (tests_commit=651812a; round-2 tests 490d783; build loops=2), F6=queued, F7=queued, F10=queued, F11=queued, F12=queued, F14=queued (stage 1); F8, F9, F13, F15-F21, F23 (stage 2) not started; F22 dropped
 loops: tests=0 build=2 review=0 qa=0
 escalations_open: none
 updated: 2026-09-29T20:00:00Z
@@ -83,3 +83,7 @@ Other open follow-ups are listed above.
 3. **Advisory-only gaps do not get a second designer round.** Only blocking items (code bug, spec-semantics, money or fail-closed guard gaps) go back to the test-designer. Advisories are logged as follow-ups in STATE.md.
 4. **Combine small features in one pass** where dependencies allow (one test-designer, one developer, one senior-dev for the pair): candidates F6+F7 (after F3 and F5 are merged), F4+F14 if independent. Per-feature branches and ACs stay separate; the agents share one worktree per pair. Money-path features (F10, F11, F12) are never combined and always get reviewer-risk.
 5. Never run mutation tools or the test suite from the CTO session; senior-dev verifies.
+
+## F3 approved and merged (2026-09-30, scheduled fix round done)
+Senior-dev round 2 verify-only: APPROVED. Blocking items 1-3 fixed (bad WS frame opens gap and resync; stale at exactly feed.stale_after_s with `>=`; access thresholds pinned). The PAUSED section above is superseded. Resume point: **F6+F7 as a pair** (deps F3 and F5 now merged), then F4, then F10, F11, F12 (never paired, reviewer-risk), F14; a minimal supervisor question is open with the PO (see chat).
+F3 advisories still open (follow-ups, not blocking): bad-frame flood costs N CRITICAL REST calls per tick (add cooldown or reconnect after K bad frames); no test for the unidentifiable-frame-naming-unsubscribed-wallet branch; no exact `gap.start_ms` assertion or earlier-start-preserved test (senior-dev could not run mutants in round 2); resync pagination past ~2000 fills; seen_tids/held caps; isSnapshot to sink; min-sample rule for access_degraded; host allow-list; sink failure after record_downtime re-writes data_gap; concrete WsConnector needed by F21.
