@@ -35,6 +35,8 @@ def intent_digest(intent: OrderIntent | StopIntent) -> str:
 
     Raises:
         TypeError: ``intent`` is neither an ``OrderIntent`` nor a ``StopIntent``, or a field has the wrong type.
+        ArithmeticError: a numeric field has more digits than the digest context holds (``Inexact``);
+            ``GateAuthority.verify`` treats that as an invalid token.
     """
     fields: list[str | int | None]
     if isinstance(intent, OrderIntent):
