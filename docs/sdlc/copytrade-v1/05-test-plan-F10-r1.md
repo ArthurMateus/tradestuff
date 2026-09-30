@@ -70,35 +70,22 @@ parameter on `tests/risk/helpers.py::build_risk_env` (see "Existing tests that c
 * Existing suite: 4 449 existing + 32 new guards pass (4 481), nothing existing fails on the current code
   (full run: all failures are in the 82 new tests).
 
-## Existing tests that contradict a required behaviour (NOT edited; CTO decision needed)
-Found by running the whole existing risk suite against throw-away prototypes of the pinned behaviour in a scratch copy.
+## Existing tests edited (CTO authorisation: direct consequences of B1 and B4; none weakened)
+Checked by running the whole round-0 risk suite (382 tests) against a scratch prototype of the pinned rules (stale mark
+after 120 000 ms, future-mark ignore beyond 5 000 ms, `entry_in_flight`, `position_mismatch`): all 382 pass. On today's code
+they all pass too.
 
-1. **B1 `entry_in_flight` / in-flight counting** breaks two round-0 tests that send many entries on SOL without a fill in
-   between, which only pass because in-flight entries are invisible:
-   * `tests/risk/test_gate_sizing.py::test_F10_AC3_orders_per_minute_cap_uses_a_sliding_window_in_exchange_time` (two OPENs on SOL)
-   * `tests/risk/test_gate_sizing.py::test_F10_AC3_orders_per_minute_default_is_30` (thirty OPENs on SOL; with any counting of
-     in-flight risk the symbol cap alone stops it after ~7).
-   Suggested edit (owner: designer, after sign-off): spread the orders over distinct coins, raise
-   `risk__max_total_open_risk_fraction` / symbol / leader caps via config overrides, and keep the rate-limit assertions.
-2. **B4 needs a fresh mark before every entry test.** Every round-0 entry test builds a gate that never took a mark.
-   I added `build_risk_env(..., marked=False)` (default unchanged so nothing breaks today); the plan for the fix round is
-   to flip that default to `True` (one line). With the flip and a prototype of the pinned rule, 8 round-0 tests still fail
-   and need a one-line mark or flag each (this is a restart or clock jump the tests make without a mark):
-   `test_dev_extras.py::test_F10_AC7_a_non_finite_equity_is_unknown_equity[x3]` (asserts the persisted state equals a
-   never-marked state: use `marked=False`),
-   `test_dev_extras.py::test_F10_AC7_coin_rules_are_fetched_once_per_refresh_interval_and_a_failed_refresh_refuses_entries`
-   (jumps the clock > 2 min), `test_kill_switch.py::test_F10_AC6_the_pause_persists_across_a_restart_until_resume`
-   (new gate after `rebuild_gate` has no mark: `rebuild_gate` should mark), and three limits tests that move days
-   (`test_limits.py::...daily_halt_holds_until_the_next_00_00_utc...`, `...weekly_halt_lasts_until_the_next_monday...`,
-   `...drawdown_writes_an_event_alerts_persists_across_restart_and_resume_clears_it`). `rebuild_gate` in
-   `tests/risk/helpers.py` can carry the mark for restarts.
-   The developer cannot make the suite green without this test-side change; the designer can do it in a follow-up once the CTO approves.
-3. **B2** as pinned (handled own-advance fills; only broker-share-not-in-book refuses; `opposite_side_entry` first) was chosen
-   specifically so it does NOT contradict `test_chokepoint...advances_the_broker_to_exchange_time_before_every_submit`,
-   `test_dev_extras...opposite_side_entry_is_refused_on_the_brokers_position_alone` or
-   `test_gate_sizing...add_is_also_held_to_the_ac3_caps`.
-
-No round-0 test contradicts B3, B5, B6, B7 or B8.
+| Test / helper | Change | Why | Intent kept |
+|---|---|---|---|
+| `tests/risk/helpers.py::build_risk_env` | `marked` default flipped to `True`: takes one equity mark at `T0` after building the gate | B4: an entry needs a fresh mark; round-0 tests never marked | yes, only adds the precondition |
+| `tests/risk/helpers.py::rebuild_gate` | new `marked=True` parameter: the restarted gate takes a mark at the current exchange time | a restarted gate has no mark (B4) | yes |
+| `test_dev_extras.py::test_F10_AC7_a_non_finite_equity_is_unknown_equity[x3]` | `new_risk(marked=False)` | the test asserts the persisted state equals a gate that never marked | assertion unchanged |
+| `test_dev_extras.py::test_F10_AC7_coin_rules_are_fetched_once_per_refresh_interval_and_a_failed_refresh_refuses_entries` | two `mark_equity(r.xtime.now)` calls after the clock jumps | the clock jumps 60 min, past the 2 x 60 s mark age | all fetch-count and refusal assertions unchanged |
+| `test_limits.py::test_F10_AC5_the_daily_halt_holds_until_the_next_00_00_utc_even_if_equity_recovers` | one mark at `M0 + DAY - 60 000` before the boundary checks | entries need a fresh mark; the mark is before the boundary so the halt still ends by time, not by a mark | assertions unchanged |
+| `test_limits.py::test_F10_AC5_the_weekly_halt_lasts_until_the_next_monday_00_00_utc` | one mark at `M0 + WEEK - 60 000` | same | assertions unchanged |
+| `test_limits.py::test_F10_AC5_drawdown_writes_an_event_alerts_persists_across_restart_and_resume_clears_it` | `r.at(now + 60 000)` before the "further mark" (a mark stamped 60 s ahead of exchange time would be ignored as a future mark, making the assertion vacuous); the third restart uses `rebuild_gate(r2, marked=False)` | B4 future-mark rule; a mark at the still-breached equity correctly re-pauses | assertions unchanged |
+| `test_gate_sizing.py::test_F10_AC3_orders_per_minute_cap_uses_a_sliding_window_in_exchange_time` | orders go to SOL, ETH, DOGE (was three on SOL) | B1: an entry in flight blocks its coin | same window boundaries: 59 999 ms blocked, 60 000 ms free; limit 2 |
+| `test_gate_sizing.py::test_F10_AC3_orders_per_minute_default_is_30` | `equity="3000"`, each of 30 SOL orders on its own leader is filled and listed in the share book before the next (2 s apart), 31st checked at +59 s | B1 counts in-flight risk and blocks the coin; `risk.max_open_positions` is capped at 10 by the compiled ceilings, so 30 coins is impossible | 30 accepted, the 31st `rate_limit` |
 
 ## Spec ambiguities resolved here (PO/architect may overrule)
 * In-flight same coin: refuse (`entry_in_flight`) rather than inherit leverage.

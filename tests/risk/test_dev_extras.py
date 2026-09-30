@@ -243,9 +243,11 @@ def test_F10_AC7_coin_rules_are_fetched_once_per_refresh_interval_and_a_failed_r
     assert r.gate.check(r.open_req(tids=(555,))).approved
     assert r.paper.meta.fetches == fetches  # served from the snapshot
     r.at(r.xtime.now + ttl_ms - 1)
+    r.gate.mark_equity(r.xtime.now)  # B4: entries need a fresh equity mark
     r.gate.check(r.open_req(tids=(556,)))
     assert r.paper.meta.fetches == fetches
     r.at(r.xtime.now + 1)  # the snapshot is now too old
+    r.gate.mark_equity(r.xtime.now)
     r.paper.meta.fail = True
     assert r.gate.check(r.open_req(tids=(557,), leader_av_time_ms=r.xtime.now)).reason == "meta_unavailable"
     r.paper.meta.fail = False
@@ -431,7 +433,7 @@ def test_F10_AC8_a_signal_already_sent_is_refused_by_the_gate_before_any_token_i
 @pytest.mark.unit
 @pytest.mark.parametrize("equity", [D("NaN"), D("Infinity"), D("-Infinity")])
 def test_F10_AC7_a_non_finite_equity_is_unknown_equity(new_risk: NewRisk, equity: D) -> None:
-    r = new_risk()
+    r = new_risk(marked=False)  # the state file must stay that of a gate that never marked
     r.account.equity = equity
     assert r.gate.check(r.open_req()).reason == "equity_unknown"
     r.gate.mark_equity(M0)  # and a mark with it changes nothing

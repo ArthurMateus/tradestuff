@@ -71,6 +71,7 @@ def test_F10_AC5_the_daily_halt_holds_until_the_next_00_00_utc_even_if_equity_re
     mark(r, M0 + 10 * HOUR, "294.00")
     mark(r, M0 + 12 * HOUR, "300")  # recovered: still halted
     assert r.gate.check(r.open_req()).reason == "daily_loss_halt"
+    mark(r, M0 + DAY - 60_000, "300")  # marks keep coming (B4: entries need a fresh mark); none after the boundary
     r.at(M0 + DAY - 1)
     assert r.gate.check(r.open_req()).reason == "daily_loss_halt"
     r.at(M0 + DAY)
@@ -145,6 +146,7 @@ def test_F10_AC5_weekly_loss_halts_at_exactly_minus_5_percent_of_the_weeks_openi
 def test_F10_AC5_the_weekly_halt_lasts_until_the_next_monday_00_00_utc(new_risk: NewRisk) -> None:
     r = new_risk()
     slide(r, M0 + 10 * 60_000, "300", "285.00", 4)
+    mark(r, M0 + WEEK - 60_000, "285.00")  # marks keep coming (B4: entries need a fresh mark); none after the boundary
     r.at(M0 + WEEK - 1)
     assert r.gate.check(r.open_req()).reason == "weekly_loss_halt"
     r.at(M0 + WEEK)
@@ -217,7 +219,8 @@ def test_F10_AC5_drawdown_writes_an_event_alerts_persists_across_restart_and_res
     halts = r.paper.records("risk_halt")
     assert len(halts) == 1 and halts[0].payload["reason"] == "drawdown"
     assert r.paper.alerts.kinds().count("drawdown_pause") == 1
-    r.gate.mark_equity(r.xtime.now + 60_000)  # further marks while paused neither re-alert nor re-write
+    r.at(r.xtime.now + 60_000)
+    r.gate.mark_equity(r.xtime.now)  # further marks while paused neither re-alert nor re-write
     assert len(r.paper.records("risk_halt")) == 1 and r.paper.alerts.kinds().count("drawdown_pause") == 1
 
     r2 = rebuild_gate(r)
@@ -229,7 +232,7 @@ def test_F10_AC5_drawdown_writes_an_event_alerts_persists_across_restart_and_res
         assert r2.gate.check(r2.open_req()).approved
     finally:
         r2.paper.ledger.close()
-    r3 = rebuild_gate(r2)
+    r3 = rebuild_gate(r2, marked=False)  # a mark at the still-breached equity would (correctly) pause it again
     try:
         assert r3.gate.paused is False  # the resume persisted too
     finally:

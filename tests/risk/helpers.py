@@ -256,11 +256,11 @@ def build_risk_env(
     key: bytes = KEY,
     config: Config | None = None,
     returns: dict[str, list[Decimal]] | None = None,
-    marked: bool = False,
+    marked: bool = True,
     **overrides: Any,
 ) -> RiskEnv:
     """Build the real gate over the real broker. ``marked=True`` also takes one equity mark at ``T0`` (F10 review B4:
-    an entry needs a fresh mark); the default is unchanged so the round-0 tests are untouched."""
+    an entry needs a fresh mark); the default is True so every entry test starts with a fresh mark."""
     authority = SpyAuthority(key)
     cfg = config if config is not None else make_config(**overrides)
     # the broker must be built with the SAME authority object the gate holds
@@ -299,7 +299,7 @@ def _rebuild_with_authority(tmp_path: Path, cfg: Config, authority: SpyAuthority
     return Env(broker, authority, books, meta, funding, alerts, clock, ledger, ledger_dir, cfg)
 
 
-def rebuild_gate(renv: RiskEnv) -> RiskEnv:
+def rebuild_gate(renv: RiskEnv, *, marked: bool = True) -> RiskEnv:
     """Simulate a process restart of the risk gate: a NEW gate and broker over the same ledger, state dir and books."""
     from copytrade.ledger.store import Ledger
     from copytrade.paper.broker import PaperBroker
@@ -317,5 +317,7 @@ def rebuild_gate(renv: RiskEnv) -> RiskEnv:
         returns=renv.returns, exchange_time=renv.xtime, calendar=renv.calendar, ledger=ledger,
         alerts=paper.alerts, authority=authority, state_dir=renv.state_dir,
     )
+    if marked:
+        gate.mark_equity(renv.xtime.now)  # a restarted gate has no mark yet (B4): the supervisor marks at once
     return replace(renv, paper=paper, gate=gate, authority=authority)
 

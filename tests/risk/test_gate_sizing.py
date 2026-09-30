@@ -17,6 +17,7 @@ from copytrade.core.domain import ActionKind
 from copytrade.core.money import Price, Qty
 from copytrade.paper.liquidation import liquidation_price
 from copytrade.paper.types import OrderIntent
+from copytrade.risk.types import ShareExposure
 from tests.risk.conftest import NewRisk
 from tests.risk.helpers import (
     RiskEnv,
@@ -341,35 +342,51 @@ def test_F10_AC3_max_open_positions_default_is_ten(new_risk: NewRisk) -> None:
 
 @pytest.mark.unit
 def test_F10_AC3_orders_per_minute_cap_uses_a_sliding_window_in_exchange_time(new_risk: NewRisk) -> None:
+    # F10 review B1: an entry in flight blocks its coin, so the orders go to different coins (same window logic)
     r = new_risk(risk__max_orders_per_min=2)
     t = r.xtime.now
     sent = []
-    for i, dt in enumerate((0, 1000)):
+    for i, (dt, coin) in enumerate(((0, "SOL"), (1000, "ETH"))):
         r.at(t + dt)
-        r.book("SOL", "100")
-        out = r.gate.submit(r.open_req(tids=(200 + i,), share_id=f"S{i}", signal_id=f"g{i}"))
+        r.book(coin, "100")
+        out = r.gate.submit(r.open_req(coin=coin, tids=(200 + i,), share_id=f"S{i}", signal_id=f"g{i}"))
         assert out.result is not None and out.result.accepted, out
         sent.append(out)
     r.at(t + 59_999)  # the first order is 59.999 s old: still inside the minute
-    blocked = r.gate.submit(r.open_req(tids=(300,), share_id="S3", signal_id="g3"))
+    blocked = r.gate.submit(r.open_req(coin="DOGE", tids=(300,), share_id="S3", signal_id="g3"))
     assert (blocked.decision.approved, blocked.decision.reason, blocked.result) == (False, "rate_limit", None)
     r.at(t + 60_000)  # the first order leaves the window: one sent in the window, one slot free
-    r.book("SOL", "100")
-    again = r.gate.submit(r.open_req(tids=(301,), share_id="S4", signal_id="g4"))
+    r.book("DOGE", "100")
+    again = r.gate.submit(r.open_req(coin="DOGE", tids=(301,), share_id="S4", signal_id="g4"))
     assert again.result is not None and again.result.accepted, again
 
 
 @pytest.mark.unit
 def test_F10_AC3_orders_per_minute_default_is_30(new_risk: NewRisk) -> None:
-    r = new_risk()
+    # F10 review B1: in-flight entries count against the caps and block their coin, so each of the 30 orders is
+    # filled and booked (as F12 would) before the next; equity is large enough that no other cap is the limit
+    r = new_risk(equity="3000")
     t = r.xtime.now
     for i in range(30):
-        r.at(t + i)
-        r.book("SOL", "100", at=t + i)
-        out = r.gate.submit(r.open_req(tids=(400 + i,), share_id=f"S{i}", signal_id=f"g{i}", leader_position_notional_usd=D(40)))
+        now = t + 2000 * i
+        r.at(now)
+        r.book("SOL", "100", at=now)
+        out = r.gate.submit(
+            r.open_req(tids=(400 + i,), share_id=f"S{i}", signal_id=f"g{i}", leader=f"L{i}", leader_position_notional_usd=D(13))
+        )
         assert out.result is not None and out.result.accepted, (i, out)
-    r.at(t + 31)
-    assert r.gate.check(r.open_req(tids=(999,), share_id="S99", leader_position_notional_usd=D(40))).reason == "rate_limit"
+        r.paper.advance(now + 1000)  # the order fills; F12 lists the share
+        assert out.decision.qty is not None
+        r.shares.shares.append(
+            ShareExposure(
+                share_id=f"S{i}", trade_id="T10", coin="SOL", leader=f"L{i}", is_long=True, qty=out.decision.qty,
+                entry_px=Price("100"), stop_px=Price("98.5"), mark_px=Price("100"),
+                open_risk_usd=out.decision.qty * D("1.5"),
+            )
+        )
+    r.at(t + 59_000)  # the first order is 59 s old: inside the minute
+    blocked = r.gate.check(r.open_req(tids=(999,), share_id="S99", leader="L99", leader_position_notional_usd=D(13)))
+    assert blocked.reason == "rate_limit"
 
 
 # ---- AC4 through the gate --------------------------------------------------------------------------------------------
