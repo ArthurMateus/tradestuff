@@ -97,8 +97,9 @@ class SubmitResult:
     """Synchronous answer of ``submit`` / ``place_stop``. ``reason`` is ``None`` when accepted, else one of
     ``invalid_gate_token``, ``gate_token_reused``, ``duplicate_client_order_id``, ``unknown_coin``, ``delisted``,
     ``meta_unavailable``, ``below_min_notional``, ``exceeds_position``, ``leverage_exceeds_max``, ``leverage_missing``,
-    ``stale_decision`` (an entry decided before the broker's time), ``bad_decision_time`` (an entry decided more
-    than ``filter.max_signal_age_ms`` ahead of the broker's time, while that is above 0), ``opposite_side_entry``
+    ``no_broker_time`` (an entry before the first ``advance_to``, so while the broker's time is still 0, including
+    after every restart), ``stale_decision`` (an entry decided before the broker's time), ``bad_decision_time``
+    (an entry decided more than ``filter.max_signal_age_ms`` ahead of the broker's time), ``opposite_side_entry``
     (an entry against the position on its coin), and, for input that is malformed rather than merely refused by an
     exchange rule, ``invalid_side``,
     ``invalid_qty``, ``leverage_invalid``, ``invalid_stop_kind`` and ``invalid_trigger``. ``exceeds_position`` also

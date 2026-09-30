@@ -112,8 +112,9 @@ class PaperBroker:
     or a delisting is always processed at broker time, and a timestamp ahead of it is clamped to it, never ignored
     (Amendment 11). F21 contract: the supervisor calls ``advance_to`` with the exchange-time clock on every loop, and
     F10 stamps ``decided_at_ms`` in the same time base (an entry more than ``filter.max_signal_age_ms`` ahead is
-    refused ``bad_decision_time``). Ledger append errors propagate to the caller (F2.AC6) and the broker then
-    refuses every further state-changing call.
+    refused ``bad_decision_time``). An entry (OPEN or ADD) is refused ``no_broker_time`` until the first
+    ``advance_to``, including after every restart; exits, stops, marks and delistings are not affected.
+    Ledger append errors propagate to the caller (F2.AC6) and the broker then refuses every further state-changing call.
 
     Raises ``ConfigError`` at construction for a missing or out-of-range key, ``mode`` other than ``paper``.
     """
@@ -381,9 +382,11 @@ class PaperBroker:
         coin_meta = self._rules_for(intent.coin, intent.side, is_entry=is_entry)
         if isinstance(coin_meta, str):
             return coin_meta
+        if is_entry and self._now_ms == 0:
+            return "no_broker_time"
         if is_entry and intent.decided_at_ms < self._now_ms:
             return "stale_decision"
-        if is_entry and self._now_ms > 0 and intent.decided_at_ms > self._now_ms + self._settings.max_time_skew_ms:
+        if is_entry and intent.decided_at_ms > self._now_ms + self._settings.max_time_skew_ms:
             return "bad_decision_time"
         qty = self._lot_size(intent.qty, coin_meta)
         if isinstance(qty, str):
