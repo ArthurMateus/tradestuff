@@ -23,8 +23,8 @@ from copytrade.signals.models import KIND_LATENCY_SAMPLE, Signal
 
 KIND_DOWNTIME = "downtime"
 # How often the run polls the feed. The feed's ``recv`` never blocks, so a signal is timestamped when the next poll
-# drains it: the interval is a floor on the error of stage S1 (target p50 700 ms), and is kept two orders of
-# magnitude below it. The feed itself only needs one tick per second.
+# drains it, so S1 is an upper bound (up to this interval too high). The interval is a floor on that error
+# (target p50 700 ms) and is kept well below it. The feed itself only needs one tick per second.
 TICK_INTERVAL_S = 0.1
 _MS_PER_HOUR = 3_600_000
 

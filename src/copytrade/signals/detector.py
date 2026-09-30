@@ -120,8 +120,9 @@ class SignalDetector:
        existed when the wallet was followed, every leg that touches it is ``pre_existing``, up to and including the
        leg that takes the position to zero. The open leg of a flip is a normal signal.
     5. Age (F7.AC5) and ``s2_ms`` are computed while classifying (before any ledger write, so S2 measures
-       classification only); every signal is appended to the ledger (kind ``signal``) **before** the batch is handed
-       to ``sink.on_signals``; a ledger failure propagates and nothing is delivered.
+       classification only); every signal is appended to the ledger (kind ``signal``) **before** it is handed
+       to ``sink.on_signals``. The batch is delivered once, in fill order. If an append fails part-way, the signals
+       already ledgered are still delivered (then the failure propagates); only the signal in flight is lost.
 
     The ledger ``signal`` record's payload has the keys ``signal_id``, ``wallet``, ``coin``, ``tid``, ``leg``,
     ``from_flip``, ``action`` (the ``ActionKind`` value, or ``None``), ``is_long``, ``size``, ``pre_position``,
@@ -132,9 +133,10 @@ class SignalDetector:
     The pre-existing state and the processed ``tid`` set survive a restart: a new detector over the same ledger rebuilds
     them from the ``follow_started``, ``follow_ended`` and ``signal`` records.
 
-    Failure order inside a batch. A fill's tid counts as processed once its first signal is in the ledger, and a flip
-    ledgers its close before its open, so a ledger failure part-way can lose an entry but never an exit (C4). The
-    ledger refuses every append after its first failure, so the process stops there.
+    Failure order inside a batch. A fill's tid counts as processed once its first signal is in the ledger, and every
+    ledgered signal is delivered even if a later append fails, so the crash window loses at most the signal in flight.
+    A flip ledgers and delivers its close before its open, so that window can lose an entry but never an exit (C4).
+    The ledger refuses every append after its first failure, so the process stops there.
 
     Known limit (plan decision 8): F3 does not tell a snapshot fill from a live one, so a snapshot that replays
     history older than the follow time is signalled as it is, with its true (large) ``age_ms``. F9 refuses stale
@@ -196,7 +198,7 @@ class SignalDetector:
         Raises:
             HlRequestError: ``wallet`` is not a valid address.
             WalletNotFollowedError: ``wallet`` has no follow state.
-            LedgerWriteError: a ledger append failed.
+            LedgerWriteError: a ledger append failed (after the signals ledgered before it were delivered).
         """
         key = normalize_wallet(wallet)
         if key not in self._held_at_follow:
@@ -204,16 +206,22 @@ class SignalDetector:
         arrival = _Arrival(self._clock.now_ms(), self._current_offset_ms())
         pending = self._classify_batch(key, fills, arrival)
         signals: list[Signal] = []
-        for item in pending:
-            for signal in item.signals:
-                self._ledger.append(KIND_SIGNAL, signal_payload(signal))
-                self._commit(key, signal)
-                signals.append(signal)
-        for item in pending:
-            if item.alert is not None:
-                self._send_alert(item.alert)
-        if signals:
-            self._sink.on_signals(tuple(signals))
+        alerts: list[Alert] = []
+        try:
+            for item in pending:
+                for signal in item.signals:
+                    self._ledger.append(KIND_SIGNAL, signal_payload(signal))
+                    self._commit(key, signal)
+                    signals.append(signal)
+                if item.alert is not None:
+                    alerts.append(item.alert)
+        finally:
+            # Whatever reached the ledger is delivered, even when a later append failed: those tids now count as
+            # processed, so after a restart they would be duplicates and never reach the sink.
+            for alert in alerts:
+                self._send_alert(alert)
+            if signals:
+                self._sink.on_signals(tuple(signals))
 
     def _classify_batch(self, wallet: str, fills: Sequence[Fill], arrival: _Arrival) -> list[_Pending]:
         """Classify every new fill of the batch, in order, without touching the ledger or the follow state."""

@@ -3,11 +3,13 @@
 ``copytrade latency measure --hours N --wallets A,B,... --ledger-dir DIR [--root PATH]``: loads the config under
 ``--root`` (default: this checkout), builds the real boundaries with ``build_boundaries(config)`` (a module-level
 factory the tests replace), runs ``copytrade.signals.latency.measure_latency`` into a ledger in ``--ledger-dir`` (a
-separate ledger: the engine's own ``storage.ledger_dir`` is refused, because measurement signals written there would
-make the same fills duplicates in a real run) and prints ``S1 n=<count> p50=<ms> p95=<ms> p99=<ms>``, the same for
-``S2``, ``signals=<count>`` and ``enough_samples=true|false``. Exit 0; 2 for bad arguments (``--hours`` not a
-positive integer, no wallet, an invalid address, more distinct wallets than ``hl.ws_max_unique_users``,
-``--ledger-dir`` is the engine ledger); 1 for any ``CopytradeError`` or a ledger directory that cannot be opened.
+separate ledger: the engine's own ``storage.ledger_dir`` is refused, and so is a parent or a subdirectory of it,
+because measurement signals written there would make the same fills duplicates in a real run) and prints
+``S1 n=<count> p50=<ms> p95=<ms> p99=<ms>``, the same for ``S2``, a note that S1 is an upper bound (it includes up
+to ``TICK_INTERVAL_S`` = 0.1 s of poll granularity), ``signals=<count>`` and ``enough_samples=true|false``. Exit 0;
+2 for bad arguments (``--hours`` not a positive integer, no wallet, an invalid address, more distinct wallets than
+``hl.ws_max_unique_users``, ``--ledger-dir`` is, contains or lies inside the engine ledger); 1 for any
+``CopytradeError`` or a ledger directory that cannot be opened.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from copytrade.core.events import Alert
 from copytrade.hl.errors import HlRequestError
 from copytrade.hl.wallet import normalize_wallet
 from copytrade.ledger.store import Ledger
-from copytrade.signals.latency import LatencyBoundaries, StageSummary, measure_latency
+from copytrade.signals.latency import TICK_INTERVAL_S, LatencyBoundaries, StageSummary, measure_latency
 
 # copytrade/__init__.py -> copytrade -> src -> repository root (the default ``--root``, as for ``copytrade start``)
 _CODE_ROOT = Path(copytrade.__file__ or "").resolve().parents[2]
@@ -70,8 +72,11 @@ def _wallets(text: str) -> tuple[str, ...]:
         ) from None
 
 
-def _same_directory(left: Path, right: Path) -> bool:
-    return os.path.normcase(left.resolve()) == os.path.normcase(right.resolve())
+def _overlaps(left: Path, right: Path) -> bool:
+    """True when the resolved directories are the same, or one contains the other."""
+    first = Path(os.path.normcase(left.resolve()))
+    second = Path(os.path.normcase(right.resolve()))
+    return first == second or first in second.parents or second in first.parents
 
 
 def _stage_line(name: str, summary: StageSummary | None) -> str:
@@ -97,10 +102,10 @@ def _run_measure(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    if _same_directory(args.ledger_dir, root / config["storage.ledger_dir"]):
+    if _overlaps(args.ledger_dir, root / config["storage.ledger_dir"]):
         print(
-            "copytrade: --ledger-dir is the engine ledger (storage.ledger_dir); measurement signals would make the "
-            "same fills duplicates in a real run. Use a separate directory.",
+            "copytrade: --ledger-dir is, contains or lies inside the engine ledger (storage.ledger_dir); "
+            "measurement signals would make the same fills duplicates in a real run. Use a separate directory.",
             file=sys.stderr,
         )
         return 2
@@ -123,6 +128,7 @@ def _run_measure(args: argparse.Namespace) -> int:
         ledger.close()
     print(_stage_line("S1", report.s1))
     print(_stage_line("S2", report.s2))
+    print(f"note: S1 is an upper bound (up to {TICK_INTERVAL_S} s of poll granularity)")
     print(f"signals={report.signals}")
     print(f"enough_samples={'true' if report.enough_samples else 'false'}")
     return 0
