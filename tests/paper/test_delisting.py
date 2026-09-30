@@ -85,6 +85,7 @@ def test_F11_AC6_pending_stops_are_cancelled_and_never_fire_after_settlement(new
 def test_F11_AC6_a_pending_order_on_a_delisted_coin_is_rejected_delisted(new_env: NewEnv) -> None:
     e = new_env()
     e.flat_book("SOL", D0 + 1000, "100")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0"))
     e.advance(D0 + 500)
     (ev,) = e.broker.on_delist("SOL", Price("95"), D0 + 500)

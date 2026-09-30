@@ -73,6 +73,7 @@ def test_R2_RISK1_the_broker_time_is_the_time_it_was_advanced_to_not_the_local_c
     e = new_env()
     e.clock.now = D0 + 3_600_000
     e.flat_book("SOL", D0 + 1000, "100")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "1.0", decided=D0)).accepted
 
 
@@ -235,6 +236,7 @@ def test_R2_RISK2_two_entries_accepted_while_flat_never_net_against_each_other(n
     share must not reduce it: the position stays what the first entry made it."""
     e = new_env()
     e.flat_book("SOL", D0 + 1000, "100")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "1.0", coid="c1")).accepted
     e.submit(e.order("sell", "0.5", coid="c2"))  # same share S1, opposite side (may be refused already, or later)
     e.advance(D0 + 1000)
@@ -254,6 +256,7 @@ def test_R2_RISK2_a_liquidated_share_never_lets_a_pending_entry_open_a_naked_sho
     e = new_env()
     e.flat_book("SOL", D0 + 1000, "100")
     e.flat_book("SOL", D0 + 6000, "100")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "1.0", coid="c1", decided=D0)).accepted
     e.submit(e.order("sell", "1.0", coid="c2", decided=D0 + 5000))  # S1 / T1 again, opposite side, decided later
     e.advance(D0 + 1000)
@@ -271,6 +274,7 @@ def test_R2_RISK2_a_closed_share_never_lets_a_pending_entry_open_a_naked_short_o
     e.flat_book("SOL", D0 + 1000, "100")
     e.flat_book("SOL", D0 + 12_000, "100")
     e.flat_book("SOL", D0 + 16_000, "100")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "1.0", coid="c1", decided=D0)).accepted
     e.submit(e.order("sell", "1.0", coid="c3", decided=D0 + 15_000))  # S1 / T1 again, decided long after the close
     e.advance(D0 + 1000)
@@ -291,6 +295,7 @@ def test_R2_RISK2_a_pending_opposite_entry_never_counts_as_a_reduction_of_the_sh
     e = new_env()
     e.flat_book("SOL", D0 + 1000, "100")
     e.flat_book("SOL", D0 + 12_000, "100")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "1.0", coid="c1")).accepted
     e.submit(e.order("sell", "1.0", coid="c3", decided=D0 + 15_000))  # S1 again, opposite side, still pending
     e.advance(D0 + 1000)

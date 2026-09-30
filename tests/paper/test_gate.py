@@ -41,6 +41,7 @@ def test_F10_AC1_a_valid_token_is_accepted_and_the_order_fills(new_env: NewEnv) 
     e = new_env()
     e.flat_book("SOL", FILL_T, "100")
     intent = e.order("buy", "1.0")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     result = e.broker.submit(intent, e.authority.issue(intent))
     assert (result.accepted, result.reason, result.client_order_id) == (True, None, "c1")
     assert [ev.kind for ev in e.advance(FILL_T)] == ["fill"]
@@ -115,6 +116,7 @@ def test_F10_AC1_a_token_is_single_use(new_env: NewEnv) -> None:
     e.flat_book("SOL", FILL_T, "100")
     intent = e.order("buy", "1.0")
     token = e.authority.issue(intent)
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.broker.submit(intent, token).accepted
     again = e.broker.submit(intent, token)
     assert (again.accepted, again.reason) == (False, "gate_token_reused")
@@ -158,6 +160,7 @@ def test_F10_AC1_authority_never_raises_on_garbage_tokens() -> None:
 def test_A5_same_client_order_id_with_a_fresh_token_is_a_duplicate_and_fills_once(new_env: NewEnv) -> None:
     e = new_env()
     e.flat_book("SOL", FILL_T, "100")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     first = e.submit(e.order("buy", "1.0"))
     second = e.submit(e.order("buy", "1.0"))  # fresh token, same client order ID
     assert first.accepted
@@ -216,6 +219,7 @@ def test_A2_a_ledger_that_cannot_record_the_order_makes_submit_raise_and_nothing
 def test_A2_a_ledger_failure_at_fill_time_raises_and_the_broker_keeps_failing_closed(new_env: NewEnv) -> None:
     e = new_env()
     e.flat_book("SOL", FILL_T, "100")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "1.0")).accepted
     e.ledger.close()
     with pytest.raises(LedgerWriteError):

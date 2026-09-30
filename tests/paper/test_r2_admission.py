@@ -103,6 +103,7 @@ def test_R2_AC5_liquidation_price_rejects_leverage_one_above_the_coin_maximum_an
 def test_R2_AC1_a_book_from_before_the_time_asked_about_is_ignored_for_an_entry() -> None:
     early = make_book("SOL", D0 + 500, [("100", "1000")], [("100", "1000")])  # the fill is due at D0 + 1000
     with custom_env(books=StuckBooks(early)) as e:
+        e.advance(D0)  # RISK-26: an entry needs broker time first
         assert e.submit(e.order("buy", "1.0")).accepted
         events = e.advance(D0 + 7000)
         assert [(ev.kind, ev.reason) for ev in events] == [("reject", "no_book")]
@@ -113,6 +114,7 @@ def test_R2_AC1_a_book_from_before_the_time_asked_about_is_ignored_for_an_entry(
 def test_R2_AC1_a_book_of_another_coin_is_ignored() -> None:
     other = make_book("BTC", D0 + 1000, [("100", "1000")], [("100", "1000")])
     with custom_env(books=StuckBooks(other)) as e:
+        e.advance(D0)  # RISK-26: an entry needs broker time first
         assert e.submit(e.order("buy", "1.0")).accepted
         events = e.advance(D0 + 7000)
         assert [(ev.kind, ev.reason) for ev in events] == [("reject", "no_book")]
@@ -124,6 +126,7 @@ def test_R2_AC8_a_book_from_before_the_attempt_never_fills_an_exit() -> None:
     good = make_book("SOL", D0 + 1000, [("100", "1000")], [("100", "1000")])
     books = StuckBooks(good)
     with custom_env(books=books) as e:
+        e.advance(D0)  # RISK-26: an entry needs broker time first
         assert e.submit(e.order("buy", "1.0")).accepted
         assert [ev.kind for ev in e.advance(D0 + 1000)] == ["fill"]
         books.book = make_book("SOL", D0 + 15_000, [("100", "1000")], [("100", "1000")])  # older than the attempt
@@ -139,6 +142,7 @@ def test_R2_AC8_a_book_of_another_coin_never_fills_an_exit() -> None:
     good = make_book("SOL", D0 + 1000, [("100", "1000")], [("100", "1000")])
     books = StuckBooks(good)
     with custom_env(books=books) as e:
+        e.advance(D0)  # RISK-26: an entry needs broker time first
         assert e.submit(e.order("buy", "1.0")).accepted
         assert [ev.kind for ev in e.advance(D0 + 1000)] == ["fill"]
         books.book = make_book("BTC", D0 + 21_000, [("100", "1000")], [("100", "1000")])

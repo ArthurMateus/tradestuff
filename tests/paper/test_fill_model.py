@@ -37,6 +37,7 @@ def _buy_env(
 def test_F11_AC1_spec_example_vwap_is_100_05(new_env: NewEnv) -> None:
     e = new_env()
     _buy_env(e, [("100.0", "0.5"), ("100.1", "1.0")])
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "1.0")).accepted
     events = e.advance(FILL_T)
     assert [ev.kind for ev in events] == ["fill"]
@@ -53,6 +54,7 @@ def test_F11_AC1_spec_example_vwap_is_100_05(new_env: NewEnv) -> None:
 def test_F11_AC1_position_and_cash_after_the_fill(new_env: NewEnv) -> None:
     e = new_env()
     _buy_env(e, [("100.0", "0.5"), ("100.1", "1.0")])
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0"))
     e.advance(FILL_T)
     pos = e.broker.position("SOL")
@@ -64,6 +66,7 @@ def test_F11_AC1_position_and_cash_after_the_fill(new_env: NewEnv) -> None:
 def test_F11_AC1_sell_walks_the_bids(new_env: NewEnv) -> None:
     e = new_env()
     e.book("SOL", FILL_T, [("100.0", "0.5"), ("99.9", "1.0")], [("100.1", "5")])
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("sell", "1.0"))
     fill = e.advance(FILL_T)[0].fill
     assert fill.price == Price("99.95")  # (0.5 x 100.0 + 0.5 x 99.9) / 1.0
@@ -75,6 +78,7 @@ def test_F11_AC1_sell_walks_the_bids(new_env: NewEnv) -> None:
 def test_F11_AC1_nothing_fills_before_the_ack_delay_elapses(new_env: NewEnv) -> None:
     e = new_env()
     _buy_env(e, [("100.0", "5")])
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0"))
     assert e.advance(FILL_T - 1) == []  # 999 ms after the decision: still in flight
     assert e.broker.position("SOL") is None
@@ -87,6 +91,7 @@ def test_F11_AC1_snapshots_before_the_fill_time_are_ignored_and_the_first_at_or_
     e.book("SOL", FILL_T - 1, [("200", "9")], [("200", "9")])  # 1 ms too early
     e.book("SOL", FILL_T, [("100", "9")], [("100", "9")])
     e.book("SOL", FILL_T + 1, [("300", "9")], [("300", "9")])  # later snapshot is not the first
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0"))
     fill = e.advance(FILL_T + 1)[0].fill
     assert fill.price == Price("100")
@@ -98,6 +103,7 @@ def test_F11_AC1_ack_delay_is_data_driven(new_env: NewEnv) -> None:
     e = new_env(config=make_config(paper__ack_delay_ms=2500))
     e.flat_book("SOL", D0 + 1000, "200")
     e.flat_book("SOL", D0 + 2500, "100")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0"))
     assert e.advance(D0 + 2499) == []
     fill = e.advance(D0 + 2500)[0].fill
@@ -108,6 +114,7 @@ def test_F11_AC1_ack_delay_is_data_driven(new_env: NewEnv) -> None:
 def test_F11_AC1_no_lookahead_a_recorded_future_book_is_not_used_early(new_env: NewEnv) -> None:
     e = new_env()
     e.flat_book("SOL", FILL_T + 500, "101")  # exists in the recording, but is "in the future" at FILL_T
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0"))
     assert e.advance(FILL_T) == []
     assert e.broker.position("SOL") is None
@@ -119,6 +126,7 @@ def test_F11_AC1_no_lookahead_a_recorded_future_book_is_not_used_early(new_env: 
 def test_F11_AC1_book_age_boundary_exactly_max_book_age_is_usable(new_env: NewEnv) -> None:
     e = new_env()
     e.flat_book("SOL", FILL_T + 5000, "100")  # 5,000 ms after the fill time = paper.max_book_age_ms
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0"))
     assert [ev.kind for ev in e.advance(FILL_T + 5000)] == ["fill"]
 
@@ -127,6 +135,7 @@ def test_F11_AC1_book_age_boundary_exactly_max_book_age_is_usable(new_env: NewEn
 def test_F11_AC1_book_age_one_ms_over_the_limit_is_refused_no_book(new_env: NewEnv) -> None:
     e = new_env()
     e.flat_book("SOL", FILL_T + 5001, "100")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0"))
     events = e.advance(FILL_T + 5001)
     assert [(ev.kind, ev.reason) for ev in events] == [("reject", "no_book")]
@@ -136,6 +145,7 @@ def test_F11_AC1_book_age_one_ms_over_the_limit_is_refused_no_book(new_env: NewE
 @pytest.mark.unit
 def test_F11_AC1_no_book_yet_at_exactly_the_window_end_keeps_waiting_one_ms_later_rejects(new_env: NewEnv) -> None:
     e = new_env()
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0"))
     assert e.advance(FILL_T + 5000) == []  # a snapshot could still arrive at exactly the last usable ms
     assert [(ev.kind, ev.reason) for ev in e.advance(FILL_T + 5001)] == [("reject", "no_book")]
@@ -146,6 +156,7 @@ def test_F11_AC1_depth_beyond_5pct_of_mid_gives_a_partial_fill_and_the_remainder
     e = new_env()
     # mid = (99.9 + 100.1) / 2 = 100.0, so the band is asks <= 105.0; 105.2 is outside it.
     _buy_env(e, [("100.1", "1.0"), ("105.2", "5.0")])
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "3.0"))
     events = e.advance(FILL_T)
     assert [ev.kind for ev in events] == ["partial_fill"]
@@ -169,6 +180,7 @@ def test_F11_AC1_depth_beyond_5pct_of_mid_gives_a_partial_fill_and_the_remainder
 def test_F11_AC1_a_level_exactly_at_5pct_of_mid_is_included(new_env: NewEnv) -> None:
     e = new_env()
     _buy_env(e, [("100.1", "1.0"), ("105.0", "1.0")])
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "2.0"))
     (ev,) = e.advance(FILL_T)
     assert ev.kind == "fill" and ev.fill.price == Price("102.55") and ev.fill.qty == Qty("2.0")  # (100.1+105.0)/2
@@ -178,6 +190,7 @@ def test_F11_AC1_a_level_exactly_at_5pct_of_mid_is_included(new_env: NewEnv) -> 
 def test_F11_AC1_a_level_one_tick_past_5pct_of_mid_is_excluded(new_env: NewEnv) -> None:
     e = new_env()
     _buy_env(e, [("100.1", "1.0"), ("105.01", "1.0")])
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "2.0"))
     (ev,) = e.advance(FILL_T)
     assert ev.kind == "partial_fill" and ev.fill.qty == Qty("1.0") and ev.fill.price == Price("100.1")
@@ -187,12 +200,14 @@ def test_F11_AC1_a_level_one_tick_past_5pct_of_mid_is_excluded(new_env: NewEnv) 
 def test_F11_AC1_sell_side_band_boundaries(new_env: NewEnv) -> None:
     inside = new_env()
     inside.book("SOL", FILL_T, [("99.9", "1.0"), ("95.0", "1.0")], [("100.1", "5")])  # mid 100.0, floor 95.0
+    inside.advance(D0)  # RISK-26: an entry needs broker time first
     inside.submit(inside.order("sell", "2.0"))
     (ev,) = inside.advance(FILL_T)
     assert ev.kind == "fill" and ev.fill.price == Price("97.45")  # (99.9 + 95.0) / 2
 
     outside = new_env()
     outside.book("SOL", FILL_T, [("99.9", "1.0"), ("94.99", "1.0")], [("100.1", "5")])
+    outside.advance(D0)  # RISK-26: an entry needs broker time first
     outside.submit(outside.order("sell", "2.0"))
     (ev2,) = outside.advance(FILL_T)
     assert ev2.kind == "partial_fill" and ev2.fill.qty == Qty("1.0") and ev2.fill.price == Price("99.9")
@@ -202,6 +217,7 @@ def test_F11_AC1_sell_side_band_boundaries(new_env: NewEnv) -> None:
 def test_F11_AC1_no_depth_inside_the_band_rejects_an_open_with_no_depth(new_env: NewEnv) -> None:
     e = new_env()
     e.book("SOL", FILL_T, [("90", "5")], [("110", "5")])  # mid 100, both sides outside 5%
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0"))
     assert [(ev.kind, ev.reason) for ev in e.advance(FILL_T)] == [("reject", "no_depth")]
     assert e.broker.position("SOL") is None
@@ -212,6 +228,7 @@ def test_F11_AC1_no_depth_inside_the_band_rejects_an_open_with_no_depth(new_env:
 def test_F11_AC1_one_sided_or_empty_book_rejects_an_open_with_no_depth(new_env: NewEnv, bids: Any, asks: Any) -> None:
     e = new_env()
     e.book("SOL", FILL_T, bids, asks)
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0"))
     assert [(ev.kind, ev.reason) for ev in e.advance(FILL_T)] == [("reject", "no_depth")]
 
@@ -222,6 +239,7 @@ def test_F11_AC1_half_spread_and_slippage_are_paid_by_crossing_the_real_book(new
     e = new_env()
     e.book("SOL", FILL_T, [("99.9", "0.5"), ("99.8", "1.0")], [("100.1", "0.5"), ("100.2", "1.0")])
     mid = D("100.0")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0", coid="b"))
     buy = e.advance(FILL_T)[0].fill
     e.book("SOL", FILL_T + 10_000, [("99.9", "0.5"), ("99.8", "1.0")], [("100.1", "0.5"), ("100.2", "1.0")])
@@ -252,6 +270,7 @@ def test_F11_AC1_property_vwap_is_bounded_exact_and_never_overfills(offsets: Any
     asks = [(str(px), str(sz)) for px, sz in levels]
     with fresh_env() as e:
         e.book("SOL", FILL_T, [(asks[0][0], "1000")], asks)  # locked at the best ask => mid = best ask
+        e.advance(D0)  # RISK-26: an entry needs broker time first
         e.submit(e.order("buy", str(qty)))
         (ev,) = e.advance(FILL_T)
         fill = ev.fill

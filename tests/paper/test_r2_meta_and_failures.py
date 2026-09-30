@@ -228,6 +228,7 @@ def test_R2_RISK6_a_book_port_raising_a_non_os_error_is_no_data_and_an_exit_stil
 def test_R2_RISK6_a_book_port_raising_during_an_entry_does_not_latch_the_broker(error: Exception) -> None:
     books = FlakyBooks()
     with custom_env(books=books) as e:
+        e.advance(D0)  # RISK-26: an entry needs broker time first
         assert e.submit(e.order("buy", "1.0", coid="c1")).accepted
         books.error = error
         e.advance(D0 + 20_000)  # the entry's window passes with no usable book: must not raise
@@ -264,6 +265,7 @@ def test_R2_RISK6_a_meta_port_raising_a_non_os_error_first_time_is_meta_unavaila
     meta = FlakyMeta()
     meta.error = error
     with custom_env(meta=meta) as e:
+        e.advance(D0)  # RISK-26: an entry needs broker time first
         result = e.submit(e.order("buy", "1.0"))
         assert (result.accepted, result.reason) == (False, "meta_unavailable")
         meta.error = None
@@ -281,6 +283,7 @@ def _session(e: Env) -> list[Callable[[], object]]:
     e.flat_book("SOL", D0 + 22_000, "100")
     open_intent = e.order("buy", "2.0", coid="o1")
     stop_intent = e.order("sell", "1.0", coid="x1", action=ActionKind.REDUCE, decided=D0 + 10_000)
+    e.advance(D0)  # RISK-26: an entry needs broker time first (writes nothing: the ledger write counts are unchanged)
     return [
         lambda: e.broker.submit(open_intent, e.token(open_intent)),
         lambda: e.broker.advance_to(D0 + 1000),

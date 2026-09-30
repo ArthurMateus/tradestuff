@@ -518,12 +518,17 @@ def test_R4_RISK23_an_entry_exactly_at_the_tolerance_ahead_is_accepted_inclusive
 
 @pytest.mark.unit
 @pytest.mark.parametrize("offset", [HOUR_MS, 30 * 24 * HOUR_MS])
-def test_R4_RISK23_an_entry_far_ahead_is_accepted_while_broker_time_is_zero(new_env: NewEnv, offset: int) -> None:
-    """Before the first advance_to there is no broker time to be ahead of (RISK-25 startup)."""
+def test_R4_RISK23_an_entry_far_ahead_is_refused_no_broker_time_while_broker_time_is_zero(
+    new_env: NewEnv, offset: int
+) -> None:
+    """Round 5 (RISK-26) INVERTS this test, which used to assert the far-ahead entry was ACCEPTED at broker time 0
+    (RISK-25 startup). Intent kept: an entry decided far ahead must never be silently accepted. With no broker time
+    there is nothing to be ahead of, but also nothing to check staleness against, so the entry is refused
+    ``no_broker_time`` until the first ``advance_to`` (an accepted one filled at a made-up time and price)."""
     e = new_env()
     e.flat_book("SOL", D0 + offset + ACK, "100")
     result = e.submit(e.order("buy", "0.5", coid="e1", decided=D0 + offset))
-    assert (result.accepted, result.reason) == (True, None)
+    assert (result.accepted, result.reason) == (False, "no_broker_time")
 
 
 @pytest.mark.unit

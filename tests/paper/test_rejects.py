@@ -19,6 +19,7 @@ FILL_T = D0 + 1000
 @pytest.mark.unit
 def test_F11_AC8_open_with_no_book_is_refused_no_book_logged_and_never_retried(new_env: NewEnv) -> None:
     e = new_env()
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "1.0"))
     events = e.advance(FILL_T + 5001)
     assert [(ev.kind, ev.reason, ev.client_order_id) for ev in events] == [("reject", "no_book", "c1")]

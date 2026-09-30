@@ -413,3 +413,48 @@ Mechanical (RISK-23: an entry decided more than the tolerance ahead of broker ti
 ### Not covered (later gates)
 
 F21 owns the time-base contract (advance_to from `ClockSync.exchange_now()`, heartbeat on a stalled loop, the 24 h dry run showing zero `bad_timestamp` alerts): a wiring test there. RISK-24 (ledger record of clamps) stays logged. Replay determinism of clamping (F16) is covered by the simulation gate.
+
+## Round 5 (RISK-26): no entry without broker time
+
+Gap: at broker time 0 (a fresh broker or any restart) `stale_decision` never fires and `bad_decision_time` is off, so an OPEN decided 24 h ago or +1 h ahead was accepted (a backdated or made-up trade). Required: OPEN/ADD refused `no_broker_time` while broker time is 0; exits, stops, marks and delistings unaffected.
+
+New file `tests/paper/test_r5_no_broker_time.py` (AC: F11.AC5/AC6/AC8 time handling, A2 fail-closed, A5 token/idempotency):
+
+| Claim | Tests |
+|---|---|
+| OPEN and ADD decided 24 h ago / +1 h / exactly 0 / at the local clock are refused `no_broker_time` | `an_entry_is_refused_no_broker_time_at_broker_time_zero` (8) |
+| No `paper_order`, one `paper_reject`, no pending order, no position, cash unchanged, nothing fills or is charged funding later, broker not latched, a later entry served | `a_refused_entry_writes_no_order_creates_no_state_and_does_not_latch` (8) |
+| Token consumed as for any refusal (reuse is `gate_token_reused`, also after `advance_to`); a forged token stays `invalid_gate_token` and leaves the real one unspent; a duplicate client order ID stays `duplicate_client_order_id` | `the_refused_entry_consumes_its_token...`, `an_invalid_token_is_still...`, `a_duplicate_client_order_id_is_still...` |
+| `advance_to(0)` gives no broker time | `advance_to_zero_gives_no_broker_time` |
+| After the first `advance_to(D0)` the same entry with a fresh token is accepted and fills at its own time; boundaries -1 / 0 / +tol / +tol+1 and the 24 h-old entry answer `stale_decision` / ok / ok / `bad_decision_time` / `stale_decision` | `after_the_first_advance_to_the_same_entry...` (2), `once_broker_time_exists_...boundaries` (4), `a_24h_old_entry_after_the_first_advance...` |
+| CLOSE/REDUCE and stop placement at time 0 answer the ordinary `exceeds_position`, not `no_broker_time`; marks are processed and never latch or move time; a delisting at time 0 is recorded (a later entry is `delisted`); liquidation and force-settle of an open position unchanged | `an_exit_at_time_zero...` (8), `a_stop_at_time_zero...`, `a_mark_at_time_zero...`, `a_delisting_at_time_zero...`, `a_mark_and_a_delisting_still_protect...` |
+| A restarted broker over a non-empty ledger starts at time 0, refuses OPEN/ADD (24 h ago, now, +1 h) until `advance_to`, then accepts | `a_restarted_broker_over_a_non_empty_ledger...` (2) |
+
+Cannot be tested at time 0: an exit or a mark that acts on a position (none can exist before broker time); covered by the existing tests after `advance_to`.
+
+### Mutation kill table (scratch copies outside the repo, run with `-o pythonpath=`)
+
+| Mutant | Killed by |
+|---|---|
+| check removed (the current code) | 26 failures (r4 far-ahead x2, r5 x24) |
+| check keyed `_now_ms > 0` (inverted) | 562 failures (every entry after the first advance) plus all r5 |
+| check applied to exits | `an_exit_at_time_zero...` (8) |
+| check only for OPEN, not ADD | 10 (the ADD cases, restart, after-advance) |
+| check only when `decided_at_ms <= 0` | 22 |
+| check before the token is verified | 29 (forged token, token reuse, duplicate id, plus older gate tests) |
+| check after the duplicate-ID check | 5 (`a_duplicate_client_order_id_is_still...`, A5 restart) |
+| check before the token is consumed (token not spent) | `the_refused_entry_consumes_its_token...` and 5 older |
+| check applied to stops | `a_stop_at_time_zero...`, `F11_AC7 a_stop_on_a_position_that_does_not_exist` |
+| delisting dropped at time 0 | `a_delisting_at_time_zero_is_recorded_not_dropped` |
+
+Not killable: dropping a mark at time 0 (no position or stop can exist then, so it is unobservable).
+
+### Edited existing tests
+
+Inverted: `test_r4_time_clamp.py::test_R4_RISK23_an_entry_far_ahead_is_accepted_while_broker_time_is_zero` renamed `..._is_refused_no_broker_time_while_broker_time_is_zero` (docstring states why).
+Mechanical (a line `<env>.advance(D0)` before the first entry submit; no assertion or expected number changed): `test_delisting.py` a_pending_order_on_a_delisted_coin; `test_exchange_rules.py` minimum_notional_boundary, minimum_is_data_driven, size_is_rounded_down_to_the_lot, a_size_that_rounds_to_zero, leverage_above_the_coin_max, an_entry_without_leverage, a_coin_listed_after_the_refresh, meta_unavailable_at_first_use, pinned_a_failed_refresh, fill_prices_stay_exact_decimals; `test_fill_model.py` spec_example_vwap, position_and_cash_after_the_fill, sell_walks_the_bids, nothing_fills_before_the_ack_delay, snapshots_before_the_fill_time, ack_delay_is_data_driven, no_lookahead, book_age_boundary (2), no_book_yet_at_exactly_the_window_end, depth_beyond_5pct, a_level_exactly_at_5pct, a_level_one_tick_past_5pct, sell_side_band_boundaries (both envs), no_depth_inside_the_band, one_sided_or_empty_book, half_spread_and_slippage, property_vwap; `test_gate.py` F10_AC1 valid_token, token_is_single_use, A5 same_client_order_id_with_a_fresh_token, A2 ledger_failure_at_fill_time; `test_r2_accounting.py` three_partial_closes, four_partial_closes; `test_r2_admission.py` a_book_from_before_the_time (entry), a_book_of_another_coin_is_ignored, AC8 a_book_from_before_the_attempt, AC8 a_book_of_another_coin; `test_r2_gate.py` RISK4 35_digit_price; `test_r2_meta_and_failures.py` RISK6 book_port_raising, RISK6 meta_port_raising, and the `_session` helper (`advance(D0)` writes no ledger record, so the 10-write count and fail_at range are unchanged); `test_r2_stale_and_opposite.py` RISK1, RISK2 x4; `test_rejects.py` open_with_no_book.
+
+### Run summary
+
+Current code (133fcdf): 717 paper tests, 26 fail, all intentional (2 inverted R4 cases, 24 in the new r5 file); the other r5 tests (exits, stops, marks, delisting, boundaries after advance) are regression guards that already pass. Scratch reference of the fix (check `_now_ms == 0` in `_admit_order` for entries, after token and duplicate checks): all 717 pass. Failure reasons on current code: assertion failures (`no_broker_time` expected, entry accepted); no import or collection errors.
+

@@ -41,6 +41,7 @@ def test_R2_RISK4_an_order_token_issued_in_the_default_context_verifies_in_the_b
     e = new_env()
     intent = replace(e.order("buy", "1.0", coid="big1"), decision_px=Price(BIG))
     token = _issue_in_default_context(e.authority, intent)
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     result = e.broker.submit(intent, token)
     assert (result.accepted, result.reason) == (True, None)
 

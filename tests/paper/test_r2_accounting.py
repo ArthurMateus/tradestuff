@@ -89,6 +89,7 @@ def test_R2_AC1_three_partial_closes_of_an_inexact_third_basis_sum_to_exactly_wh
         e.book("SOL", D0 + 1000, [("100", "1000")], [("100", "1"), ("100.1", "1"), ("100.3", "1")])
     else:
         e.book("SOL", D0 + 1000, [("100.3", "1"), ("100.1", "1"), ("100", "1")], [("100.3", "1000")])
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order(side, "3.0", coid="o1")).accepted
     (entry,) = e.advance(D0 + 1000)
     assert entry.fill.price * 3 == D("300.4") or _near(entry.fill.price * 3, D("300.4"))
@@ -114,6 +115,7 @@ def test_R2_AC1_three_partial_closes_of_an_inexact_third_basis_sum_to_exactly_wh
 def test_R2_AC1_four_partial_closes_with_a_seventh_basis_sum_to_exactly_what_was_paid(new_env: NewEnv) -> None:
     e = new_env()
     e.book("SOL", D0 + 1000, [("100", "1000")], [("100", "3.5"), ("100.13", "3.5")])
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "7.0", coid="o1")).accepted
     e.advance(D0 + 1000)
     cost = D("100") * D("3.5") + D("100.13") * D("3.5")

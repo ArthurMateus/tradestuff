@@ -37,6 +37,7 @@ def _reject_records(e: Env) -> list[Any]:
 )
 def test_F11_AC4_minimum_notional_boundary(new_env: NewEnv, qty: Any, px: Any, accepted: Any) -> None:
     e = new_env()
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     result = e.submit(e.order("buy", qty, px=px))
     assert result.accepted is accepted
     assert result.reason == (None if accepted else "below_min_notional")
@@ -49,6 +50,7 @@ def test_F11_AC4_minimum_notional_boundary(new_env: NewEnv, qty: Any, px: Any, a
 @pytest.mark.unit
 def test_F11_AC4_minimum_is_data_driven(new_env: NewEnv) -> None:
     e = new_env(config=make_config(sizing__min_order_usd=D("25")))
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "0.24", px="100", coid="a")).reason == "below_min_notional"  # $24
     assert e.submit(e.order("buy", "0.25", px="100", coid="b")).accepted  # $25
 
@@ -86,6 +88,7 @@ def test_F11_AC4_unknown_coin_is_refused_and_logged(new_env: NewEnv) -> None:
 def test_F11_AC4_size_is_rounded_down_to_the_lot(new_env: NewEnv) -> None:
     e = new_env()
     e.flat_book("SOL", D0 + 1000, "100")
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "1.005")).accepted  # SOL szDecimals = 2
     fill = e.advance(D0 + 1000)[0].fill
     assert fill.qty == Qty("1.00")  # never rounded up (exposure never grows)
@@ -94,12 +97,14 @@ def test_F11_AC4_size_is_rounded_down_to_the_lot(new_env: NewEnv) -> None:
 @pytest.mark.unit
 def test_F11_AC4_a_size_that_rounds_to_zero_is_refused_below_minimum(new_env: NewEnv) -> None:
     e = new_env()
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "0.004", px="10000")).reason == "below_min_notional"
 
 
 @pytest.mark.unit
 def test_F11_AC4_leverage_above_the_coin_max_is_refused_and_equal_is_accepted(new_env: NewEnv) -> None:
     e = new_env()  # DOGE max leverage 10
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "100", coin="DOGE", px="0.1", leverage=11, coid="a")).reason == "leverage_exceeds_max"
     assert e.submit(e.order("buy", "100", coin="DOGE", px="0.1", leverage=10, coid="b")).accepted
 
@@ -108,6 +113,7 @@ def test_F11_AC4_leverage_above_the_coin_max_is_refused_and_equal_is_accepted(ne
 def test_F11_AC4_an_entry_without_leverage_is_refused(new_env: NewEnv) -> None:
     e = new_env()
     intent = replace(e.order("buy", "1.0"), leverage=None)
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(intent).reason == "leverage_missing"
 
 
@@ -138,6 +144,7 @@ def test_F11_AC4_meta_is_refreshed_every_paper_meta_refresh_min_and_not_before(n
 @pytest.mark.unit
 def test_F11_AC4_a_coin_listed_after_the_refresh_becomes_tradable(new_env: NewEnv) -> None:
     e = new_env(config=make_config(paper__meta_refresh_min=5))
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "1.0", coin="AVAX", coid="a")).reason == "unknown_coin"
     e.meta.meta["AVAX"] = CoinMeta(sz_decimals=2, max_leverage=10)
     e.clock.now = D0 + 5 * MIN
@@ -149,6 +156,7 @@ def test_F11_AC4_meta_unavailable_at_first_use_fails_closed_and_recovers(new_env
     meta = FakeMeta()
     meta.fail = True
     e = new_env(meta=meta)
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     result = e.submit(e.order("buy", "1.0"))
     assert (result.accepted, result.reason) == (False, "meta_unavailable")
     assert e.records("fill") == []
@@ -159,6 +167,7 @@ def test_F11_AC4_meta_unavailable_at_first_use_fails_closed_and_recovers(new_env
 @pytest.mark.unit
 def test_F11_AC4_pinned_a_failed_refresh_keeps_the_last_known_meta_and_retries_next_call(new_env: NewEnv) -> None:
     e = new_env()
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     assert e.submit(e.order("buy", "1.0", coid="a")).accepted
     e.meta.fail = True
     e.clock.now = D0 + 60 * MIN
@@ -172,6 +181,7 @@ def test_F11_AC4_pinned_a_failed_refresh_keeps_the_last_known_meta_and_retries_n
 def test_F11_AC4_fill_prices_stay_exact_decimals_not_rounded_to_a_tick(new_env: NewEnv) -> None:
     e = new_env()
     e.book("SOL", D0 + 1000, [("99.9", "5")], [("100.0", "1"), ("100.1", "2")])
+    e.advance(D0)  # RISK-26: an entry needs broker time first
     e.submit(e.order("buy", "3.0"))
     fill = e.advance(D0 + 1000)[0].fill
     assert abs(fill.price - D("300.2") / 3) < D("1e-15")  # (100.0 + 2 x 100.1) / 3, not snapped to 100.07
