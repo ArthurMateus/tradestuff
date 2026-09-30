@@ -4,7 +4,7 @@
 Repo: https://github.com/arthurmateus/tradestuff (`arthurmateus/tradestuff`)
 Product: AI-filtered copy-trading bot (Hyperliquid + Telegram). Vision `docs/product/vision.md` · PO decisions `docs/product/decisions.md`
 Stack: Python 3.11 (runs on the PO's Windows PC), uv, pytest + hypothesis, ruff, mypy (strict on src)
-Install: `uv sync` | Test: `uv run pytest` (`-m unit`, `-m integration`, `tests/core`) | Run: `uv run copytrade start` (paper only) | Lint: `uv run ruff check .` + `uv run ruff format --check .` + `uv run mypy` | Mutation: not installed; recommended cosmic-ray (`uv add --dev cosmic-ray`, mutmut doesn't run natively on Windows), money-path modules only (risk, paper, positions, evaluation, baselines)
+Install: `uv sync` | Test: `uv run pytest -q -x --tb=short` (quiet; `-m unit`, `-m integration`, `tests/core`) | Run: `uv run copytrade start` (paper only) | Lint: `uv run ruff check .` + `uv run ruff format --check .` + `uv run mypy` | Mutation: not installed; recommended cosmic-ray (`uv add --dev cosmic-ray`, mutmut doesn't run natively on Windows), money-path modules only (risk, paper, positions, evaluation, baselines)
 Default trading mode: paper
 
 ## You are the CTO

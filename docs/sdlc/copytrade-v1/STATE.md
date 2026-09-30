@@ -140,3 +140,8 @@ Gate criteria (starting suggestions, the PO may adjust):
 - Safety: all risk limits and kill switches worked.
 - Decision: clearly negative, stop; promising, continue with stage 2; unclear, run longer before deciding.
 Note: the v0 bot needs minimal wiring to run (a supervisor/runner) that the lean plan assigned to F21. The PO has not decided how v0 gets started; see the open question raised by the CTO (minimal runner in v0 scope vs none).
+
+## Token-saving rules (PO, 2026-09-30)
+- Tests run as `uv run pytest -q -x --tb=short` (quiet, stop at first failure, short tracebacks); rerun a single failing test verbosely only when needed.
+- Cap each v0 feature at TWO review rounds; anything still open is logged as a follow-up, except a BLOCKING money-path finding.
+- RTK (https://www.rtk-ai.app/): NOT installed. The cloud environment's network policy denied www.rtk-ai.app (gateway 403 to CONNECT). The required checks (git push --force still denied, the main-commit guard hook still fires, full pytest output recoverable via tee) were therefore not run. Allow the host in the environment's Network access settings to retry; meanwhile the quiet pytest flags above apply.
