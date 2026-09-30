@@ -1,6 +1,10 @@
 # Spec: copytrade-v1 (AI-filtered copy-trading bot, Hyperliquid + Telegram, paper)
 
-Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 11 applied
+Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 12 applied
+
+## Amendment 12 (2026-09-30, CTO default from the F10 test round; PO to confirm)
+
+- **F10.AC4/AC9 leverage on ADD:** F11 (merged, reviewed) keeps the FIRST entry's leverage on a position when an ADD fills, and the broker never checks margin. So the risk gate does not choose leverage afresh for an ADD: it uses the existing position's leverage, computes the add's margin and liquidation distance with that leverage, and refuses the add (`add_leverage_unsafe`, audit `risk_decision`) if the liquidation-distance rule or the ceilings fail at that leverage. Leverage is still chosen freshly (lowest value that fits the margin, up to the ceilings) for an OPEN. This keeps the margin the gate checks equal to the margin the broker holds. Pinned defaults from the F10 designer stand: unknown BTC-bucket correlation counts the coin as inside the bucket; order-rate window (now - 60 s, now] counting every order sent; equity <= 0 is unknown equity; daily and weekly halts expire by time; "unverified ledger" = `Ledger.failed`; client order id lowercase hex 32-64 chars with `action` = `ActionKind.value`.
 
 ## Amendment 11 (2026-09-30, architect ruling on the F11 deadlock; supersedes Amendment 10's rule; PO informed, no PO decision needed)
 
