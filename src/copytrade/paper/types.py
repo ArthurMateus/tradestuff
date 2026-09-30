@@ -96,7 +96,11 @@ class GateToken:
 class SubmitResult:
     """Synchronous answer of ``submit`` / ``place_stop``. ``reason`` is ``None`` when accepted, else one of
     ``invalid_gate_token``, ``gate_token_reused``, ``duplicate_client_order_id``, ``unknown_coin``, ``delisted``,
-    ``meta_unavailable``, ``below_min_notional``, ``exceeds_position``, ``leverage_exceeds_max``, ``leverage_missing``.
+    ``meta_unavailable``, ``below_min_notional``, ``exceeds_position``, ``leverage_exceeds_max``, ``leverage_missing``,
+    and, for input that is malformed rather than merely refused by an exchange rule, ``invalid_side``,
+    ``invalid_qty``, ``leverage_invalid``, ``invalid_stop_kind`` and ``invalid_trigger``. ``exceeds_position`` also
+    covers an exit or stop with no share of ours to reduce in that direction. Every refusal is logged
+    (``paper_reject``); a validated gate token is consumed by any refusal after ``invalid_gate_token``.
     """
 
     client_order_id: str
@@ -109,7 +113,9 @@ class BrokerEvent:
     """Something that happened, also written to the ledger (A8: each kind is explicit, never "error").
 
     ``kind`` is one of ``fill``, ``partial_fill``, ``reject``, ``liquidated``, ``delisted_force_settle``,
-    ``exit_unfilled_alert``. ``reason`` is set for ``reject`` (``no_book``, ``no_depth``, ``delisted``).
+    ``exit_unfilled_alert``. ``reason`` is set for ``reject`` (``no_book``, ``no_depth``, ``delisted``, and at fill time
+    ``exceeds_position`` and ``liquidation_unrepresentable``, the two ways an order accepted earlier can turn out
+    unfillable because the position changed or its liquidation price is off the exchange grid).
     ``fill`` is set for fills, partial fills, liquidations and settlements; ``trade`` when the fill closed a share.
     """
 
