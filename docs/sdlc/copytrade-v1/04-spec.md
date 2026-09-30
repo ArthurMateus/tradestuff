@@ -1,6 +1,19 @@
 # Spec: copytrade-v1 (AI-filtered copy-trading bot, Hyperliquid + Telegram, paper)
 
-Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 7 applied
+Author: pm (SPEC mode) · Date: 2026-09-29 · Status: draft for /tests, Amendments 1 to 8 applied
+
+## Amendment 8 (2026-09-30, CTO defaults from the F11 review round 1; PO to confirm)
+
+Source: reviewer-risk RISK-1..6 (confirmed by scripts against the real broker) and senior-dev round 1.
+- **F11 stale decisions:** the broker never fills at a book earlier than its own time. An OPEN/ADD with `decided_at_ms` before the broker's current time is refused `stale_decision`. An exit (CLOSE/REDUCE/stop) with an old `decided_at_ms` is never refused: its fill time is clamped to at least the broker's current time.
+- **F11 flip semantics:** a flip is CLOSE, then OPEN after the close fills. An OPEN/ADD on the opposite side of an existing position on the coin is refused `opposite_side_entry`; an entry never reduces a position.
+- **F11 exits and stops never depend on meta:** they use the rules stored on the position, so a meta refresh that drops the coin cannot block an exit (F10.AC7, §5).
+- **F11 gate token:** the intent digest is canonicalised under a fixed explicit Decimal context, so a value issued in F10's default context verifies in the broker's context.
+- **F11 funding:** each funding hour settles on its own; a missing hour never blocks later hours (alerted once per stretch, `funding_missing`).
+- **F11 non-money dependencies:** alert-sink and read-only port failures (any `Exception`) are logged and treated as no data or retry; only ledger and state errors latch the broker.
+- **F11 exit retry** is independent of the `advance_to` cadence: only attempts whose book-age window has closed are dropped.
+- **Open, PO decision before run 1 (RISK-9):** Amendment 7's liquidation reading (close at the liquidation price) understates the loss by the maintenance margin (2.5% of notional for SOL, 5% DOGE). Reviewer-risk recommends the conservative reading: the full posted margin is lost (close at the bankruptcy price) plus the fee.
+- **Logged for later features:** RISK-8 (restart state is in memory only: F21 must not wire the broker before F13; pending exits need reconstruction or new IDs), RISK-10 (late funding is not in the trade P&L: F18 must add `paper_funding` by `share_id`, or F11 writes a `trade_funding_adjustment`), RISK-11 (F10 static check covers `.issue(` call sites; consider a verify-only broker interface and a 32-byte minimum key), RISK-12 (oversized CLOSE refused, F12 contract), RISK-13 (retire by share_id and coin), RISK-14 (settlement_px > 0, funding-rate bound, funding-hour mapping pinned by F21), RISK-15 (unguarded `Position.view()`).
 
 ## Amendment 7 (2026-09-30, CTO defaults from the F11 test plan, PO to confirm)
 
