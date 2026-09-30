@@ -37,6 +37,19 @@ KIND_SELECT_CYCLE = "select_cycle"  # payload: t_ms, status, eligible_count, fol
 KIND_FOLLOW_DEFERRED = "follow_deferred"  # payload: wallet, reason, t_ms
 KIND_CYCLE_OVERRUN = "cycle_overrun"  # payload: started_ms, finished_ms
 
+KIND_LEADER_PAUSED = "leader_paused"  # payload: wallet, t_ms (a copy-result trip outside a scoring cycle)
+
+# Why a decision was taken (``Decision.reason``): audit text, never parsed.
+REASON_SAFETY_PAUSED = "copy_pause"
+REASON_SAFETY_BLOWUP = "blowup_flag"
+REASON_SAFETY_DRAWDOWN = "g15"
+REASON_DROP_RANK = "rank_above_drop_rank"
+REASON_DROP_INELIGIBLE = "ineligible"
+REASON_DROP_MISSING = "missing_from_cycle"
+REASON_STATE_UNAVAILABLE = "state_unavailable"  # a join or swap whose ``clearinghouseState`` could not be fetched
+
+GATE_CURRENT_DRAWDOWN = "G15"  # the F5 gate whose failure is a safety trigger (edge-hypothesis 10.6 step 2)
+HOUR_MS = 3_600_000
 MIN_LEADERBOARD_ROWS = 1000  # F6.AC5: fewer rows is an outage
 
 

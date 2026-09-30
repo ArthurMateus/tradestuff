@@ -15,7 +15,7 @@ from typing import Any, NoReturn, TypeVar
 
 from copytrade.core.clock import Clock
 from copytrade.core.events import Alert, AlertSink
-from copytrade.core.money import Notional, Price, Qty
+from copytrade.core.money import Notional, Pnl, Price, Qty
 from copytrade.hl.errors import HlSchemaError
 from copytrade.hl.models import BookLevel, Candle, ClearinghouseState, Fill, L2Book, LeaderPosition, PortfolioWindow
 
@@ -163,10 +163,12 @@ class _Reader:
         raw_path = _key(path, "position")
         raw = self.obj(self.member(wrapper, "position", path), raw_path)
         entry = raw.get("entryPx")
+        pnl = raw.get("unrealizedPnl")
         return LeaderPosition(
             coin=self.text_field(raw, "coin", raw_path),
             szi=self.qty_field(raw, "szi", raw_path),
             entry_px=None if entry is None else self.price(entry, _key(raw_path, "entryPx")),
+            unrealized_pnl=None if pnl is None else self.decimal(pnl, _key(raw_path, "unrealizedPnl"), Pnl),
         )
 
     def clearinghouse_state(self, payload: Any) -> ClearinghouseState:
