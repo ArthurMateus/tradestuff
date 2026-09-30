@@ -18,6 +18,8 @@ UNPARSEABLE = "unparseable"
 FLAG_CLOCK_ANOMALY = "clock_anomaly"
 FLAG_CLOCK_UNSYNCED = "clock_unsynced"
 
+_ENTRY_ACTIONS = frozenset({ActionKind.OPEN, ActionKind.ADD})
+
 KIND_SIGNAL = "signal"
 KIND_FOLLOW_STARTED = "follow_started"
 KIND_FOLLOW_ENDED = "follow_ended"
@@ -69,7 +71,13 @@ class Signal:
     def refusal_reason(self) -> str | None:
         """For OPEN and ADD only: ``"clock_anomaly"`` or ``"clock_unsynced"`` when that flag is set, else ``None``.
         Reduces, closes and signals with an outcome are never refused here."""
-        raise NotImplementedError
+        if self.outcome is not None or self.action not in _ENTRY_ACTIONS:
+            return None
+        if FLAG_CLOCK_ANOMALY in self.flags:
+            return FLAG_CLOCK_ANOMALY
+        if FLAG_CLOCK_UNSYNCED in self.flags:
+            return FLAG_CLOCK_UNSYNCED
+        return None
 
 
 class SignalSink(Protocol):
