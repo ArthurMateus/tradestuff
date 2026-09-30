@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from copytrade.core.money import Notional, Price, Qty
+from copytrade.core.money import Notional, Pnl, Price, Qty
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,7 @@ class LeaderPosition:
     coin: str
     szi: Qty  # signed: long > 0, short < 0
     entry_px: Price | None
+    unrealized_pnl: Pnl | None = None  # as the exchange reports it; None when the payload omits it
 
 
 @dataclass(frozen=True)
