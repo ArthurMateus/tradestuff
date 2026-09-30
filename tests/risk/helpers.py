@@ -256,8 +256,11 @@ def build_risk_env(
     key: bytes = KEY,
     config: Config | None = None,
     returns: dict[str, list[Decimal]] | None = None,
+    marked: bool = False,
     **overrides: Any,
 ) -> RiskEnv:
+    """Build the real gate over the real broker. ``marked=True`` also takes one equity mark at ``T0`` (F10 review B4:
+    an entry needs a fresh mark); the default is unchanged so the round-0 tests are untouched."""
     authority = SpyAuthority(key)
     cfg = config if config is not None else make_config(**overrides)
     # the broker must be built with the SAME authority object the gate holds
@@ -274,6 +277,8 @@ def build_risk_env(
         exchange_time=xtime, calendar=calendar, ledger=paper.ledger, alerts=paper.alerts, authority=authority,
         state_dir=state_dir,
     )
+    if marked:
+        gate.mark_equity(T0)
     return RiskEnv(paper, gate, account, shares, rets, xtime, calendar, authority, state_dir, cfg)
 
 
