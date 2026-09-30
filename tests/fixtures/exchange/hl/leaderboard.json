@@ -1,0 +1,204 @@
+{
+ "leaderboardRows": [
+  {
+   "ethAddress": "0x1111111111111111111111111111111111111111",
+   "accountValue": "1000.25",
+   "windowPerformances": [
+    [
+     "day",
+     {
+      "pnl": "12.5",
+      "roi": "0.0125",
+      "vlm": "1000.0"
+     }
+    ],
+    [
+     "week",
+     {
+      "pnl": "-3.5",
+      "roi": "-0.0035",
+      "vlm": "9000.0"
+     }
+    ],
+    [
+     "month",
+     {
+      "pnl": "100.0",
+      "roi": "0.1",
+      "vlm": "40000.0"
+     }
+    ],
+    [
+     "allTime",
+     {
+      "pnl": "500.0",
+      "roi": "0.5",
+      "vlm": "90000.0"
+     }
+    ]
+   ],
+   "prize": 0,
+   "displayName": "trader0"
+  },
+  {
+   "ethAddress": "0x2222222222222222222222222222222222222222",
+   "accountValue": "1001.25",
+   "windowPerformances": [
+    [
+     "day",
+     {
+      "pnl": "12.5",
+      "roi": "0.0125",
+      "vlm": "1000.0"
+     }
+    ],
+    [
+     "week",
+     {
+      "pnl": "-3.5",
+      "roi": "-0.0035",
+      "vlm": "9000.0"
+     }
+    ],
+    [
+     "month",
+     {
+      "pnl": "100.0",
+      "roi": "0.1",
+      "vlm": "40000.0"
+     }
+    ],
+    [
+     "allTime",
+     {
+      "pnl": "500.0",
+      "roi": "0.5",
+      "vlm": "90000.0"
+     }
+    ]
+   ],
+   "prize": 0,
+   "displayName": null
+  },
+  {
+   "ethAddress": "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01",
+   "accountValue": "1002.25",
+   "windowPerformances": [
+    [
+     "day",
+     {
+      "pnl": "12.5",
+      "roi": "0.0125",
+      "vlm": "1000.0"
+     }
+    ],
+    [
+     "week",
+     {
+      "pnl": "-3.5",
+      "roi": "-0.0035",
+      "vlm": "9000.0"
+     }
+    ],
+    [
+     "month",
+     {
+      "pnl": "100.0",
+      "roi": "0.1",
+      "vlm": "40000.0"
+     }
+    ],
+    [
+     "allTime",
+     {
+      "pnl": "500.0",
+      "roi": "0.5",
+      "vlm": "90000.0"
+     }
+    ]
+   ],
+   "prize": 0,
+   "displayName": "trader2"
+  },
+  {
+   "ethAddress": "0x3333333333333333333333333333333333333333",
+   "accountValue": "1003.25",
+   "windowPerformances": [
+    [
+     "day",
+     {
+      "pnl": "12.5",
+      "roi": "0.0125",
+      "vlm": "1000.0"
+     }
+    ],
+    [
+     "week",
+     {
+      "pnl": "-3.5",
+      "roi": "-0.0035",
+      "vlm": "9000.0"
+     }
+    ],
+    [
+     "month",
+     {
+      "pnl": "100.0",
+      "roi": "0.1",
+      "vlm": "40000.0"
+     }
+    ],
+    [
+     "allTime",
+     {
+      "pnl": "500.0",
+      "roi": "0.5",
+      "vlm": "90000.0"
+     }
+    ]
+   ],
+   "prize": 0,
+   "displayName": null
+  },
+  {
+   "ethAddress": "0x4444444444444444444444444444444444444444",
+   "accountValue": "1004.25",
+   "windowPerformances": [
+    [
+     "day",
+     {
+      "pnl": "12.5",
+      "roi": "0.0125",
+      "vlm": "1000.0"
+     }
+    ],
+    [
+     "week",
+     {
+      "pnl": "-3.5",
+      "roi": "-0.0035",
+      "vlm": "9000.0"
+     }
+    ],
+    [
+     "month",
+     {
+      "pnl": "100.0",
+      "roi": "0.1",
+      "vlm": "40000.0"
+     }
+    ],
+    [
+     "allTime",
+     {
+      "pnl": "500.0",
+      "roi": "0.5",
+      "vlm": "90000.0"
+     }
+    ]
+   ],
+   "prize": 0,
+   "displayName": "trader4"
+  }
+ ]
+}
