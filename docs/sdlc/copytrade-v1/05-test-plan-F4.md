@@ -261,3 +261,27 @@ Invariants: A2 (disk floor fails closed for opens), A6 (no floats: `Record` refu
 ## Shared files
 
 None touched. `pyproject.toml`, `tests/conftest.py`, `tests/harness.py`, `tests/hl/**` and `tests/core/**` are untouched (`tests/recorder` imports `tests.hl.support` and `tests.core.helpers`). A new CLI module `cli/recorder.py` is discovered by the F1 registry without editing `cli/main.py`. Open item for the CTO: S1 (dependency).
+
+## Round 2 (senior-dev review, integrity core)
+
+New file only: `tests/recorder/test_r2_integrity_core.py` (10 test cases, 3 fail on purpose). No implementation touched. Not covered (logged follow-ups): recovery-not-bricking, tick blocking, reader cost, chain verifier, alert suppression.
+
+| Review item | Tests | Status on current code |
+|---|---|---|
+| 1 [BLOCKING] seal crash: fsynced block with no ledger segment record | `test_F4_R2_seal_crash_extra_unledgered_block_is_truncated_and_the_closed_record_covers_only_ledgered_blocks` (2 cases: extra valid xz block, extra garbage) | pass |
+| 2 [BLOCKING] reader race: ledger closed, only `.part` on disk | `..._only_exists_as_part_is_read_and_verified_by_a_cross_process_reader`, `..._read_by_a_reader_built_with_the_ledger_records`, `test_F4_R2_files_lists_a_closed_file_whose_final_name_does_not_exist_yet_and_it_reads_through_the_part_name` | **FAIL on purpose until `_verified_closed_bytes` falls back to `<name>.part`** |
+| 2 (guards) | `test_F4_R2_the_part_fallback_still_checks_both_hashes`, `..._a_truncated_part_of_a_closed_file_is_refused`, `..._extra_trailing_bytes_is_refused`, `..._missing_under_both_names_is_listed_but_reading_it_is_an_integrity_error` | pass (they guard the fix: hashes stay checked on the fallback; both names missing stays an error) |
+| 3 [ADVISORY] block fsync before ledger segment record | `test_F4_R2_the_block_is_fsynced_before_the_ledger_segment_record_is_appended` (spy on `os.fsync`, identifies part vs ledger file by inode, checks block fully written and no segment record yet) | pass |
+
+Expected behaviour defined for the race: `files()` still lists the closed file (the ledger is the truth); reading it works through the `.part` name with the same transport and stream hash checks; missing under both names is listed but raises `RecordingIntegrityError`.
+
+Mutants (scratch copy of src outside the repo, `-o pythonpath=<copy>`):
+
+| Mutant | Killed by |
+|---|---|
+| `sealed_end = part.stat().st_size` (no truncation) | both seal-crash cases |
+| remove the block `os.fsync` before the ledger segment record | the fsync-order test |
+| reader fallback to `.part` that skips the transport hash / byte count check (a candidate wrong fix) | `..._extra_trailing_bytes_is_refused` |
+| correct fallback (hash-checked) | all 10 pass |
+
+Full suite: 2944 tests, 2941 pass, 3 fail (the three reader-race tests above, on purpose). ruff and mypy clean.
