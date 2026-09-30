@@ -6,6 +6,7 @@ Spec: 04-spec.md F4.AC3, invariant D1 (no lookahead). Real ledger and store; has
 
 from __future__ import annotations
 
+import dataclasses
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -82,7 +83,7 @@ def test_F4_AC3_scan_is_half_open_from_inclusive_to_exclusive(tmp_path: Path) ->
 
 def test_F4_AC3_records_keep_the_exchange_timestamp_and_the_receive_timestamp_apart(tmp_path: Path) -> None:
     rig = make_store(tmp_path)
-    rig.put([l2_record("BTC", DAY0 + 1000, exchange_ms=DAY0 + 940), l2_record("BTC", DAY0 + 2000, exchange_ms=None)])
+    rig.put([l2_record("BTC", DAY0 + 1000, exchange_ms=DAY0 + 940), dataclasses.replace(l2_record("BTC", DAY0 + 2000), exchange_ts_ms=None)])
     rig.store.close_all("shutdown")
     a, b = rig.store.scan(STREAM_L2, "BTC", DAY0, DAY0 + DAY)
     assert (a.exchange_ts_ms, a.receive_ts_ms) == (DAY0 + 940, DAY0 + 1000)

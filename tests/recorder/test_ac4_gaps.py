@@ -103,7 +103,7 @@ def test_F4_AC4_a_mid_gap_is_covered_by_the_marks_of_the_same_coin_and_the_other
         sorted(
             [l2_record("BTC", DAY0 + t * SECOND) for t in range(0, 601, 2)]
             + [mids_record(t * SECOND) for t in (0, 30, 60, 90)]  # mids stop after 90 s
-            + ctx_records("BTC", range(0, 601, 60)),  # marks continue every 60 s
+            + ctx_records("BTC", (t * SECOND for t in range(0, 601, 60))),  # marks continue every 60 s
             key=lambda r: r.receive_ts_ms,
         )
     )
