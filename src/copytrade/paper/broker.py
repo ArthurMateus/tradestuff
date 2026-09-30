@@ -106,11 +106,14 @@ class _Probe:
 class PaperBroker:
     """Simulated account (``paper.wallet_usd``), isolated margin, one merged position per coin, shares tracked by ID.
 
-    Time is explicit: ``submit`` and ``place_stop`` answer at once; everything that needs a book, a mark or the
-    clock happens in ``advance_to``, ``on_mark`` and ``on_delist``, each returning the events it caused (also
-    appended to the ledger). ``on_mark`` and ``on_delist`` first bring the broker up to their own time, so the
-    events of anything that fell due on the way are part of what they return. Ledger append errors propagate to
-    the caller (F2.AC6) and the broker then refuses every further state-changing call.
+    Time is explicit and is always exchange milliseconds. ``submit`` and ``place_stop`` answer at once; everything
+    that needs a book or the clock happens in ``advance_to``, which is the ONLY source of broker time
+    (``_now_ms = max(_now_ms, t)``). ``on_mark`` and ``on_delist`` never move it and never run the event loop: a mark
+    or a delisting is always processed at broker time, and a timestamp ahead of it is clamped to it, never ignored
+    (Amendment 11). F21 contract: the supervisor calls ``advance_to`` with the exchange-time clock on every loop, and
+    F10 stamps ``decided_at_ms`` in the same time base (an entry more than ``filter.max_signal_age_ms`` ahead is
+    refused ``bad_decision_time``). Ledger append errors propagate to the caller (F2.AC6) and the broker then
+    refuses every further state-changing call.
 
     Raises ``ConfigError`` at construction for a missing or out-of-range key, ``mode`` other than ``paper``.
     """
@@ -192,8 +195,8 @@ class PaperBroker:
             client_order_id=cid,
         )
         decided_at_ms = intent.decided_at_ms
-        if intent.action not in ENTRY_ACTIONS and not self._time_is_plausible("exit", intent.coin, decided_at_ms):
-            decided_at_ms = self._now_ms  # a far-future decision is not waited for: the exit runs at the normal time
+        if intent.action not in ENTRY_ACTIONS:
+            decided_at_ms = self._bounded_time("exit", intent.coin, decided_at_ms)
         fill_at_ms = (decided_at_ms if intent.action in ENTRY_ACTIONS else max(decided_at_ms, self._now_ms)) + (
             self._settings.ack_delay_ms
         )
@@ -268,19 +271,19 @@ class PaperBroker:
 
     @_fail_closed
     def advance_to(self, now_ms: int) -> Sequence[BrokerEvent]:
-        """Resolve pending orders whose fill time has come, and accrue funding for every UTC hour boundary passed."""
+        """Resolve pending orders whose fill time has come, and accrue funding for every UTC hour boundary passed.
+        This is the only call that moves broker time (``max`` of the old time and ``now_ms``)."""
         events: list[BrokerEvent] = []
         self._run_until(now_ms, events)
         return tuple(events)
 
     @_fail_closed
     def on_mark(self, update: MarkUpdate) -> Sequence[BrokerEvent]:
-        """Trigger stops and liquidate positions whose liquidation price the mark reached."""
+        """Trigger stops and liquidate positions whose liquidation price the mark reached. The mark is processed at
+        broker time: a liquidation is stamped with it, a triggered stop is decided at the mark's time clamped to it
+        and fills ``paper.ack_delay_ms`` after it. Broker time does not move."""
         events: list[BrokerEvent] = []
-        if not self._time_is_plausible("mark", update.coin, update.time_ms):
-            return ()
-        time_ms = max(update.time_ms, self._now_ms)
-        self._run_until(time_ms, events)
+        decided = self._bounded_time("mark", update.coin, update.time_ms)
         position = self._positions.get(update.coin)
         if position is None:
             return tuple(events)
@@ -295,41 +298,36 @@ class PaperBroker:
                 avg_entry_px=view.avg_entry_px,
                 leverage=position.leverage,
             )
-            self._force_close(position, price, time_ms, "liquidated", events)
+            self._force_close(position, price, self._now_ms, "liquidated", events)
             self._send_alert(
                 "liquidated",
                 f"{update.coin} position liquidated at {price} (mark {update.mark}, trigger {view.liquidation_px})",
             )
         else:
-            self._trigger_stops(update.coin, update.mark, update.time_ms, time_ms)
+            self._trigger_stops(update.coin, update, decided=decided, time_ms=self._now_ms)
         return tuple(events)
 
-    def _time_is_plausible(self, source: str, coin: str, time_ms: int) -> bool:
-        """Whether an external timestamp (a mark, a delisting or an exit decision) can be believed: it is at most
-        ``filter.max_signal_age_ms`` ahead of the broker's trusted time (the time last given to ``advance_to``, which
-        a plausible mark or delisting may move forward). One that is further ahead is bad data (Amendment 10): it is
-        logged as an error and alerted (once per source and coin until a plausible one arrives), and the caller
-        ignores it, so it can never move the broker's time, delay an exit or stamp a fill. Late is always plausible."""
+    def _bounded_time(self, source: str, coin: str, time_ms: int) -> int:
+        """An external timestamp (a mark, a delisting or an exit decision) bounded by broker time: ``min(time_ms,
+        now)``. Nothing is ever ignored because of its time (Amendment 11). One more than ``filter.max_signal_age_ms``
+        ahead of broker time (while that is above 0) is bad data: it is logged as an error and alerted once per
+        source and coin ("clamped", ``bad_timestamp``) until a non-ahead timestamp arrives."""
         key = (source, coin)
-        if time_ms <= self._now_ms + self._settings.max_time_skew_ms:
-            self._bad_time_alerted.discard(key)
-            return True
-        _log.error(
-            "paper broker ignored a timestamp too far ahead of its time",
-            extra={
-                "event": "paper_bad_timestamp",
-                "source": source,
-                "coin": coin,
-                "ahead_ms": time_ms - self._now_ms,
-            },
-        )
-        if key not in self._bad_time_alerted:
-            self._bad_time_alerted.add(key)
-            self._send_alert(
-                "bad_timestamp",
-                f"{source} timestamp for {coin} is {time_ms - self._now_ms} ms ahead of the broker's time: ignored",
+        ahead_ms = time_ms - self._now_ms
+        if self._now_ms > 0 and ahead_ms > self._settings.max_time_skew_ms:
+            _log.error(
+                "paper broker clamped a timestamp too far ahead of its time",
+                extra={"event": "paper_bad_timestamp", "source": source, "coin": coin, "ahead_ms": ahead_ms},
             )
-        return False
+            if key not in self._bad_time_alerted:
+                self._bad_time_alerted.add(key)
+                self._send_alert(
+                    "bad_timestamp",
+                    f"{source} timestamp for {coin} is {ahead_ms} ms ahead of the broker's time: clamped",
+                )
+        else:
+            self._bad_time_alerted.discard(key)
+        return min(time_ms, self._now_ms)
 
     def on_delist(self, coin: str, settlement_px: Price, time_ms: int) -> Sequence[BrokerEvent]:
         """Force-settle every share on ``coin`` at ``settlement_px``.
@@ -338,8 +336,8 @@ class PaperBroker:
             ValueError: ``settlement_px`` is not a positive finite price. Nothing changes and the broker is not
                 latched: the caller passed bad data, and a delisting settled at nothing would be a made-up loss.
 
-        A ``time_ms`` more than ``filter.max_signal_age_ms`` ahead of the broker's time is bad data too: the
-        delisting is ignored (error log, alert, no events, no state change).
+        The delisting is always settled at broker time; a ``time_ms`` more than ``filter.max_signal_age_ms`` ahead of
+        it only raises the clamped-timestamp alert. Broker time does not move.
         """
         if not settlement_px.is_finite() or settlement_px <= 0:
             raise ValueError("settlement_px must be a positive finite price")
@@ -347,11 +345,9 @@ class PaperBroker:
 
     @_fail_closed
     def _settle_delisting(self, coin: str, settlement_px: Price, time_ms: int) -> Sequence[BrokerEvent]:
-        if not self._time_is_plausible("delist", coin, time_ms):
-            return ()
         events: list[BrokerEvent] = []
-        time_ms = max(time_ms, self._now_ms)
-        self._run_until(time_ms, events)
+        self._bounded_time("delist", coin, time_ms)
+        time_ms = self._now_ms
         self._delisted.add(coin)
         for order in [o for o in self._pending.values() if o.coin == coin]:
             self._reject_order(order, "delisted", time_ms, events)
@@ -387,6 +383,8 @@ class PaperBroker:
             return coin_meta
         if is_entry and intent.decided_at_ms < self._now_ms:
             return "stale_decision"
+        if is_entry and self._now_ms > 0 and intent.decided_at_ms > self._now_ms + self._settings.max_time_skew_ms:
+            return "bad_decision_time"
         qty = self._lot_size(intent.qty, coin_meta)
         if isinstance(qty, str):
             return qty
@@ -784,12 +782,12 @@ class PaperBroker:
 
     # ------------------------------------------------------------------------------- stops, cancels
 
-    def _trigger_stops(self, coin: str, mark: Price, mark_time_ms: int, time_ms: int) -> None:
-        """Turn every stop the mark has reached into an exit order decided now, to fill at the book
-        ``paper.ack_delay_ms`` later (``time_ms``: the mark's time, never earlier than the broker's). The stop is spent:
-        it cannot fire twice. The exit's alert is timed from the mark's own time ``mark_time_ms``."""
+    def _trigger_stops(self, coin: str, mark: MarkUpdate, *, decided: int, time_ms: int) -> None:
+        """Turn every stop the mark has reached into an exit order decided at ``decided`` (the mark's time bounded by
+        broker time), to fill at the book ``paper.ack_delay_ms`` after ``time_ms`` (broker time). The stop is spent:
+        it cannot fire twice. The exit's alert is timed from ``decided``; the ledger keeps the raw mark time."""
         position = self._positions.get(coin)
-        for stop in [s for s in self._stops.values() if s.coin == coin and s.triggered_by(mark)]:
+        for stop in [s for s in self._stops.values() if s.coin == coin and s.triggered_by(mark.mark)]:
             share = None if position is None else position.shares.get(stop.share_id)
             if share is None:
                 self._drop_stop(stop, "share_closed")
@@ -799,7 +797,7 @@ class PaperBroker:
                 continue
             self._ledger.append(
                 "paper_stop_trigger",
-                {"client_order_id": stop.client_order_id, "coin": coin, "mark": mark, "time_ms": mark_time_ms},
+                {"client_order_id": stop.client_order_id, "coin": coin, "mark": mark.mark, "time_ms": mark.time_ms},
             )
             del self._stops[stop.client_order_id]
             fill_at_ms = time_ms + self._settings.ack_delay_ms
@@ -810,7 +808,7 @@ class PaperBroker:
                 requested_qty=qty,
                 remaining=qty,
                 action=ActionKind.CLOSE if qty == abs(share.qty) else ActionKind.REDUCE,
-                decided_at_ms=mark_time_ms,
+                decided_at_ms=decided,
                 fill_at_ms=fill_at_ms,
                 share_id=stop.share_id,
                 trade_id=stop.trade_id,
@@ -819,7 +817,7 @@ class PaperBroker:
                 sz_decimals=stop.sz_decimals,
                 max_leverage=stop.max_leverage,
                 next_attempt_ms=fill_at_ms,
-                alert_due_ms=mark_time_ms + self._settings.alert_after_ms,
+                alert_due_ms=decided + self._settings.alert_after_ms,
             )
 
     def _drop_stop(self, stop: RegisteredStop, reason: str) -> None:
