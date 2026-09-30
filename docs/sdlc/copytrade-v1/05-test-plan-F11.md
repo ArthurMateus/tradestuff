@@ -203,3 +203,132 @@ Equivalent mutants (survived, and cannot be killed by any test):
 - Restart state (RISK-8, F13), late funding into a trade's P&L (RISK-10, F18/F11 later), margin checks, RISK-11..15, tick performance: not tested, per the brief.
 - Whether the bankruptcy price is snapped to the price grid (reading 6): unpinned by design.
 - The 104 hand mutants of senior-dev round 1 were not handed to me as a list; the table above is my own set (88 mutants covering their categories a-e and every reviewer-risk item). If the developer or senior-dev reruns theirs, any survivor is a gap to report back.
+
+
+---
+
+## Round 3 (final fix round): Amendment 10, RISK-13, RISK-15 and the round-2 mutation holes
+
+New files only (no existing test was edited): `tests/paper/test_r3_bad_timestamps.py` (42), `test_r3_share_ids_and_views.py` (14), `test_r3_mutation_holes.py` (26), `test_r3_gate_digits_and_cadence.py` (61). **143 new tests: 44 fail on the current code (d0c7d2e, intentionally), 99 pass** (pins of behaviour that already holds, boundary controls, and the mutation holes). The full suite is 3,743 tests: 3,699 pass and the 44 fail-until-fixed tests fail with assertion errors or an unpacked empty event list (never an import or collection error). ruff, ruff format and mypy are clean.
+
+### Pinned readings (round 3)
+
+1. **The broker's trusted time is the time given to `advance_to`** (Amendment 10). A mark, a delisting or an exit stamped more than `filter.max_signal_age_ms` after it is bad data. The new tests never use `Env.mark` for a bogus mark (it also moves the fake local clock); they call `broker.on_mark` directly. The behaviour before the very first `advance_to` call is not tested (every test advances first).
+2. **A bad mark or delisting is ignored**: no events, no state change, no time change, no funding accrual, the broker is not latched, at least one error-level log record and at least one alert (the alert kind is left free, but it is not `exit_unfilled`). A delisting stamped too far ahead is not settled at the trusted time.
+3. **A far-future exit `decided_at_ms`** (RISK-19): the test accepts any of (a) the order is refused at once (with a reason), (b) it is accepted and fills at the normal time, (c) it is accepted, waits, and an `exit_unfilled` alert is sent within 20 s. Silent waiting until the stamped time fails. The `tolerance + 1` case passes today by accident (the book-age window is wide enough) and is a control.
+4. **The `exit_unfilled_alert` event time** is the exit's own decision time + `exits.alert_after_s`, also when that time is before the broker's time (the alert then comes out on the next call, with the past time), and for a stop trigger the mark's own time (also a late one). Consequence: an exit decided or triggered long ago now also emits the alert event alongside its fill; the tests that check a fill filter on `kind == "fill"`.
+5. **RISK-15 (defined here): `position()` returns a view** when the liquidation price is off the grid: qty, average entry, leverage (the position's, not 1), margin and share ids are exact; `liquidation_px` is a fallback that is finite, > 0 and on the loss side of the average entry (the tests do not pin whether it is rounded). `on_mark` never raises, and a mark at or below that trigger (0.0769 for the 2x case, 0.0875 for the 1x case; the tests use marks far on either side) liquidates at the bankruptcy price; stops and closes keep working. A named error instead of a view would fail these tests: if the developer prefers that, the CTO must say so and the test is changed.
+6. **RISK-13**: a share is `(share_id, coin)`; closing SOL `S1` by a fill, a liquidation or a delisting leaves ETH `S1`'s stop and its pending exit alone (control: SOL's own stop is still retired).
+
+### Coverage matrix (round 3)
+
+| Requirement | Tests |
+|---|---|
+| RISK-17 stop is not delayed by a bogus mark | `test_R3_RISK17_a_bogus_future_mark_on_another_coin_does_not_delay_the_stop_loss` (BTC, ETH not held x +5001 ms, +1 h, +30 days): the reviewer's repro, stop fills at the normal time, price, reason, cash |
+| RISK-17 liquidation not stamped bogus | `..._the_liquidation_is_not_stamped_with_a_bogus_future_time` (x3 offsets); `..._a_close_decided_at_the_normal_time_still_fills_after_a_bogus_mark` (x3) |
+| RISK-17 held coin | `..._a_bogus_mark_on_the_held_coin_is_ignored_even_at_a_liquidating_price` (x3): no liquidation, stop still registered, a normal mark then works |
+| RISK-17 time is not advanced | `..._a_bogus_mark_does_not_advance_the_broker_time` (BTC, SOL x3: an entry decided at the trusted time is not stale); `..._does_not_crawl_the_funding_clock_over_an_hour_boundary` |
+| RISK-17 tolerance is the config key | `..._the_tolerance_is_filter_max_signal_age_ms_exactly` (500, 2000, 5000: exactly at it advances time, one ms more is ignored); `..._a_mark_within_the_tolerance_still_triggers_the_stop_at_its_own_time` |
+| RISK-17 late marks never block | `..._a_mark_that_is_merely_late_never_blocks_an_exit` (an hour old), `..._an_exit_with_a_very_old_decision_time_fills_at_the_broker_time` |
+| RISK-17 delisting | `..._a_bogus_future_delisting_is_ignored_and_does_not_move_time` (x3), `..._a_delisting_within_the_tolerance_settles_at_its_own_time` |
+| RISK-17 log and alert | `..._a_bogus_mark_is_logged_as_an_error_and_alerted`, `..._a_bogus_delisting_is_logged_as_an_error_and_alerted` |
+| RISK-17 alert timing | `..._the_alert_is_timed_from_the_exits_own_decision_time_not_from_the_broker_time`, `..._of_an_exit_decided_in_the_future_within_tolerance_is_not_early_or_late`, `..._of_a_stop_trigger_is_timed_from_the_marks_own_time` (late mark), `..._within_the_tolerance_is_timed_from_the_mark`, `..._a_bogus_mark_never_makes_the_alert_of_a_stop_exit_late` |
+| RISK-19 | `test_R3_RISK19_a_far_future_exit_decision_does_not_wait_silently` (+5001 ms, +1 h, +30 days) |
+| RISK-13 | `test_R3_RISK13_closing_sol_s1_does_not_drop_the_stop_of_eth_s1`, `..._does_not_cancel_the_pending_exit_of_eth_s1` (each x close fill, liquidation, delisting), `..._closing_a_share_still_retires_its_own_stops_and_exits` (control) |
+| RISK-15 | `test_R3_RISK15_position_stays_queryable_when_the_liquidation_price_is_off_the_grid`, `..._the_liquidation_trigger_still_fires_...`, `..._a_stop_still_triggers_and_a_close_still_fills_...`, `..._a_close_still_fills_...`, `..._the_fallback_view_keeps_the_positions_leverage_and_it_still_liquidates_at_its_bankruptcy_price` (2x, 0.075) |
+| (f) bankruptcy price 0 | `test_R3_pin_a_1x_long_liquidates_at_the_bankruptcy_price_zero_...` (fill at 0, P&L -100.045, cash 199.955) |
+| (a) `on_delist` price | `test_R3_hole_a_on_delist_refuses_a_settlement_price_...` (0, NaN, Inf, -Inf, -1, sNaN: `ValueError`, no state change, not latched, a following submit and a valid delisting work), `..._the_smallest_positive_settlement_price_is_accepted` |
+| (b) funding cap | `test_R3_hole_b_a_funding_rate_up_to_the_cap_is_accepted` (0.04, -0.04, 0.03, 0.0299, -0.0299, 0), `..._beyond_the_cap_is_not_a_rate_alerted_and_retried` (0.0401, -0.0401, 0.05, -0.05, 1: no funding, one alert, settles when a real rate arrives) |
+| (c) `liquidation_unrepresentable` | `test_R3_hole_c_an_add_is_rejected_when_a_meta_refresh_lowers_max_leverage_below_the_positions_leverage` (order leverage 1, 2, 3 against a position at 5x), `..._an_add_that_pulls_the_average_entry_off_the_grid_...`, control `..._the_same_add_fills_...` |
+| (d) stored rules | `test_R3_hole_d_an_add_refreshes_the_positions_max_leverage_and_sz_decimals_and_a_later_exit_uses_them` (liquidation price 85 not 82.5; a 0.55 reduce fills 0.5 after the coin was dropped from meta) |
+| (e) duplicate stop id | `test_R3_hole_e_a_stop_with_a_used_client_order_id_is_refused_...`, `..._reusing_an_order_client_order_id_is_refused` |
+| (g) gate digits | `test_R3_hole_g_equal_values_with_different_trailing_zeros_share_one_digest` (5 pairs x order qty/price, stop qty/trigger), `..._a_token_for_1_0_verifies_for_1_00_...`, `..._120_significant_digits_can_be_digested_and_verified`, `..._more_than_120_significant_digits_cannot_be_approved_and_verify_is_false` (4 fields), `..._differ_only_at_the_120th_digit_...` |
+| (h) exit cadence | `test_R3_hole_h_a_retry_interval_longer_than_the_book_age_window_single_call` (7 cases), `..._the_result_does_not_depend_on_the_advance_cadence` (7 cases x second / odd 777 ms / every ms x replay and live port). Config `exits.retry_interval_s = 5` with `paper.max_book_age_ms = 1000`, inside the F1 bounds (5 s is the ceiling and 1000 ms the floor), so it was testable |
+
+### Intentional failures (44, until the developer fixes the code)
+
+| Group | Count | Tests |
+|---|---|---|
+| RISK-17 stop, liquidation, close, held coin, time, funding, tolerance, delisting (bogus timestamps) | 28 | the `_bogus_...`, `_tolerance_is_..._exactly`, `..._delisting_is_ignored...` tests above |
+| RISK-17 log and alert | 2 | `..._logged_as_an_error_and_alerted` (mark, delisting) |
+| RISK-17 alert timing | 3 | own decision time, stop trigger from a late mark, a bogus mark never makes the stop alert late |
+| RISK-19 | 2 | +1 h and +30 days (the +5001 ms case passes today) |
+| RISK-13 | 6 | stop and pending exit x 3 ways of closing SOL S1 |
+| RISK-15 | 3 | `position()`, the liquidation trigger, the 2x fallback view |
+
+Per file: 35 in `test_r3_bad_timestamps.py` (28 + 2 + 3 + 2) and 9 in `test_r3_share_ids_and_views.py` (6 + 3). All other new tests pass on the current code.
+
+### Mutant to killing test (scratch mutants of a reference fix; each run against the four new files only)
+
+The reference fix (in a scratch copy of `src` outside the repo, `-o pythonpath=<copy>`) makes all 143 tests pass. It does: `PaperSettings.max_signal_age_ms`, a `_trusted_ms` set by `advance_to`, `_too_far_ahead` (error log, alert, ignore) in `on_mark`, `on_delist`, and exit `submit` (clamped to the broker time), the alert due time from the own decision or mark time, `_retire_share` by `(share_id, coin)`, and a fallback `Position.view()`. 54 mutants of it: **54 killed, 0 survived.** (First pass: two survived, R15-4 and a5, both because of my own weak tests or a wrong mutant. I added the 2x fallback test and fixed the mutant; both are now killed.)
+
+| Mutant | Result | Killed by |
+|---|---|---|
+| R17-1 tolerance hard-coded 5000 | killed | `RISK17_the_tolerance_is_filter_max_signal_age_ms_exactly[500]` |
+| R17-2 tolerance boundary exclusive (a mark exactly at it is ignored) | killed | `RISK17_the_tolerance_is_filter_max_signal_age_ms_exactly[500]` |
+| R17-3 tolerance one ms too wide | killed | `RISK17_a_bogus_future_mark_on_another_coin_does_not_delay_the_stop_loss[btc_not_he` |
+| R17-3b tolerance doubled | killed | `RISK17_a_bogus_future_mark_on_another_coin_does_not_delay_the_stop_loss[btc_not_he` |
+| R17-4 a bogus mark is ignored only on a coin we do not hold | killed | `RISK17_a_bogus_mark_on_the_held_coin_is_ignored_even_at_a_liquidating_price[one_ms` |
+| R17-4b a bogus mark is ignored only on a coin we hold | killed | `RISK17_a_bogus_future_mark_on_another_coin_does_not_delay_the_stop_loss[btc_not_he` |
+| R17-5 a bogus mark is clamped to the trusted time and applied instead of ignored | killed | `RISK17_a_bogus_mark_on_the_held_coin_is_ignored_even_at_a_liquidating_price[one_ms` |
+| R17-6 a bogus delisting is not checked | killed | `RISK17_a_bogus_future_delisting_is_ignored_and_does_not_move_time[one_ms_beyond_to` |
+| R17-6b a bogus delisting is settled at the broker time instead of ignored | killed | `RISK17_a_bogus_future_delisting_is_ignored_and_does_not_move_time[one_ms_beyond_to` |
+| R17-7 a far-future exit decision is not checked | killed | `RISK19_a_far_future_exit_decision_does_not_wait_silently[one_hour]` |
+| R17-8 exit alert timed from the clamped decision time | killed | `RISK17_the_alert_is_timed_from_the_exits_own_decision_time_not_from_the_broker_tim` |
+| R17-9 stop alert timed from the clamped mark time | killed | `RISK17_the_alert_of_a_stop_trigger_is_timed_from_the_marks_own_time` |
+| R17-10 not logged at error level | killed | `RISK17_a_bogus_mark_is_logged_as_an_error_and_alerted` |
+| R17-11 no alert for bad data | killed | `RISK17_a_bogus_mark_is_logged_as_an_error_and_alerted` |
+| R17-13 a mark within tolerance does not advance the broker time | killed | `RISK17_the_liquidation_is_not_stamped_with_a_bogus_future_time[one_ms_beyond_toler` |
+| R13-1 pending exits retired by share id only | killed | `RISK13_closing_sol_s1_does_not_cancel_the_pending_exit_of_eth_s1[close_fill]` |
+| R13-2 stops retired by share id only | killed | `RISK13_closing_sol_s1_does_not_drop_the_stop_of_eth_s1[close_fill]` |
+| R15-1 view() raises on an unrepresentable price (reverts the fix) | killed | `RISK15_position_stays_queryable_when_the_liquidation_price_is_off_the_grid` |
+| R15-2 fallback liquidation price 0: the trigger can never fire | killed | `RISK15_position_stays_queryable_when_the_liquidation_price_is_off_the_grid` |
+| R15-3 fallback on the wrong side | killed | `RISK15_position_stays_queryable_when_the_liquidation_price_is_off_the_grid` |
+| R15-4 fallback leverage wrong | killed | `RISK15_the_fallback_view_keeps_the_positions_leverage_and_it_still_liquidates_at_its_bankruptcy` |
+| a1 settlement price 0 accepted | killed | `hole_a_on_delist_refuses_a_settlement_price_that_is_not_a_positive_finite_price[ze` |
+| a2 NaN / Inf accepted (is_finite dropped) | killed | `hole_a_on_delist_refuses_a_settlement_price_that_is_not_a_positive_finite_price[na` |
+| a3 negative and zero accepted | killed | `hole_a_on_delist_refuses_a_settlement_price_that_is_not_a_positive_finite_price[ze` |
+| a4 no validation at all | killed | `hole_a_on_delist_refuses_a_settlement_price_that_is_not_a_positive_finite_price[ze` |
+| a5 validation inside the fail-closed method (latches the broker) | killed | `hole_a_on_delist_refuses_a_settlement_price_that_is_not_a_positive_finite_price` |
+| b1 cap 0.03 | killed | `hole_b_a_funding_rate_up_to_the_cap_is_accepted[0.04-291.91]` |
+| b2 cap 0.05 | killed | `hole_b_a_funding_rate_beyond_the_cap_is_not_a_rate_alerted_and_retried[0.0401]` |
+| b3 cap exclusive | killed | `hole_b_a_funding_rate_up_to_the_cap_is_accepted[0.04-291.91]` |
+| b4 negative rates unbounded | killed | `hole_b_a_funding_rate_beyond_the_cap_is_not_a_rate_alerted_and_retried[-0.0401]` |
+| b5 positive rates unbounded | killed | `hole_b_a_funding_rate_beyond_the_cap_is_not_a_rate_alerted_and_retried[0.0401]` |
+| b6 cap doubled | killed | `hole_b_a_funding_rate_beyond_the_cap_is_not_a_rate_alerted_and_retried[0.0401]` |
+| b7 cap removed | killed | `hole_b_a_funding_rate_beyond_the_cap_is_not_a_rate_alerted_and_retried[0.0401]` |
+| c1 an unrepresentable entry is accepted | killed | `hole_c_an_add_is_rejected_when_a_meta_refresh_lowers_max_leverage_below_the_positi` |
+| c2 the check uses the order's leverage | killed | `hole_c_an_add_is_rejected_when_a_meta_refresh_lowers_max_leverage_below_the_positi` |
+| c3 wrong reject reason | killed | `hole_c_an_add_is_rejected_when_a_meta_refresh_lowers_max_leverage_below_the_positi` |
+| c4 rejected as a cancel: no reject event | killed | `hole_c_an_add_is_rejected_when_a_meta_refresh_lowers_max_leverage_below_the_positi` |
+| d1 an ADD does not refresh max_leverage | killed | `hole_d_an_add_refreshes_the_positions_max_leverage_and_sz_decimals_and_a_later_exi` |
+| d2 an ADD does not refresh sz_decimals | killed | `hole_d_an_add_refreshes_the_positions_max_leverage_and_sz_decimals_and_a_later_exi` |
+| d3 stored rules set on OPEN only | killed | `hole_d_an_add_refreshes_the_positions_max_leverage_and_sz_decimals_and_a_later_exi` |
+| d4 exits use meta instead of the stored rules | killed | `hole_d_an_add_refreshes_the_positions_max_leverage_and_sz_decimals_and_a_later_exi` |
+| e1 duplicate stop id not checked | killed | `hole_e_a_stop_with_a_used_client_order_id_is_refused_duplicate_client_order_id` |
+| g1 digest precision 60 | killed | `hole_g_120_significant_digits_can_be_digested_and_verified` |
+| g2 digest precision 119 | killed | `hole_g_120_significant_digits_can_be_digested_and_verified` |
+| g3 digest precision 125 (121 digits accepted) | killed | `hole_g_more_than_120_significant_digits_cannot_be_approved_and_verify_is_false[ord` |
+| g4 Inexact not trapped (silent rounding) | killed | `hole_g_more_than_120_significant_digits_cannot_be_approved_and_verify_is_false[ord` |
+| g5 no normalisation (1.0 != 1.00) | killed | `hole_g_equal_values_with_different_trailing_zeros_share_one_digest[1.0-1.00]` |
+| g6 plus() instead of normalize (1.0 != 1.00) | killed | `hole_g_equal_values_with_different_trailing_zeros_share_one_digest[1.0-1.00]` |
+| h1 an attempt dropped before its window closed | killed | `hole_h_the_result_does_not_depend_on_the_advance_cadence[stale_first_window_then_u` |
+| h2 the next attempt ignores the book-age window | killed | `hole_h_a_retry_interval_longer_than_the_book_age_window_single_call[exactly_at_the` |
+| h3 the window end is exclusive | killed (hang) | `an infinite loop in the exit retry (attempt never advances): every cadence test reaches it and ` |
+| h4 the window is one ms too wide | killed | `hole_h_a_retry_interval_longer_than_the_book_age_window_single_call[one_ms_past_th` |
+| h5 the attempt grid uses the book age instead of the retry interval | killed | `hole_h_a_retry_interval_longer_than_the_book_age_window_single_call[stale_first_wi` |
+| h6 the skip of closed attempts uses the book age as the step | killed | `hole_h_the_result_does_not_depend_on_the_advance_cadence[stale_first_window_then_u` |
+
+Mutant h3 turns the retry loop into an infinite loop, so the tests do not fail: they hang. It is "killed" by a timeout, which a CI timeout also gives.
+
+### Existing tests that will break under a literal Amendment 10 (found with the reference fix; not edited)
+
+Running the whole existing suite against the reference fix, 61 existing tests in `tests/paper` fail (the reference is a literal reading of the amendment). Two causes:
+- **About 38 tests send a mark or a delisting stamped more than 5 s ahead of the last `advance_to`** (typically `D0 + 30_000` after the broker was advanced to `D0 + 1000`), so the broker now ignores them. Files: `test_delisting.py`, `test_fees.py`, `test_liquidation.py`, `test_paper_only.py`, `test_stops.py`, `test_r2_liquidation.py`, `test_r2_admission.py`, `test_r2_meta_and_failures.py`. Changing `Env.mark` in `tests/paper/helpers.py` to call `broker.advance_to(time_ms)` before `on_mark` fixes 38 of them (my new tests do not use `Env.mark` for bogus marks, so they are unaffected). (Measured: with that one helper change, 23 of the 61 still fail.) The delisting tests call `on_delist` directly and need an `advance` before it.
+- **The rest (the 23 that remain after the helper change) are the direct delistings above, plus tests that count the alert or the fill from the clamped time**, which Amendment 10 says never: `test_rejects.py` (2), `test_r2_stale_and_opposite.py` (5), `test_r2_meta_and_failures.py`, `test_r2_admission.py`.
+
+The developer's round therefore has to be followed by a mechanical update of these tests (the CTO should authorise it). The amendment's intent (a bogus stamp never moves time) is what the new tests pin.
+
+### What round 3 deliberately does not cover
+
+Restart state, late funding, margin, RISK-16, RISK-18, RISK-20 (per the brief). The behaviour of the broker before its first `advance_to`, the alert kind name for bad data, whether the fallback liquidation price is rounded, and whether a bogus exit is refused or clamped (any of the three outcomes above passes). The F21 contract (`advance_to` on every loop with the F1 clock) is a wiring test for F21, not testable here.
