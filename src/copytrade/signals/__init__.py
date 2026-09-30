@@ -1,4 +1,5 @@
 """Signal detection (F7): turns followed wallets' fills into typed, deduplicated, timestamped signals.
 
-Interface stubs written by the test designer. The developer owns every body from now on.
+``classify`` types a fill, ``detector.SignalDetector`` turns followed wallets' fills into ledgered signals, and
+``latency`` measures stages S1 and S2 without trading.
 """
