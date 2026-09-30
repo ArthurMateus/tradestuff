@@ -24,7 +24,8 @@ MAX_FUNDING_RATE_PER_HOUR = Decimal("0.04")
 @dataclass(frozen=True)
 class PaperSettings:
     """Every value the broker reads from config, in the units its name states. ``max_time_skew_ms`` is the F1 key
-    ``filter.max_signal_age_ms`` reused as the tolerance for an external timestamp ahead of the broker's time."""
+    ``filter.max_signal_age_ms`` reused as the tolerance for an external timestamp ahead of the broker's time:
+    above it a timestamp is alerted as clamped and an entry decision is refused ``bad_decision_time``."""
 
     wallet_usd: Decimal
     ack_delay_ms: int
