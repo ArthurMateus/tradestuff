@@ -1,7 +1,8 @@
 # mypy: disable-error-code="union-attr"
 """F11.AC5: liquidation (A8). Maintenance margin = half the initial margin at the asset's max leverage, so the
-liquidation price is entry x (1 -/+ (1/L - 1/(2 x maxLeverage))). A position whose mark reaches it closes at that
-price, is flagged ``liquidated`` and alerted; a mark that gaps through both the stop and the liquidation price gives
+liquidation price is entry x (1 -/+ (1/L - 1/(2 x maxLeverage))). A position whose mark reaches it is closed at the
+BANKRUPTCY price entry x (1 -/+ 1/L) (Amendment 9, PO reading B: the whole posted margin is lost, plus the taker fee),
+is flagged ``liquidated`` and alerted; a mark that gaps through both the stop and the liquidation price gives
 ``liquidated``. F10.AC4 and AC10 reuse ``liquidation_price`` (single model)."""
 
 from __future__ import annotations
@@ -33,7 +34,9 @@ from tests.paper.helpers import D0, FEE_RATE, fresh_env
         ("long", "1000", 5, 40, 5, "812.5"),  # 1000 x (1 - 0.2 + 0.0125)
     ],
 )
-def test_F11_AC5_liquidation_price_vectors(side: Any, entry: Any, lev: Any, maxlev: Any, sz: Any, expected: Any) -> None:
+def test_F11_AC5_liquidation_price_vectors(
+    side: Any, entry: Any, lev: Any, maxlev: Any, sz: Any, expected: Any
+) -> None:
     got = liquidation_price(side=side, avg_entry_px=Price(entry), leverage=lev, max_leverage=maxlev, sz_decimals=sz)
     assert got == Price(expected)
     assert isinstance(got, Price)
@@ -88,14 +91,14 @@ def test_F11_AC5_long_liquidated_when_the_mark_reaches_the_liquidation_price(new
     (ev,) = e.mark("SOL", "82.5", D0 + 20_000)
     assert ev.kind == "liquidated" and ev.trade is not None
     fill = ev.fill
-    assert fill.price == Price("82.5") and fill.qty == Qty("1.0") and fill.side == "sell"
+    assert fill.price == Price("80") and fill.qty == Qty("1.0") and fill.side == "sell"  # bankruptcy: 100 x (1 - 1/5)
     assert fill.exit_reason == "liquidated"
-    assert fill.fee == D("0.037125")  # 82.5 x 4.5 bps: liquidation pays the taker fee too
+    assert fill.fee == D("0.036")  # 80 x 4.5 bps: liquidation pays the taker fee too
     assert fill.time == Timestamp(D0 + 20_000, TimeSource.EXCHANGE)
-    assert ev.trade.pnl_usd == D("-17.582125")  # -17.5 - 0.045 - 0.037125
+    assert ev.trade.pnl_usd == D("-20.081")  # the whole 20 margin, - 0.045 entry fee - 0.036
     assert ev.trade.flags == frozenset({"liquidated"})
     assert e.broker.position("SOL") is None
-    assert e.broker.cash_usd() == D("282.417875")  # margin lost: 300 - 17.582125
+    assert e.broker.cash_usd() == D("279.919")  # margin lost: 300 - 20.081
     assert e.alerts.kinds().count("liquidated") == 1
     assert e.trades() == [ev.trade]
 
@@ -106,17 +109,19 @@ def test_F11_AC5_short_liquidated_at_the_upper_price(new_env: NewEnv) -> None:
     e.open_position("sell", "1.0", px="100")
     assert e.mark("SOL", "117.49", D0 + 20_000) == []
     (ev,) = e.mark("SOL", "117.5", D0 + 21_000)
-    assert ev.kind == "liquidated" and ev.fill.side == "buy" and ev.fill.price == Price("117.5")
-    assert ev.trade.pnl_usd == D("-17.597875")  # -17.5 - 0.045 - 117.5 x 0.00045
+    assert ev.kind == "liquidated" and ev.fill.side == "buy" and ev.fill.price == Price("120")  # 100 x (1 + 1/5)
+    assert ev.trade.pnl_usd == D("-20.099")  # the whole 20 margin, - 0.045 - 120 x 0.00045
 
 
 @pytest.mark.unit
-def test_F11_AC5_a_mark_that_gaps_through_both_the_stop_and_the_liquidation_price_is_liquidated(new_env: NewEnv) -> None:
+def test_F11_AC5_a_mark_that_gaps_through_both_the_stop_and_the_liquidation_price_is_liquidated(
+    new_env: NewEnv,
+) -> None:
     e = new_env()
     e.open_position("buy", "1.0", px="100")
     e.stop("sl", "sell", "1.0", "99")
     (ev,) = e.mark("SOL", "80", D0 + 20_000)  # 80 is below the stop (99) and the liquidation price (82.5)
-    assert ev.kind == "liquidated" and ev.fill.exit_reason == "liquidated" and ev.fill.price == Price("82.5")
+    assert ev.kind == "liquidated" and ev.fill.exit_reason == "liquidated" and ev.fill.price == Price("80")
     e.book("SOL", D0 + 21_000, [("79", "10")], [("79.1", "10")])
     assert e.advance(D0 + 22_000) == []  # the stop does not also fire
     assert len(e.fills()) == 2 and len(e.trades()) == 1
@@ -140,8 +145,9 @@ def test_F11_AC5_a_stop_hit_above_the_liquidation_price_is_a_normal_stop_not_a_l
 def test_F11_AC5_merged_position_uses_the_average_entry_and_liquidates_every_share(new_env: NewEnv) -> None:
     e = new_env()
     e.open_position("buy", "1.0", px="100", coid="o1", share="S1", trade="T1")
-    e.open_position("buy", "1.0", px="110", coid="o2", share="S2", trade="T2", decided=D0 + 10_000,
-                    action=ActionKind.ADD)
+    e.open_position(
+        "buy", "1.0", px="110", coid="o2", share="S2", trade="T2", decided=D0 + 10_000, action=ActionKind.ADD
+    )
     pos = e.broker.position("SOL")
     assert pos.qty == Qty("2.0") and pos.avg_entry_px == Price("105")
     assert pos.margin_usd == D("42")  # 2 x 105 / 5
@@ -150,7 +156,10 @@ def test_F11_AC5_merged_position_uses_the_average_entry_and_liquidates_every_sha
     events = e.mark("SOL", "86.625", D0 + 21_000)
     assert [ev.kind for ev in events] == ["liquidated", "liquidated"]
     pnl = {ev.trade.share_id: ev.trade.pnl_usd for ev in events}
-    assert pnl == {"S1": D("-13.45898125"), "S2": D("-23.46348125")}
+    # closed at the bankruptcy price 105 x (1 - 1/5) = 84: gross -16 and -26 (together the 42 margin), fees 0.045 /
+    # 0.0495 at entry and 84 x 0.00045 = 0.0378 on each liquidation fill
+    assert pnl == {"S1": D("-16.0828"), "S2": D("-26.0873")}
+    assert {ev.fill.price for ev in events} == {Price("84")}
     for ev in events:
         assert ev.trade.flags == frozenset({"liquidated"})
     assert e.broker.position("SOL") is None
@@ -169,23 +178,23 @@ def test_F11_AC5_liquidating_one_coin_leaves_the_others_alone(new_env: NewEnv) -
 
 
 @pytest.mark.unit
-@settings(max_examples=25)
+@settings(max_examples=40)
 @given(
-    lev=st.integers(min_value=1, max_value=20),
-    qty=st.integers(min_value=10, max_value=300),
-    entry=st.integers(min_value=1000, max_value=30000),
+    lev=st.sampled_from([2, 4, 5, 10, 20]),  # 1/L terminates, so the bankruptcy price is exact on the grid
+    tenths=st.integers(min_value=1, max_value=50),
+    entry=st.sampled_from([100, 150, 200, 250, 300]),
     side=st.sampled_from(["buy", "sell"]),
 )
-def test_F11_AC5_property_an_isolated_liquidation_never_loses_more_than_the_posted_margin(lev: Any, qty: Any, entry: Any, side: Any) -> None:
-    q, px = D(qty) / 100, D(entry) / 100
-    if q * px < 10:
-        return
+def test_F11_AC5_property_an_isolated_liquidation_loses_exactly_the_posted_margin_plus_fees(
+    lev: Any, tenths: Any, entry: Any, side: Any
+) -> None:
+    q, px = D(tenths) / 10, D(entry)
     with fresh_env() as e:
         e.open_position(side, str(q), px=str(px), leverage=lev)
         pos = e.broker.position("SOL")
-        (ev,) = e.mark("SOL", str(pos.liquidation_px), D0 + 20_000)
+        (ev,) = e.mark("SOL", str(pos.liquidation_px), D0 + 20_000)  # the trigger price itself is unchanged
         assert ev.kind == "liquidated"
-        assert ev.fill.price == pos.liquidation_px
-        assert ev.trade.pnl_usd < 0
-        assert ev.trade.pnl_usd >= -pos.margin_usd  # isolated: the loss is bounded by the margin (fees included)
+        bankruptcy = px * (1 - D(1) / lev) if side == "buy" else px * (1 + D(1) / lev)
+        assert ev.fill.price == bankruptcy
         assert ev.fill.fee == ev.fill.qty * ev.fill.price * FEE_RATE
+        assert ev.trade.pnl_usd == -(pos.margin_usd + q * px * FEE_RATE + ev.fill.fee)

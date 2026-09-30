@@ -20,13 +20,16 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from copytrade.core.clock import TimeSource, Timestamp
+from copytrade.core.domain import ActionKind
 from copytrade.core.money import Fee, Price, Qty
 from tests.paper.helpers import D0, FEE_RATE, fresh_env, make_config
 
 FILL_T = D0 + 1000
 
 
-def _buy_env(e: Env, asks: Sequence[tuple[str, str]], bids: Sequence[tuple[str, str]] = (("99.9", "5"),), t: int = FILL_T) -> None:
+def _buy_env(
+    e: Env, asks: Sequence[tuple[str, str]], bids: Sequence[tuple[str, str]] = (("99.9", "5"),), t: int = FILL_T
+) -> None:
     e.book("SOL", t, list(bids), list(asks))
 
 
@@ -156,7 +159,9 @@ def test_F11_AC1_depth_beyond_5pct_of_mid_gives_a_partial_fill_and_the_remainder
     (rec,) = e.records("partial_fill")
     assert rec.payload["client_order_id"] == "c1"
     assert (rec.payload["requested_qty"], rec.payload["filled_qty"], rec.payload["cancelled_qty"]) == (
-        D("3.0"), D("1.0"), D("2.0"),
+        D("3.0"),
+        D("1.0"),
+        D("2.0"),
     )
 
 
@@ -220,7 +225,7 @@ def test_F11_AC1_half_spread_and_slippage_are_paid_by_crossing_the_real_book(new
     e.submit(e.order("buy", "1.0", coid="b"))
     buy = e.advance(FILL_T)[0].fill
     e.book("SOL", FILL_T + 10_000, [("99.9", "0.5"), ("99.8", "1.0")], [("100.1", "0.5"), ("100.2", "1.0")])
-    e.submit(e.order("sell", "1.0", coid="s", decided=D0 + 10_000, action=None))
+    e.submit(e.order("sell", "1.0", coid="s", decided=D0 + 10_000, action=ActionKind.CLOSE))
     sell = e.advance(FILL_T + 10_000)[0].fill
     assert buy.price == Price("100.15")  # (0.5 x 100.1 + 0.5 x 100.2)
     assert sell.price == Price("99.85")  # (0.5 x 99.9 + 0.5 x 99.8)

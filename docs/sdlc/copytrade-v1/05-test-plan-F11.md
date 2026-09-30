@@ -93,3 +93,113 @@ None. Tests use `tests/paper/conftest.py` (registers the paper ledger as a secre
 14. **Config validation inside the broker.** The broker re-checks its own keys against the F1 ceilings and fails closed (`ConfigError` naming the key, `ModeNotPermittedError` for mode). It must not trust a hand-built `Config`.
 15. **Lot handling.** Sizes are rounded down to `szDecimals` (never up); the min-notional check uses the rounded size and the intent's `decision_px`. `paper.wallet_usd` (Decimal 300) is the starting cash; margin is posted, not deducted from cash.
 16. **Leader-side data the recorder does not yet expose.** F4's `AssetContext` carries mark, oracle and funding, but no hourly funding history keyed by hour. F11 defines `FundingSource.funding_at(coin, hour_ms)`; the F21 adapter must map `FundingPoint` and `AssetContext.oracle` onto it.
+
+---
+
+## Round 2 (Amendments 8 and 9): senior-dev round 1 + reviewer-risk RISK-1..7 + the PO's liquidation reading B
+
+New test files (all in `tests/paper/`, no implementation touched): `test_r2_stale_and_opposite.py`, `test_r2_meta_and_failures.py`, `test_r2_gate.py`, `test_r2_funding.py`, `test_r2_determinism.py`, `test_r2_accounting.py`, `test_r2_admission.py`, `test_r2_liquidation.py`, plus the helper module `r2_helpers.py` (fault-injecting wrappers at TRUE boundaries only: alert sink, book/meta/funding ports, disk; a live-style book port; a stuck book port). The real broker, gate authority and F2 ledger are used everywhere.
+
+### Run summary
+
+- `tests/paper`: 476 cases (155 from round 1 + 321 new). Whole suite: 3601 collected. **On the current code: 108 fail, 3493 pass.** All 108 are in `tests/paper`; every other test is untouched and green.
+- The 108 = **103 new intentional failures** (below) + **5 existing liquidation tests edited for Amendment 9** (they fail until the developer changes the liquidation fill price).
+- Failure reasons: 0 import errors, 0 collection errors, 0 fixture errors, 0 `NotImplementedError`. Every failure is a behaviour failure: an assertion on the wrong result (most), or the very bug the test targets surfacing as an exception out of the broker (a `RuntimeError`, `ValueError` or `lzma.LZMAError` from a sink or port latching the broker, RISK-6), or a missing event (`ValueError: not enough values to unpack` on an empty event list in the late-book test).
+- The other 218 new cases PASS on the current code on purpose: mutation-hole tests, controls (an entry on another coin is still fine, an entry on a dropped coin is still refused, the broker time is not the local clock) and the ledger-latch tests.
+- **Validity proof.** A throw-away reference fix of Amendments 8 and 9 (scratch copy of `src` outside the repo, `-o pythonpath=<copy>`, never committed, not a design) makes all 476 pass (round-1 tests included, the two edited groups aside as listed below). Ruff, ruff format and mypy (strict) are clean.
+
+### Intentional failures (the developer must make these pass)
+
+| Group | New failing cases | Fix needed |
+|---|---|---|
+| RISK-1 stale decisions (`test_r2_stale_and_opposite.py`) | 6 (entry refused `stale_decision` x2, exit old decision fills no earlier than broker time x2, funding-boundary test, property) | Refuse OPEN/ADD with `decided_at_ms` < broker time; clamp an exit's decision time to at least broker time |
+| RISK-2 opposite side (same file) | 12 (opposite entry refused `opposite_side_entry` x6, two flat-accepted entries never net, liquidated and closed share ids never reused by a pending entry x2, pending entry is not a reduction, leverage not overwritten x2) | Refuse at submit and again at fill time; an entry never reduces; remember retired share ids; keep the position's leverage; a pending entry must not count as a reduction of the share |
+| RISK-3 exits/stops without meta (`test_r2_meta_and_failures.py`) | 8 | Exits and stops use the position's stored `sz_decimals` / `max_leverage` |
+| RISK-6 non-money dependency failures (same file) | 24 | Catch `Exception` (log, treat as no data / retry) around the alert sink and the book, meta and funding ports |
+| RISK-4 gate digest (`test_r2_gate.py`) | 9 | Canonicalise numbers under a fixed explicit Decimal context |
+| RISK-5 funding (`test_r2_funding.py`) | 3 | Settle each hour on its own; one `funding_missing` alert per coin per stretch, re-armed once the rate arrives |
+| RISK-7 determinism (`test_r2_determinism.py`) | 18 | Attempt-based exit retry that does not depend on the `advance_to` cadence (a snapshot that does not exist yet keeps the attempt alive; only attempts whose book-age window has closed are dropped) |
+| Amendment 9 liquidation (`test_r2_liquidation.py`) | 23 | Close a liquidated position at the bankruptcy price `entry x (1 -/+ 1/L)` (average entry of the merged position, its leverage), fee on that fill |
+
+(Counts per group are of the failing cases against the current code; the groups sum to 103.)
+
+### Pinned readings (decisions the CTO/PO should confirm)
+
+1. **"The broker's current time" = the latest time given to `advance_to` / `on_mark` / `on_delist`**, NOT the local clock. `test_R2_RISK1_the_broker_time_is_the_time_it_was_advanced_to_not_the_local_clock` pins it (a replay has no wall clock) and it keeps three round-1 meta-refresh tests unedited, which submit orders decided at `D0` after moving the fake clock an hour without advancing the broker.
+2. **A pending opposite entry does not count as a reduction** of the share when an exit is admitted (`_pending_reduction` counts exits only). Follows from "an entry never reduces a position"; without it a pending entry could block the CLOSE of the share it names.
+3. **A closed or liquidated share id is never reopened by a pending entry** (no naked short reusing its trade id). The rejection reason is left free (`share_closed`, `opposite_side_entry`, ...); the test only asserts nothing fills.
+4. **Merged-position leverage stays the first entry's** (`position("SOL").leverage == 5` after an ADD at 10x or 2x). Round 1 had "latest leverage" in the plan text only; no round-1 test pinned it.
+5. **`funding_missing` is alerted once per coin per stretch of missing data** (one alert when B1 is missing while B2 and B3 are known; a new alert only after that coin's missing hours have all arrived and a later hour goes missing).
+6. **Bankruptcy price at merged positions** uses the average entry and the position's leverage; each share closes at that one price, so the per-share losses differ but the position's loss is exactly its margin. The vectors use only exactly representable prices (leverages 2, 4, 5, 10, 20, 40 with entries 100 to 300 for SOL and 1000 for BTC), so the tests do not pin whether the bankruptcy price is snapped to the price grid; exponents like 1/3 are deliberately not tested.
+7. **A stop trigger or mark stamped before the broker time** is clamped to the broker time (already true in the code; pinned).
+
+### Existing tests edited (and why); nothing else was touched
+
+| File / test | Why |
+|---|---|
+| `test_fill_model.py::test_F11_AC1_half_spread_and_slippage_are_paid_by_crossing_the_real_book` | Sent a `sell` OPEN (`action=None`) on the long share to pin the mirror fill. Amendment 8: an OPEN opposite an existing position is refused `opposite_side_entry`. Now a `sell` CLOSE of the whole share (same qty, same book, same asserted prices) |
+| `test_liquidation.py::test_F11_AC5_long_liquidated_when_the_mark_reaches_the_liquidation_price` | Amendment 9: fill at the bankruptcy price 80 (was 82.5), fee 0.036, trade P&L -20.081 (the whole 20 margin + 0.045 + 0.036), cash 279.919. The trigger 82.5 is unchanged |
+| `test_liquidation.py::test_F11_AC5_short_liquidated_at_the_upper_price` | Fill at 120 (was 117.5), P&L -20.099 (margin 20 + 0.045 + 120 x 0.00045). Trigger 117.5 unchanged |
+| `test_liquidation.py::test_F11_AC5_a_mark_that_gaps_through_both_the_stop_and_the_liquidation_price_is_liquidated` | Fill price 80 (was 82.5) |
+| `test_liquidation.py::test_F11_AC5_merged_position_uses_the_average_entry_and_liquidates_every_share` | Closes at 105 x 0.8 = 84: per-share P&L -16.0828 / -26.0873 (were -13.45898125 / -23.46348125); trigger 86.625 unchanged; asserts the single fill price |
+| `test_liquidation.py::test_F11_AC5_property_an_isolated_liquidation_never_loses_more_than_the_posted_margin` | Superseded and renamed `..._loses_exactly_the_posted_margin_plus_fees`: the old bound `loss <= margin` (fees included) is false under reading B. Now: fill at the bankruptcy price, fee on that fill, P&L = -(margin + entry fee + liquidation fee); leverages limited to 2, 4, 5, 10, 20 so the price is exact |
+| `test_liquidation.py` module docstring | States reading B |
+
+Not edited, still passing on both old and new code: `test_fees.py::..._every_fill_kind_pays_the_taker_fee...` (fee = qty x price x rate holds at any fill price), the three `test_exchange_rules.py` meta-refresh tests (pinned reading 1).
+
+### Coverage matrix (round 2)
+
+| Requirement | Tests (`tests/paper/`) |
+|---|---|
+| RISK-1 stale decisions | `test_r2_stale_and_opposite.py`: `..._an_entry_decided_before_the_broker_time_is_refused_stale_decision` (OPEN, ADD), `..._decided_exactly_at_the_broker_time_is_accepted_and_fills` (OPEN, ADD), `..._one_ms_later_than_the_broker_time_is_accepted`, `..._an_exit_with_an_old_decision_time_is_accepted_and_fills_no_earlier_than_broker_time` (CLOSE, REDUCE), `..._a_stop_trigger_with_an_old_mark_time_...`, `..._no_fill_precedes_a_funding_boundary_that_was_already_charged`, property `..._no_fill_is_ever_earlier_than_the_broker_time_at_submission`, `..._the_broker_time_is_the_time_it_was_advanced_to_not_the_local_clock` |
+| RISK-2 opposite side | same file: `..._an_entry_opposite_to_a_long_position_is_refused_opposite_side_entry` (OPEN/ADD x S1/S2), `..._to_a_short_position...` (OPEN/ADD), `..._larger_than_the_position_is_refused_and_opens_no_short`, `..._on_another_coin_or_after_the_close_is_still_fine` (control), `..._two_entries_accepted_while_flat_never_net_against_each_other`, `..._a_liquidated_share_never_lets_a_pending_entry_open_a_naked_short_on_its_ids`, `..._a_closed_share_never_lets_...`, `..._a_pending_opposite_entry_never_counts_as_a_reduction_...`, `..._the_leverage_of_a_merged_position_is_not_overwritten_by_a_later_entry` (10x, 2x) |
+| RISK-3 exits/stops without meta | `test_r2_meta_and_failures.py`: `..._a_close_still_works_after_a_meta_refresh_dropped_or_broke_the_coin`, `..._a_reduce_uses_the_stored_lot_size_after_meta_broke`, `..._a_stop_can_still_be_placed_and_fires_after_meta_broke` (each: coin dropped, rules invalid, lot changed), `..._a_stop_registered_before_the_meta_broke_still_fires_after`, `..._entries_still_need_meta_...` (control), `..._meta_refresh_failures_of_any_kind_do_not_block_an_exit` |
+| RISK-4 gate digest | `test_r2_gate.py`: `..._an_order_token_issued_in_the_default_context_verifies_in_the_broker_for_a_35_digit_price`, `..._a_stop_token_...35_digit_trigger`, `..._a_35_digit_value_stays_bound_to_its_last_digit`, `..._the_digest_does_not_depend_on_the_ambient_context` (7 contexts), property `..._digest_is_context_independent_and_distinct_values_have_distinct_digests` |
+| RISK-5 funding | `test_r2_funding.py`: `..._a_missing_first_hour_does_not_block_the_known_second_and_third_hours`, `..._the_missing_hour_is_alerted_once_and_settles_late_when_its_rate_arrives`, `..._the_alert_is_re_armed_after_a_rate_arrives`, `..._a_missing_hour_of_one_coin_does_not_block_another_coin` |
+| RISK-6 non-money failures | `test_r2_meta_and_failures.py`: alert sink raising `RuntimeError` / `ValueError` / `LZMAError` on the unfilled-exit alert, liquidation, delisting and missing funding; book port raising (exit later fills; entry does not latch); funding port raising (missing, alerted once, retried); meta port raising on first use (`meta_unavailable`). A ledger or state error still latches: below |
+| A2 fail-closed latch | same file: `..._a_ledger_that_fails_on_the_nth_write_latches_every_state_changing_call_and_no_write_follows` (write 1 to 10 of a scripted session x a `LedgerWriteError` disk fault and a `RuntimeError` state fault; afterwards `submit`, `advance_to`, `on_mark`, `on_delist`, `cancel_stop`, `place_stop` raise `PaperBrokerFailedError`, no write is attempted, cash is queryable), `..._writes_enough_records_...` (guards the range) |
+| RISK-7 determinism | `test_r2_determinism.py`: 11 scenarios (one-sided book then good at +3500 / +2500, only book exactly `max_book_age` after the attempt / one ms later / stale for the first attempts, one-sided then a book too old for the next attempt, zero-depth exit that later fills with its alert, no book at all, entry with a book exactly at the window end / one ms past / one-sided) x cadences single / coarse 5 s / every second / odd 777 ms / every ms, on a replay port AND a live port (a snapshot exists only once its time has come): identical events, fills, prices, cash; property with arbitrary step times; alert stamped at its due time; late-visible book |
+| Partial-exit P&L (a) | `test_r2_accounting.py`: long 2 @100, 1 @110 then 1 @120 (cash 329.8065, trade 29.8065, intermediate cash 309.8605 and no trade), the short mirror (329.8335), a losing then a winning leg, three closes of an inexact 1/3 basis (long and short), four closes of a 1/7 basis, property over any partition (intermediate cash after every leg and final P&L) |
+| Gate binding (b) | `test_r2_gate.py`: every field of `OrderIntent` (27 entry/exit cases) and `StopIntent` (10 cases) changes verification and the broker refuses `invalid_gate_token`; separators inside adjacent fields cannot collide (13 characters); order vs stop token; other key; `GateAuthority(b"")` and an empty `bytearray` raise |
+| Funding (d) | `test_r2_funding.py`: snapshot of another hour / another coin / zero, negative oracle price / NaN / infinite rate is not accepted (alerted once, retried, accepted when real); entry and exit filling exactly at the boundary ms while another coin is held; an exit one ms after the boundary pays |
+| Admission (e) | `test_r2_admission.py`: same-side exit (CLOSE/REDUCE x long/short) and stop (SL/TP x long/short) refused `exceeds_position`; a stop one lot above the share refused for SOL (2 decimals), DOGE (0), BTC (5) and one that rounds down to the share accepted; unknown share / other coin; `liquidation_price` rejects `leverage == max + 1` (5 maxima x 2 sides) and 0; a port answering with a book from before the asked time or of another coin is ignored (entry `no_book`, exit not filled); delisting cancels the coin's stops with reason `delisted` and leaves other coins' stops |
+| Amendment 9 liquidation | `test_r2_liquidation.py`: 12 vectors (SOL long/short at 2, 4, 5, 10, 20x; BTC 5x long, 40x short): fill at the bankruptcy price, loss = margin + entry fee + liquidation fee, `flags == {liquidated}`, cash, fee on the liquidation fill; marks between the trigger and the bankruptcy price, exactly at it and gapped through it (long 81 / 80 / 50 / 0.01, short 119 / 120 / 200 / 10000) all close at the bankruptcy price; gap through a stop; trigger unchanged (82.51 nothing, 82.5 liquidates); merged short at the average entry; alert once. Edited round-1 tests: above |
+
+### Mutant to killing test (scratch mutants of the reference fix; each run against the new files only)
+
+88 hand mutants: **85 killed by a new test, 3 equivalent (survived, argued below).** A mutant is killed if any new test fails.
+
+| Mutant | Killed by |
+|---|---|
+| A1-A9 partial close: forgets earlier realised P&L / earlier fees, basis not reduced or over-reduced, short sign flipped, fee left out of cash, a trade per partial, floor-divided basis, per-unit basis ignoring the closed quantity | `test_r2_accounting.py` long/short partial tests, the 1/3 and 1/7 basis tests (A7, A8) |
+| G1-G11, GS1-GS8 digest omits any single field of `OrderIntent` / `StopIntent` | `..._a_token_does_not_verify_when_any_single_order_field_changes[...]` / `..._stop_field_changes[...]` (one case each; GS6 also by the 35-digit test) |
+| G12 empty key accepted | `..._an_authority_with_an_empty_key_is_refused` |
+| G13 fields joined with `|` (ambiguous encoding) | `..._a_separator_character_inside_a_field_cannot_be_moved_to_the_next_field[|]` |
+| G14 verify ignores the intent binding | `..._a_35_digit_value_stays_bound_to_its_last_digit` |
+| L1 failure does not latch; L2 only ledger errors latch; L3 latch never checked; L4 x6 `submit`, `place_stop`, `cancel_stop`, `advance_to`, `on_mark`, `on_delist` each unguarded | `..._a_ledger_that_fails_on_the_nth_write_latches_every_state_changing_call_and_no_write_follows` |
+| F1 hour mismatch, F2 coin mismatch, F3 `oracle_px == 0`, F4 non-finite rate accepted | `..._a_snapshot_that_is_not_the_hour_the_coin_and_a_usable_rate_is_not_accepted[...]` |
+| F5 entry ranked before the boundary, F6 exit ranked after it, F7 closing one coin stops the funding clock of the others | the entry / exit "exactly at the boundary ms while another coin is held" tests |
+| F9 alert re-armed on every pass, F10 never alerted | `..._the_missing_hour_is_alerted_once_and_settles_late_...` |
+| E1 same-side stop, E3 same-side exit accepted, E10 stop one lot above the share accepted | `..._a_stop_on_the_same_side_...`, `..._an_exit_on_the_same_side_...`, `..._a_stop_one_lot_above_its_share_...` |
+| E4 `leverage == max + 1` accepted | `..._liquidation_price_rejects_leverage_one_above_the_coin_maximum...` |
+| E5 exit accepts an early book, E6 entry accepts an early book, E7 / E11 a book of another coin (exit / entry path) | `..._a_book_from_before_the_attempt_never_fills_an_exit`, `..._before_the_time_asked_about_is_ignored_for_an_entry`, `..._a_book_of_another_coin_never_fills_an_exit`, `..._a_book_of_another_coin_is_ignored` |
+| E8 delisting leaves stops, E9 delisting cancels other coins' stops | `..._delisting_cancels_the_coins_stops_with_the_reason_delisted_and_leaves_other_coins_alone` |
+| R1a-R1d `<=`, `< now - 1`, no clamp, local clock as the broker time | stale-decision tests, `..._the_broker_time_is_the_time_it_was_advanced_to...` |
+| R2a-R2e opposite entry accepted at submit / not stopped at fill, closed share reusable, leverage overwritten, pending entry counted as a reduction | RISK-2 tests |
+| R3a exits use meta, R3b stored rules altered | RISK-3 tests, the stop lot test |
+| R4 digest under a 28-digit context | RISK-4 tests |
+| R5b a missing hour blocks the later hours | `..._a_missing_first_hour_does_not_block_...` |
+| R6a-R6e alert sink / raw book / entry book / meta / funding tolerate only `OSError` | RISK-6 tests, one per port |
+| R7a exit fills from a book that does not exist yet, R7c attempts dropped before their window closed, R7f / R7g entry window one ms too wide / narrow | `test_r2_determinism.py` (R7c only on the live port: this is why the live port is there) |
+| R9a-R9d close at the liquidation price / at the mark / bankruptcy on the wrong side / off-by-one leverage | `test_r2_liquidation.py` |
+
+Equivalent mutants (survived, and cannot be killed by any test):
+- **F8** (every entry restarts the funding clock): an entry stored while a boundary is pending always yields the same next boundary, because everything due at or before the fill time was applied first.
+- **R7b** (a missing snapshot moves the attempt to `now`): the attempt only ever bounds the first usable snapshot from below, and no snapshot with a time in `[attempt, now]` exists when the port answered `None`.
+- **R7e** (the exit book-age window one retry too wide): an exit is retried every second, so any snapshot is usable by some attempt at or before it, and the fill is at the snapshot's own time. The book-age window is observable for entries only (single attempt): pinned there at exactly `max_book_age_ms` and one ms more (R7f, R7g).
+
+### What round 2 deliberately does not cover
+
+- Restart state (RISK-8, F13), late funding into a trade's P&L (RISK-10, F18/F11 later), margin checks, RISK-11..15, tick performance: not tested, per the brief.
+- Whether the bankruptcy price is snapped to the price grid (reading 6): unpinned by design.
+- The 104 hand mutants of senior-dev round 1 were not handed to me as a list; the table above is my own set (88 mutants covering their categories a-e and every reviewer-risk item). If the developer or senior-dev reruns theirs, any survivor is a gap to report back.
