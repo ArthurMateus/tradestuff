@@ -6,8 +6,8 @@ factory the tests replace), runs ``copytrade.signals.latency.measure_latency`` i
 separate ledger: the engine's own ``storage.ledger_dir`` is refused, because measurement signals written there would
 make the same fills duplicates in a real run) and prints ``S1 n=<count> p50=<ms> p95=<ms> p99=<ms>``, the same for
 ``S2``, ``signals=<count>`` and ``enough_samples=true|false``. Exit 0; 2 for bad arguments (``--hours`` not a
-positive integer, no wallet, an invalid address, more distinct wallets than ``hl.ws_max_unique_users``, ``--ledger-dir`` is the engine
-ledger); 1 for any ``CopytradeError`` or a ledger directory that cannot be opened.
+positive integer, no wallet, an invalid address, more distinct wallets than ``hl.ws_max_unique_users``,
+``--ledger-dir`` is the engine ledger); 1 for any ``CopytradeError`` or a ledger directory that cannot be opened.
 """
 
 from __future__ import annotations
