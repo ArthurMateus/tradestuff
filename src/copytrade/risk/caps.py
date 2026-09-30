@@ -51,6 +51,12 @@ def _fraction_of(equity_usd: Decimal, fraction: Decimal) -> Decimal:
     return MONEY_CONTEXT.multiply(equity_usd, fraction)
 
 
+def counted_risk_usd(share: ShareExposure) -> Decimal:
+    """What a share uses up of every open-risk cap: its open risk, never below 0. A share whose stop has trailed past
+    its entry has locked profit (negative open risk by F12's arithmetic); that is not room for another entry."""
+    return max(_ZERO, share.open_risk_usd)
+
+
 def _sum(values: Sequence[Decimal]) -> Decimal:
     total = _ZERO
     for value in values:
@@ -72,7 +78,8 @@ def entry_caps(  # noqa: PLR0913 - one cap per config key
 ) -> tuple[Cap, ...]:
     """Every cap an entry on ``coin`` by ``leader`` is held to.
 
-    ``share_used_usd`` is the open risk of the share the order enlarges (0 for a new share). ``bucket_used_usd`` is
+    ``share_used_usd`` is the open risk of the share the order enlarges (0 for a new share). Every share counts its
+    open risk floored at 0 (``counted_risk_usd``). ``bucket_used_usd`` is
     the same-direction open risk of the BTC bucket, or ``None`` when ``coin`` is not in the bucket (no bucket cap).
     ``existing_qty`` is the merged position's current quantity (absolute); its notional at ``decision_px`` is used up.
     """
@@ -81,17 +88,17 @@ def entry_caps(  # noqa: PLR0913 - one cap per config key
         Cap(
             SYMBOL_RISK,
             _fraction_of(equity_usd, settings.max_symbol_open_risk_fraction),
-            _sum([s.open_risk_usd for s in shares if s.coin == coin]),
+            _sum([counted_risk_usd(s) for s in shares if s.coin == coin]),
         ),
         Cap(
             LEADER_RISK,
             _fraction_of(equity_usd, settings.max_leader_open_risk_fraction),
-            _sum([s.open_risk_usd for s in shares if s.leader == leader]),
+            _sum([counted_risk_usd(s) for s in shares if s.leader == leader]),
         ),
         Cap(
             TOTAL_RISK,
             _fraction_of(equity_usd, settings.max_total_open_risk_fraction),
-            _sum([s.open_risk_usd for s in shares]),
+            _sum([counted_risk_usd(s) for s in shares]),
         ),
     ]
     if bucket_used_usd is not None:

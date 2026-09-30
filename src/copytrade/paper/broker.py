@@ -41,6 +41,7 @@ from copytrade.paper.types import (
     GateToken,
     MarkUpdate,
     OrderIntent,
+    PendingEntry,
     PositionView,
     StopIntent,
     SubmitResult,
@@ -162,6 +163,30 @@ class PaperBroker:
         position = self._positions.get(coin)
         return None if position is None else position.view()
 
+    def positions(self) -> tuple[PositionView, ...]:
+        """Every open merged position, sorted by coin; each equals ``position(coin)``. Read-only."""
+        return tuple(self._positions[coin].view() for coin in sorted(self._positions))
+
+    def pending_entries(self) -> tuple[PendingEntry, ...]:
+        """Every accepted OPEN or ADD not yet filled, rejected or dropped, in the order they were accepted (a
+        snapshot). Exits, stops and refused orders are never listed. Read-only."""
+        return tuple(
+            PendingEntry(
+                client_order_id=order.client_order_id,
+                coin=order.coin,
+                side=order.side,
+                action=order.action,
+                qty=Qty(order.remaining),
+                decision_px=Price(order.decision_px),
+                leverage=order.leverage,
+                share_id=order.share_id,
+                trade_id=order.trade_id,
+                decided_at_ms=order.decided_at_ms,
+            )
+            for order in self._pending.values()
+            if order.is_entry
+        )
+
     def cash_usd(self) -> Decimal:
         """Wallet cash (a ``Decimal``): ``paper.wallet_usd`` plus realised P&L, minus fees, plus funding."""
         return Decimal(self._cash)
@@ -218,6 +243,7 @@ class PaperBroker:
             max_leverage=admitted.meta.max_leverage,
             next_attempt_ms=fill_at_ms,
             alert_due_ms=decided_at_ms + self._settings.alert_after_ms,
+            decision_px=intent.decision_px,
         )
         return SubmitResult(client_order_id=cid, accepted=True, reason=None)
 

@@ -135,7 +135,8 @@ class BrokerEvent:
 @dataclass(frozen=True)
 class PositionView:
     """The merged isolated position on one coin. ``qty`` is signed (long > 0). ``avg_entry_px`` is the
-    qty-weighted entry price, ``margin_usd`` is ``qty * avg_entry_px / leverage``."""
+    qty-weighted entry price, ``margin_usd`` is ``qty * avg_entry_px / leverage``. ``share_qtys`` is the absolute
+    (positive) open quantity of each share, in the order of ``share_ids``."""
 
     coin: str
     qty: Qty
@@ -144,3 +145,23 @@ class PositionView:
     margin_usd: Decimal
     liquidation_px: Price
     share_ids: tuple[str, ...]
+    share_qtys: tuple[Qty, ...] = ()
+
+
+@dataclass(frozen=True)
+class PendingEntry:
+    """An accepted OPEN or ADD that has not filled or been dropped yet (a read-only view for the risk gate).
+
+    ``qty`` is the lot-rounded quantity still to fill, ``side`` is ``"buy"`` or ``"sell"`` and ``leverage`` the integer
+    leverage the order was accepted with."""
+
+    client_order_id: str
+    coin: str
+    side: str
+    action: ActionKind
+    qty: Qty
+    decision_px: Price
+    leverage: int
+    share_id: str
+    trade_id: str
+    decided_at_ms: int

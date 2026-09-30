@@ -163,6 +163,7 @@ def merged_view(
         margin_usd=margin,
         liquidation_px=liquidation_px,
         share_ids=tuple(s.share_id for s in held),
+        share_qtys=tuple(Qty(abs(s.qty)) for s in held),
     )
 
 
@@ -192,6 +193,7 @@ class PendingOrder:
     next_attempt_ms: int
     alert_due_ms: int
     alerted: bool = False
+    decision_px: Decimal = ZERO
 
     @property
     def is_entry(self) -> bool:

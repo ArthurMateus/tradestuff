@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 
 from copytrade.core.domain import ActionKind
 from copytrade.core.money import Price, Qty
 from copytrade.ledger.records import RiskCheckResult
-from copytrade.paper.types import BrokerEvent, SubmitResult
+from copytrade.paper.types import BrokerEvent, PendingEntry, SubmitResult
 
 
 @dataclass(frozen=True)
@@ -150,3 +151,24 @@ class Outcome:
     decision: Decision
     result: SubmitResult | None
     broker_events: tuple[BrokerEvent, ...] = ()
+
+
+class FlattenReport(tuple[Outcome, ...]):
+    """What ``RiskGate.flatten`` did: one ``Outcome`` per share it tried to close (a plain tuple to every existing
+    caller) plus what it could not close yet.
+
+    ``in_flight`` are the entries the broker still had pending after the closes were sent: the pause blocks new ones,
+    but one already sent fills later, and then another ``flatten`` (a new ``run_id``) must close it, so a supervisor
+    re-runs it while this is not empty. ``pause_saved`` is ``False`` when the manual pause is in force in memory but
+    could not be written to disk (it would not survive a restart)."""
+
+    in_flight: tuple[PendingEntry, ...]
+    pause_saved: bool
+
+    def __new__(
+        cls, outcomes: Iterable[Outcome], *, in_flight: tuple[PendingEntry, ...], pause_saved: bool
+    ) -> FlattenReport:
+        report = super().__new__(cls, outcomes)
+        report.in_flight = in_flight
+        report.pause_saved = pause_saved
+        return report
