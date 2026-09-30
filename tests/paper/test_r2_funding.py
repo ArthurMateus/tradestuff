@@ -162,6 +162,7 @@ def test_R2_AC3_an_entry_filling_exactly_at_the_boundary_pays_nothing_for_it_whi
     e.funding.set("BTC", B1, "0.0001", "1000")
     e.funding.set("BTC", B2, "0.0001", "1000")
     e.flat_book("BTC", B1, "1000")
+    e.advance(B1 - 1000)  # Amendment 11: broker time only moves through advance_to (RISK-23: entry not far ahead)
     assert e.submit(
         e.order("buy", "0.1", coid="b1", coin="BTC", decided=B1 - 1000, px="1000", share="S2", trade="T2")
     ).accepted

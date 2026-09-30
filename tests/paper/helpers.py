@@ -256,6 +256,9 @@ class Env:
     ) -> list[BrokerEvent]:
         """Open (or add) at exactly ``px`` through a zero-spread book at decided + 1000 and return the fill events."""
         self.flat_book(coin, decided + 1000, px)
+        # Amendment 11: broker time is only what advance_to says, and an entry decided more than the tolerance
+        # ahead of it is refused (bad_decision_time): the supervisor has advanced to the decision time by now
+        self.events += list(self.broker.advance_to(max(decided, self.clock.now)))
         result = self.submit(
             self.order(
                 side, qty, coid=coid, coin=coin, decided=decided, px=px, share=share, trade=trade,

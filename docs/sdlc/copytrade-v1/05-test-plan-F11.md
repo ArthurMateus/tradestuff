@@ -343,3 +343,73 @@ Edited files and the mechanical change:
 ### What round 3 deliberately does not cover
 
 Restart state, late funding, margin, RISK-16, RISK-18, RISK-20 (per the brief). The behaviour of the broker before its first `advance_to`, the alert kind name for bad data, whether the fallback liquidation price is rounded, and whether a bogus exit is refused or clamped (any of the three outcomes above passes). The F21 contract (`advance_to` on every loop with the F1 clock) is a wiring test for F21, not testable here.
+
+## Round 4: Amendment 11 (clamp, never ignore; broker time only from `advance_to`)
+
+Amendment 11 supersedes Amendment 10's "ignore" rule. Tests: `tests/paper/test_r4_time_clamp.py` (57 new), plus edits to the round-3 file and a few mechanical `advance` lines. Full suite on the current code (65cfdb0 behaviour): 3801 tests, 44 fail, all intentional (11 in the reworked round-3 file, 33 in the new file), all `AssertionError`s (no import, collection or fixture errors). Against a scratch reference implementation of Amendment 11 (outside the repo) all 3801 pass. ruff, ruff format and mypy are clean; `src` is untouched.
+
+### Coverage matrix
+
+| Rule | Tests (`test_r4_time_clamp.py` unless noted) |
+|---|---|
+| RISK-21: SL still fires and fills at now + ack when marks run ahead (500 ms tol / 700 ms skew, 5000 / 6 s, 5000 / 30 days) | `test_R4_RISK21_a_stop_loss_still_fires_and_fills_at_now_plus_ack_when_marks_run_ahead[3]` |
+| RISK-21: liquidation still fires, stamped broker time | `test_R4_RISK21_a_liquidation_still_fires_when_marks_run_ahead[3]` |
+| RISK-21: one-shot delisting still settles, no stranded position | `test_R4_RISK21_a_one_shot_delisting_still_settles_and_strands_no_position[3]` |
+| RISK-21: chronic skew every loop (reviewer's N1) | `test_R4_RISK21_chronic_skew_every_loop_the_supervisor_advances_then_feeds_ahead_marks[2]` |
+| RISK-17: +1 h mark on coin A does not delay a stop / a close on B | `test_R4_RISK17_a_plus_one_hour_mark_on_coin_a_does_not_delay_a_stop_on_coin_b[2]`, `..._a_close_on_coin_b[2]`; round 3 tests kept |
+| RISK-22: chains of marks (< 4.9 s apart) never move time, fills or stamps (Hypothesis) | `test_R4_RISK22_property_a_chain_of_marks_never_moves_broker_time_fill_times_or_stamps`, `test_R4_RISK22_720_marks_4900_ms_apart_do_not_delay_the_stop_by_a_single_ms` |
+| `on_mark` / `on_delist` never advance time or resolve pending orders or funding; time = max of `advance_to` times | `test_R4_on_mark_never_moves_broker_time_or_resolves_pending_orders`, `test_R4_on_delist_never_moves_...`, `test_R4_a_mark_or_delisting_never_crosses_a_funding_boundary_for_the_broker`, `test_R4_broker_time_is_the_max_of_the_advance_to_times` |
+| Stop decided at min(mark, now), filled at now + ack, alert from decision time; ledger row keeps raw mark time | `test_R4_a_stop_triggered_by_an_ahead_mark_...`, `test_R4_a_stop_triggered_by_a_far_future_mark_...`, `test_R4_the_stop_trigger_ledger_row_keeps_the_raw_mark_time` |
+| Liquidation / delisting stamped broker time (ahead within tolerance, late) | `test_R4_a_liquidation_by_an_ahead_mark_within_the_tolerance_is_stamped_with_broker_time`, `test_R4_a_delisting_within_the_tolerance_is_stamped_with_broker_time`, `test_R4_a_late_mark_or_delisting_is_stamped_with_broker_time_not_its_own` |
+| RISK-19: far-future exit clamped, accepted, fills at now + ack, alert from the clamped time; near-future clamped; past decision keeps its alert time | `test_R4_RISK19_a_far_future_exit_decision_is_clamped_accepted_and_fills_at_now_plus_ack[3]`, `..._alerts_from_the_clamped_decision_time[3]`, `test_R4_an_exit_decided_ahead_within_the_tolerance_is_clamped_...`, `test_R4_an_exit_decided_in_the_past_...` |
+| `bad_timestamp` alert: once per (source, coin), worded "clamped", cleared on recovery (per coin), boundary at tolerance (500/2000/5000), none while broker time is 0, sink failure does not latch | `test_R4_bad_timestamp_*` (7 tests) |
+| RISK-23: entry beyond tolerance refused `bad_decision_time` (OPEN, ADD, 3 tolerances); exactly at tolerance and one below accepted; accepted at broker time 0; stale still refused; only `advance_to` moves the anchor | `test_R4_RISK23_*` (5 tests) |
+
+### Mutation kill table (26 mutants of the reference implementation, run against the two time files)
+
+Each mutant is a scratch copy of the reference `src` outside the repo, run with `-o pythonpath=<mutant src>`.
+
+| Mutant | Killed by |
+|---|---|
+| M01 marks beyond the tolerance dropped (Amendment 10 rule) | RISK21 stop_loss |
+| M02 `on_mark` moves broker time | RISK21 stop_loss |
+| M03 `on_delist` moves broker time | RISK21 delisting |
+| M04 stop decided at the raw mark time | RISK21 stop_loss |
+| M05 stop fill at decided + ack (no max with now) | R3 `a_mark_that_is_merely_late_never_blocks_an_exit` |
+| M06 liquidation stamped mark time | RISK21 liquidation / stop_loss |
+| M07 delisting stamped delist time | RISK21 delisting |
+| M08 alert not suppressed at broker time 0 | `bad_timestamp_none_while_broker_time_is_zero` |
+| M09 alert never cleared | `bad_timestamp_alert_is_cleared_when_...` |
+| M10 alert every time | `bad_timestamp_alert_fires_once_per_source_and_coin` |
+| M11 alert boundary `<` for `<=` | `bad_timestamp_boundary_at_the_tolerance_...` |
+| M12 alert key ignores the source | `bad_timestamp_alert_fires_once_per_source_and_coin` (needed a same-coin, other-source step; added, then killed) |
+| M13 alert worded "ignored" | `bad_timestamp_alert_is_worded_clamped_...` |
+| M14 RISK-23 boundary `>=` | `RISK23_..._exactly_at_the_tolerance_ahead_is_accepted_inclusive_boundary` |
+| M15 RISK-23 not suppressed at time 0 | `RISK23_an_entry_far_ahead_is_accepted_while_broker_time_is_zero` |
+| M16 RISK-23 removed | `RISK23_an_entry_more_than_the_tolerance_ahead_is_refused_...` |
+| M17 exit decided_at_ms not clamped | `RISK19_..._clamped_accepted_and_fills_at_now_plus_ack` |
+| M18 ledger row stores the clamped time | `the_stop_trigger_ledger_row_keeps_the_raw_mark_time` |
+| M19 `advance_to` can lower time | `broker_time_is_the_max_of_the_advance_to_times` |
+| M20 exit timestamp not checked (no alert) | `RISK19_..._clamped_accepted_and_fills_at_now_plus_ack` |
+| M21 mark alert not raised | `bad_timestamp_alert_fires_once_per_source_and_coin` |
+| M22 delisting alert not raised | `bad_timestamp_alert_fires_once_per_source_and_coin` |
+| M23 exit alert from the raw decided time | `RISK19_..._alerts_from_the_clamped_decision_time` |
+| M24 stop alert from the raw mark time | `a_stop_triggered_by_an_ahead_mark_..._alerted_from_it` |
+| M25 RISK-23 off by one (tolerance - 1) | `RISK23_..._inclusive_boundary` |
+| M26 bogus delisting dropped | RISK21 delisting |
+
+26 of 26 killed.
+
+### Edited existing tests
+
+`tests/paper/test_r3_bad_timestamps.py` (old "ignored / no state change / no events" pinned; intent kept, now "clamped, still processed"): module docstring; `a_bogus_mark_on_the_held_coin_is_ignored_even_at_a_liquidating_price` renamed `..._is_clamped_and_still_liquidates_at_broker_time` (a liquidating far-future mark now liquidates, stamped T, one alert); `the_tolerance_is_filter_max_signal_age_ms_exactly` (at the tolerance: no alert, one ms more: one alert, and neither moves time); `a_bogus_future_delisting_is_ignored_and_does_not_move_time` renamed `..._is_clamped_settles_at_broker_time_and_does_not_move_time`; `a_delisting_within_the_tolerance_settles_at_its_own_time` renamed `..._at_the_broker_time` (expected stamp T, not T + TOL), plus a new sibling `a_delisting_after_advance_to_its_own_time_settles_at_that_time` keeping the old intent; `a_bogus_delisting_is_logged_as_an_error_and_alerted` renamed `..._alerted_and_settled` (the `delisted_force_settle` alert is now present). Mechanical `advance` first (no change of numbers): `the_alert_of_an_exit_decided_in_the_future_within_tolerance_is_not_early_or_late`, `the_alert_of_a_stop_trigger_within_the_tolerance_is_timed_from_the_mark`, `a_bogus_mark_never_makes_the_alert_of_a_stop_exit_late` (they need broker time to reach the decision or mark time, otherwise the decision is clamped, which the new R4 tests cover). Not edited but now passing for a different reason and still valid: the other RISK-17 tests (`_bogus_mark(...) == []` etc.).
+
+Mechanical (RISK-23: an entry decided more than the tolerance ahead of broker time is refused, so the supervisor must have advanced first): `helpers.py` `Env.open_position` calls `broker.advance_to(max(decided, clock))` before submitting (this fixed 27 tests that open positions at a later `decided`); `test_r2_funding.py::test_R2_AC3_an_entry_filling_exactly_at_the_boundary...` (`advance(B1 - 1000)`); `test_r2_stale_and_opposite.py` (the 6 opposite-side tests, `advance(D0 + 10_000)`; and the RISK-1 docstring no longer says marks move time); `test_rejects.py::test_F11_AC8_an_add_with_no_book_is_also_refused_not_retried` (`advance(D0 + 60_000)`). No assertion was weakened and no expected number changed. Round 3 already made `Env.mark` call `advance_to` first and put `advance` before direct `on_delist` calls, so no further marks or delistings needed edits.
+
+### Intentional failures on the current code (65cfdb0)
+
+44, all until the developer implements Amendment 11: in the round-3 file the held-coin liquidation (3), the tolerance test (3), the bogus delisting (3), the delisting within tolerance and the delisting logged/alerted (2); in the R4 file all RISK-21 (11), the RISK-22 property and the 720 chain, `on_mark`/`on_delist` never move time (2), the stop-decided-at-broker-time and ledger-row tests (3), liquidation/delisting stamped broker time (2), the exit-ahead-within-tolerance test, the "clamped" wording, the alert boundary (3) and time-0 tests, and RISK-23 refusal (7). Regression guards that pass on the current code already (they must keep passing): the RISK-17 coin-A-vs-B tests, RISK-19 far-future exit clamping, the alert once / cleared, inclusive RISK-23 boundary acceptance.
+
+### Not covered (later gates)
+
+F21 owns the time-base contract (advance_to from `ClockSync.exchange_now()`, heartbeat on a stalled loop, the 24 h dry run showing zero `bad_timestamp` alerts): a wiring test there. RISK-24 (ledger record of clamps) stays logged. Replay determinism of clamping (F16) is covered by the simulation gate.

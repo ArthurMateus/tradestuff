@@ -1,15 +1,16 @@
 # mypy: disable-error-code="union-attr"
-"""F11 round 3, Amendment 10 (RISK-17, RISK-19): one bad timestamp never moves the broker's time.
+"""F11 round 3, Amendment 10 (RISK-17, RISK-19), reworked in round 4 for Amendment 11: clamp, never ignore.
 
-The broker's trusted time is the time given to ``advance_to``. A mark, a delisting or an exit stamped more than
-``filter.max_signal_age_ms`` ahead of it is bad data: ignored with an error log and an alert, it never advances the
-broker's time and never delays an exit or a stop, on any coin (held or not). A mark within the tolerance advances time
-normally; a mark that is merely late never blocks an exit. The ``exit_unfilled`` alert is timed from the exit's own
-decision time (a stop trigger: the mark's own time) plus ``exits.alert_after_s``, never from a clamped time.
+Broker time is only what ``advance_to`` says. A mark, a delisting or an exit stamped far ahead of it (more than
+``filter.max_signal_age_ms``) is clamped, never dropped: it is logged as an error and alerted once (``bad_timestamp``),
+it never advances the broker's time and never delays an exit or a stop, on any coin (held or not). A stop decided by a
+mark is decided at ``min(mark time, broker time)``; a liquidation or a delisting is stamped with the broker time. The
+``exit_unfilled`` alert is timed from the exit's own decision time (clamped to the broker time), plus
+``exits.alert_after_s``. Round 4 edits are marked "Amendment 11" in the comments.
 
-Pinned readings (the developer may not need to ask): a delisting stamped too far ahead is ignored, it is not
-settled at the trusted time (returns no events, does not raise); a far-future exit decided_at_ms is either refused at
-once or filled at the normal time, or at least alerted within the alert window: it never waits silently.
+Pinned readings: a delisting stamped too far ahead settles at the broker time (it is not ignored and it does not
+raise); a far-future exit decided_at_ms is either refused at once or filled at the normal time, or at least alerted
+within the alert window: it never waits silently.
 """
 
 from __future__ import annotations
@@ -110,19 +111,20 @@ def test_R3_RISK17_a_close_decided_at_the_normal_time_still_fills_after_a_bogus_
 
 @pytest.mark.unit
 @pytest.mark.parametrize("offset", BOGUS_OFFSETS)
-def test_R3_RISK17_a_bogus_mark_on_the_held_coin_is_ignored_even_at_a_liquidating_price(
+def test_R3_RISK17_a_bogus_mark_on_the_held_coin_is_clamped_and_still_liquidates_at_broker_time(
     new_env: NewEnv, offset: int
 ) -> None:
+    """Amendment 11 (was: ignored even at a liquidating price): a mark is never dropped, it is processed at broker
+    time, so a liquidating price stamped in the far future liquidates the position, stamped with the broker time."""
     e = new_env()
     _long_with_stop(e)
-    assert _bogus_mark(e, "SOL", "50", T + offset) == []  # would trigger the stop AND liquidate, if believed
-    assert e.broker.position("SOL").qty == D("1.0")
-    assert len(e.fills()) == 1  # only the entry
-    assert list(e.broker._stops) == ["stop1"]  # noqa: SLF001 - the stop is still registered: nothing was triggered
-    e.flat_book("SOL", T + 2000, "94")
-    e.mark("SOL", "95", T + 1000)
-    (event,) = e.advance(T + 2000)
-    assert event.fill.exit_reason == "stop_loss" and event.fill.time.ms == T + 2000
+    (event,) = _bogus_mark(e, "SOL", "50", T + offset)  # would trigger the stop AND liquidate
+    assert event.kind == "liquidated" and event.time_ms == T
+    assert event.fill.time.ms == T and event.fill.price == Price("80")  # bankruptcy price of the 5x long
+    assert event.trade.closed_at.ms == T
+    assert e.broker.position("SOL") is None
+    assert list(e.broker._stops) == []  # noqa: SLF001 - the stop was dropped with the position
+    assert e.alerts.kinds().count("bad_timestamp") == 1
 
 
 @pytest.mark.unit
@@ -155,26 +157,27 @@ def test_R3_RISK17_a_bogus_mark_does_not_crawl_the_funding_clock_over_an_hour_bo
 @pytest.mark.unit
 @pytest.mark.parametrize("tol", [500, 2000, 5000])
 def test_R3_RISK17_the_tolerance_is_filter_max_signal_age_ms_exactly(new_env: NewEnv, tol: int) -> None:
-    """At the tolerance the mark advances the broker's time; one ms more and it is ignored."""
-    accepted = new_env(config=make_config(filter__max_signal_age_ms=tol))
-    accepted.open_position("buy", "1.0", px="100")
-    accepted.advance(T)
-    _bogus_mark(accepted, "BTC", "60000", T + tol)
-    accepted.flat_book("SOL", T + tol + 1000, "100")
-    early = accepted.submit(accepted.order("buy", "0.5", coid="e1", action=ActionKind.ADD, decided=T + tol - 1,
-                                           share="S2", trade="T2"))
-    assert (early.accepted, early.reason) == (False, "stale_decision")  # the mark did advance time to T + tol
-    on_time = accepted.submit(accepted.order("buy", "0.5", coid="e2", action=ActionKind.ADD, decided=T + tol,
-                                             share="S2", trade="T2"))
-    assert on_time.accepted
+    """Amendment 11 (was: at the tolerance the mark advances time, one ms more and it is ignored): a mark never moves
+    broker time; at the tolerance it raises no alert, one ms more raises the ``bad_timestamp`` alert; either way the
+    broker time is unchanged (a decision at T is not stale)."""
+    within = new_env(config=make_config(filter__max_signal_age_ms=tol))
+    within.open_position("buy", "1.0", px="100")
+    within.advance(T)
+    _bogus_mark(within, "BTC", "60000", T + tol)
+    assert "bad_timestamp" not in within.alerts.kinds()
+    within.flat_book("SOL", T + 1000, "100")
+    ok = within.submit(within.order("buy", "0.5", coid="e1", action=ActionKind.ADD, decided=T, share="S2", trade="T2"))
+    assert (ok.accepted, ok.reason) == (True, None)  # the mark did not advance time
 
-    ignored = new_env(config=make_config(filter__max_signal_age_ms=tol))
-    ignored.open_position("buy", "1.0", px="100")
-    ignored.advance(T)
-    _bogus_mark(ignored, "BTC", "60000", T + tol + 1)
-    ignored.flat_book("SOL", T + 1000, "100")
-    result = ignored.submit(ignored.order("buy", "0.5", coid="e3", action=ActionKind.ADD, decided=T, share="S2",
-                                          trade="T2"))
+    beyond = new_env(config=make_config(filter__max_signal_age_ms=tol))
+    beyond.open_position("buy", "1.0", px="100")
+    beyond.advance(T)
+    _bogus_mark(beyond, "BTC", "60000", T + tol + 1)
+    assert beyond.alerts.kinds().count("bad_timestamp") == 1
+    beyond.flat_book("SOL", T + 1000, "100")
+    result = beyond.submit(
+        beyond.order("buy", "0.5", coid="e2", action=ActionKind.ADD, decided=T, share="S2", trade="T2")
+    )
     assert (result.accepted, result.reason) == (True, None)  # the mark did not advance time
 
 
@@ -215,21 +218,39 @@ def test_R3_RISK17_an_exit_with_a_very_old_decision_time_fills_at_the_broker_tim
 
 @pytest.mark.unit
 @pytest.mark.parametrize("offset", BOGUS_OFFSETS)
-def test_R3_RISK17_a_bogus_future_delisting_is_ignored_and_does_not_move_time(new_env: NewEnv, offset: int) -> None:
+def test_R3_RISK17_a_bogus_future_delisting_is_clamped_settles_at_broker_time_and_does_not_move_time(
+    new_env: NewEnv, offset: int
+) -> None:
+    """Amendment 11 (was: ignored, no events, no state change): the delisting settles, stamped with the broker time."""
     e = new_env()
     _long_with_stop(e)
-    assert list(e.broker.on_delist("SOL", Price("90"), T + offset)) == []
-    assert e.broker.position("SOL").qty == D("1.0")
-    assert len(e.fills()) == 1 and e.records("paper_funding") == []
-    e.flat_book("SOL", T + 1000, "100")
-    result = e.submit(e.order("buy", "0.5", coid="add1", action=ActionKind.ADD, decided=T, share="S2", trade="T2"))
-    assert (result.accepted, result.reason) == (True, None)  # not stale, not delisted, time not moved
+    (event,) = e.broker.on_delist("SOL", Price("90"), T + offset)
+    assert event.kind == "delisted_force_settle" and event.time_ms == T
+    assert event.fill.time.ms == T and event.fill.price == Price("90")
+    assert e.broker.position("SOL") is None and list(e.broker._stops) == []  # noqa: SLF001
+    e.flat_book("BTC", T + 1000, "1000")
+    # broker time did not move: an entry decided at the trusted time T is not stale
+    result = e.submit(e.order("buy", "0.01", coid="b1", coin="BTC", decided=T, px="1000", share="S2", trade="T2"))
+    assert (result.accepted, result.reason) == (True, None)
 
 
 @pytest.mark.unit
-def test_R3_RISK17_a_delisting_within_the_tolerance_settles_at_its_own_time(new_env: NewEnv) -> None:
+def test_R3_RISK17_a_delisting_within_the_tolerance_settles_at_the_broker_time(new_env: NewEnv) -> None:
+    """Amendment 11 (was: settles at its own time T + TOL): broker time is T, the settlement is stamped T, no alert."""
     e = new_env()
     _long_with_stop(e)
+    (event,) = e.broker.on_delist("SOL", Price("90"), T + TOL)
+    assert event.kind == "delisted_force_settle" and event.fill.time.ms == T and event.fill.price == Price("90")
+    assert "bad_timestamp" not in e.alerts.kinds()
+
+
+@pytest.mark.unit
+def test_R3_RISK17_a_delisting_after_advance_to_its_own_time_settles_at_that_time(new_env: NewEnv) -> None:
+    """The intent of the old within-tolerance test, kept: once ``advance_to`` has reached the delisting's time (the
+    supervisor's job, Amendment 11), the settlement carries that time."""
+    e = new_env()
+    _long_with_stop(e)
+    e.advance(T + TOL)
     (event,) = e.broker.on_delist("SOL", Price("90"), T + TOL)
     assert event.kind == "delisted_force_settle" and event.fill.time.ms == T + TOL and event.fill.price == Price("90")
 
@@ -255,7 +276,7 @@ def test_R3_RISK17_a_bogus_mark_is_logged_as_an_error_and_alerted(
 
 
 @pytest.mark.unit
-def test_R3_RISK17_a_bogus_delisting_is_logged_as_an_error_and_alerted(
+def test_R3_RISK17_a_bogus_delisting_is_logged_as_an_error_alerted_and_settled(
     new_env: NewEnv, caplog: pytest.LogCaptureFixture
 ) -> None:
     e = new_env()
@@ -266,7 +287,8 @@ def test_R3_RISK17_a_bogus_delisting_is_logged_as_an_error_and_alerted(
         e.broker.on_delist("SOL", Price("90"), T + HOUR_MS)
     assert any(r.levelno >= logging.ERROR for r in caplog.records)
     assert len(e.alerts.sent) >= 1
-    assert "delisted_force_settle" not in e.alerts.kinds()
+    assert "bad_timestamp" in e.alerts.kinds()
+    assert "delisted_force_settle" in e.alerts.kinds()  # Amendment 11: clamped and settled, not ignored
 
 
 # ------------------------------------------------------------------------------ the exit_unfilled alert
@@ -299,6 +321,7 @@ def test_R3_RISK17_the_alert_of_an_exit_decided_in_the_future_within_tolerance_i
     e.open_position("buy", "1.0", px="100")
     e.advance(T)
     decided = T + 2000
+    e.advance(decided)  # Amendment 11: the supervisor has advanced broker time to the decision time (else it is clamped)
     assert e.submit(e.order("sell", "1.0", coid="x1", action=ActionKind.CLOSE, decided=decided, px="100")).accepted
     assert _alert_events(e.advance(decided + ALERT_AFTER - 1)) == []
     (alert,) = _alert_events(e.advance(decided + ALERT_AFTER))
@@ -321,6 +344,7 @@ def test_R3_RISK17_the_alert_of_a_stop_trigger_within_the_tolerance_is_timed_fro
     e = new_env()
     _long_with_stop(e)
     mark_time = T + 3000
+    e.advance(mark_time)  # Amendment 11: broker time reaches the mark's time first (else the decision is clamped)
     assert _bogus_mark(e, "SOL", "95", mark_time) == []
     assert _alert_events(e.advance(mark_time + ALERT_AFTER - 1)) == []
     (alert,) = _alert_events(e.advance(mark_time + ALERT_AFTER))
@@ -333,6 +357,7 @@ def test_R3_RISK17_a_bogus_mark_never_makes_the_alert_of_a_stop_exit_late(new_en
     _long_with_stop(e)
     _bogus_mark(e, "BTC", "60000", T + HOUR_MS)
     mark_time = T + 1000
+    e.advance(mark_time)  # Amendment 11: broker time reaches the mark's time first (else the decision is clamped)
     assert _bogus_mark(e, "SOL", "95", mark_time) == []
     events = e.advance(mark_time + ALERT_AFTER)
     (alert,) = _alert_events(events)

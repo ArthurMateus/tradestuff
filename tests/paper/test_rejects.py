@@ -34,6 +34,7 @@ def test_F11_AC8_open_with_no_book_is_refused_no_book_logged_and_never_retried(n
 def test_F11_AC8_an_add_with_no_book_is_also_refused_not_retried(new_env: NewEnv) -> None:
     e = new_env()
     e.open_position("buy", "1.0", px="100")
+    e.advance(D0 + 60_000)  # Amendment 11 (RISK-23): broker time only moves through advance_to
     e.submit(e.order("buy", "1.0", coid="add1", action=ActionKind.ADD, decided=D0 + 60_000, share="S2", trade="T2"))
     events = e.advance(D0 + 60_000 + 1000 + 5001)
     assert [(ev.kind, ev.reason) for ev in events] == [("reject", "no_book")]

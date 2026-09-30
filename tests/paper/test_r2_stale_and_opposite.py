@@ -67,8 +67,8 @@ def test_R2_RISK1_an_entry_one_ms_later_than_the_broker_time_is_accepted(new_env
 
 @pytest.mark.unit
 def test_R2_RISK1_the_broker_time_is_the_time_it_was_advanced_to_not_the_local_clock(new_env: NewEnv) -> None:
-    """Pinned reading of "the broker's current time": the latest time given to ``advance_to`` / ``on_mark`` /
-    ``on_delist`` (a replay has no wall clock). A local clock that ran ahead without the broker being advanced does
+    """Pinned reading of "the broker's current time": the latest time given to ``advance_to`` (Amendment 11:
+    marks and delistings never move it; a replay has no wall clock). A local clock that ran ahead without the broker being advanced does
     not make a decision stale."""
     e = new_env()
     e.clock.now = D0 + 3_600_000
@@ -179,6 +179,7 @@ def test_R2_RISK2_an_entry_opposite_to_a_long_position_is_refused_opposite_side_
     e = new_env()
     e.open_position("buy", "1.0", px="100")
     e.flat_book("SOL", D0 + 11_000, "100")
+    e.advance(D0 + 10_000)  # Amendment 11 (RISK-23): the supervisor has advanced broker time to the decision time
     result = e.submit(
         e.order("sell", "0.5", coid="o2", action=action, decided=D0 + 10_000, share=share, trade="T" + share[1])
     )
@@ -196,6 +197,7 @@ def test_R2_RISK2_an_entry_opposite_to_a_short_position_is_refused_opposite_side
     e = new_env()
     e.open_position("sell", "1.0", px="100")
     e.flat_book("SOL", D0 + 11_000, "100")
+    e.advance(D0 + 10_000)  # Amendment 11 (RISK-23): the supervisor has advanced broker time to the decision time
     result = e.submit(e.order("buy", "1.0", coid="o2", action=action, decided=D0 + 10_000, share="S2", trade="T2"))
     assert (result.accepted, result.reason) == (False, "opposite_side_entry")
     assert e.advance(D0 + 11_000) == []
