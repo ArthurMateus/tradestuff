@@ -86,6 +86,16 @@ New tests:
 | `..._the_same_add_is_approved_on_a_position_opened_at_a_lower_leverage` | the 97.4 stop passes at 5x, so a lower leverage would have passed |
 | `..._refused_add_leverage_unsafe_when_the_margin_does_not_fit_at_the_positions_leverage` [2x refused, 3x ok] | margin at the position's leverage, where a fresh choice (3x) would fit |
 | `..._refused_add_leverage_unsafe_when_the_positions_leverage_is_over_the_ceiling` [6x refused, 5x ok] | ceiling from config (SOL off the high-tier list) |
-| `..._an_open_on_a_coin_without_a_position_still_picks_the_lowest_fitting_leverage`, `..._even_beside_a_position_on_the_coin` | OPEN is fresh (1x), also for a new share next to a 10x position on the same coin (pinned from Amendment 12's wording; the merged-position mismatch for that OPEN is not addressed by the amendment) |
+| `..._an_open_on_a_coin_without_a_position_still_picks_the_lowest_fitting_leverage` | a fresh lowest-fitting leverage (1x) only for an OPEN on a coin with NO position |
 
 Mutation proof (scratch copy of src outside the repo, throwaway reference gate, `-o pythonpath`): all six mutants die. ADD chooses leverage afresh: 10 tests fail; any entry (OPEN too) uses the position's leverage: the same-coin OPEN test; ceiling check removed: the 6x case; wrong refusal reason: the 97.4 and 2x cases; margin check skipped on an ADD: the 2x case; liquidation rule skipped on an ADD: the 97.4 case.
+
+### Amendment 12 addendum (any entry on a held coin uses the position's leverage)
+
+Ruling: an OPEN as a new share beside a position on the coin is gated at that position's leverage, like an ADD (F11 keeps the first entry's leverage). Edited test: `test_F10_AC4_an_open_still_picks_the_lowest_fitting_leverage_even_beside_a_position_on_the_coin` (which pinned fresh 1x) is replaced by the four below; the "no position" OPEN test stays. New (`test_gate_sizing.py`):
+- `..._an_open_as_a_new_share_beside_a_10x_position_is_gated_at_10x`: decision leverage 10 (fresh would be 1), posted margin 10, liquidation price of the merged position at 10x.
+- `..._an_open_beside_a_10x_position_is_refused_add_leverage_unsafe_when_the_rule_fails_at_10x` [stop 2.5 away ok, 2.6 refused]: refusal has no token, no order, audit reason; the approved case's token binds leverage 10.
+- `..._the_merged_leverage_the_broker_holds_after_an_open_beside_a_position_fills_is_the_gates` (real F11 broker): leverage, liquidation price and merged margin equal the gate's.
+- `..._an_open_beside_a_position_is_refused_when_the_margin_does_not_fit_at_its_leverage` [2x refused, 3x ok].
+
+Mutation proof (same method): "fresh leverage for every entry" kills 15 tests (7 of them OPEN or AC9 tests of this round), "position's leverage for ADD only" kills the 5 new OPEN tests, and the ceiling, reason, margin and liquidation mutants die as before (the new OPEN tests also kill the reason, margin and liquidation mutants).
