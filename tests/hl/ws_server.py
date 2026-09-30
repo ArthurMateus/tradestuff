@@ -20,6 +20,8 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import ServerConnection, serve
 
 _GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+SECRET_BODY = b"SECRET-BODY-xyzzy"
+SECRET_HEADER = b"SECRET-HEADER-plugh"
 POLL_S = 0.002
 WAIT_S = 5.0
 
@@ -148,6 +150,9 @@ class RawWsServer:
         self.url = f"ws://127.0.0.1:{self.port}/ws"
         self.accepted = 0
         self.pong_seen = threading.Event()
+        self.handshake_request = b""  # the upgrade request as the peer saw it (``record``/``silent``/``binary`` modes)
+        self.frames: list[tuple[int, bytes]] = []  # client frames seen as (opcode, unmasked payload)
+        self.frames_lock = threading.Lock()
         self._peers: list[socket.socket] = []
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
@@ -171,8 +176,19 @@ class RawWsServer:
                 if not chunk:
                     return
                 request += chunk
+            self.handshake_request = request
             if self.mode == "http403":
                 peer.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                return
+            if self.mode.startswith("http:"):  # e.g. ``http:429``, with a body and header a leak would show
+                code = int(self.mode.split(":", 1)[1])
+                body = SECRET_BODY
+                peer.sendall(
+                    b"HTTP/1.1 %d Whatever\r\nX-Secret-Header: " % code
+                    + SECRET_HEADER
+                    + b"\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(body)
+                    + body
+                )
                 return
             key = next(
                 line.split(b":", 1)[1].strip() for line in request.split(b"\r\n") if line.lower().startswith(b"sec-websocket-key")
@@ -182,6 +198,14 @@ class RawWsServer:
                 b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                 b"Sec-WebSocket-Accept: " + accept + b"\r\n\r\n"
             )
+            if self.mode == "silent":  # valid handshake, then the peer never reads or answers anything again
+                threading.Event().wait(WAIT_S * 2)
+                return
+            if self.mode in ("record", "binary"):
+                if self.mode == "binary":
+                    peer.sendall(bytes([0x82, 3]) + b"\x01\x02\x03")
+                self._record_frames(peer)
+                return
             if self.mode == "bad_utf8":
                 peer.sendall(_text_frame(b"\xff\xfe\xfd"))
             elif self.mode == "server_ping":
@@ -191,6 +215,32 @@ class RawWsServer:
                     self.pong_seen.set()
         except OSError:
             return
+
+    def _record_frames(self, peer: socket.socket) -> None:
+        """Parse masked client frames (payloads under 126 bytes) into ``frames``; answer a close frame with a close."""
+        peer.settimeout(WAIT_S * 2)
+        buf = b""
+        while True:
+            while len(buf) < 2 or len(buf) < 6 + (buf[1] & 0x7F):
+                chunk = peer.recv(4096)
+                if not chunk:
+                    return
+                buf += chunk
+            opcode, length = buf[0] & 0x0F, buf[1] & 0x7F
+            assert length < 126 and buf[1] & 0x80, "test peer only parses small masked client frames"
+            mask, payload = buf[2:6], buf[6 : 6 + length]
+            buf = buf[6 + length :]
+            data = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            with self.frames_lock:
+                self.frames.append((opcode, data))
+            if opcode == 0x8:
+                peer.sendall(bytes([0x88, len(data)]) + data)
+                peer.close()
+                return
+
+    def frames_of(self, opcode: int) -> list[bytes]:
+        with self.frames_lock:
+            return [d for o, d in self.frames if o == opcode]
 
     def stop(self) -> None:
         self._listener.close()

@@ -53,3 +53,17 @@ Real sockets on 127.0.0.1 only; the suite network guard stays on (two tests use 
 - The real Hyperliquid message shapes beyond the existing F3 fixtures (still synthetic; `NEEDS RECORDING` list in the F3 plan).
 - Library keepalive disabled, reconnect storm limits, long-idle behaviour, memory under sustained load: review and simulation/paper run.
 - Windows-specific socket behaviour: QA on the PO's machine.
+
+## Round 2 (senior-dev surviving hand mutants)
+New file `tests/hl/test_w0_round2.py` (10 tests); `tests/hl/ws_server.py` gained `RawWsServer` modes `silent` (valid handshake, then never answers), `record` / `binary` (parse masked client frames, answer a close) and `http:<code>` (status with a secret body and header), plus `handshake_request`, `frames`, `frames_of`. Agreed bound: `CLOSE_TIMEOUT_CAP_S = 1.0`, close waits `min(connect_timeout_s, 1.0)`.
+
+| Mutant | Killed by |
+|---|---|
+| close_timeout back to `connect_timeout_s` | `close_is_capped_at_one_second_against_a_silent_peer_even_with_a_large_connect_timeout`, `close_is_idempotent_and_still_bounded_on_the_second_call...` |
+| `close(1003)` on binary removed | `binary_frame_makes_the_client_send_close_code_1003_unsupported_data` |
+| `ping_interval` on | `client_sends_no_protocol_ping_over_an_idle_period_and_no_frame_at_all` |
+| compression deflate | `permessage_deflate_is_not_negotiated` |
+| status code dropped from the message | `invalid_status_error_message_carries_the_http_status_code_only[403,429]` (also asserts no url, header or body text) |
+| `max_queue` back to the library default | NOT killable: a burst loses nothing either way (only latency differs); `burst_of_300...` guards order, loss and non-blocking recv only. Reviewer check on `max_queue=(256, 64)`. |
+
+Also added: close with `connect_timeout_s=0.3` bounded by ~2x (`close_with_a_small_connect_timeout...`), normal close sends 1000. Against the pre-fix code (ee35e3a) the close-cap tests and the 403/429 status tests fail; all pass with the developer's fix. Not covered: real Windows close semantics (QA).
