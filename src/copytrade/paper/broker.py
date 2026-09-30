@@ -13,15 +13,16 @@ from copytrade.core.clock import Clock, TimeSource, Timestamp
 from copytrade.core.config import Config
 from copytrade.core.domain import ActionKind
 from copytrade.core.events import Alert, AlertSink
-from copytrade.core.money import Fee, Funding, Pnl, Price, Qty, round_size
+from copytrade.core.money import MAX_SZ_DECIMALS, Fee, Funding, Pnl, Price, Qty, round_size
 from copytrade.hl.models import L2Book
 from copytrade.ledger.records import FillRecord, TradeRecord
 from copytrade.ledger.store import Ledger
 from copytrade.paper.book import BookWalk, walk_book
 from copytrade.paper.errors import PaperBrokerFailedError
 from copytrade.paper.gate import GateAuthority
+from copytrade.paper.liquidation import bankruptcy_price
 from copytrade.paper.ports import BookSource, FundingSource, MetaSource
-from copytrade.paper.settings import BPS_DIVISOR, MONEY_CONTEXT, PaperSettings
+from copytrade.paper.settings import BPS_DIVISOR, MAX_FUNDING_RATE_PER_HOUR, MONEY_CONTEXT, PaperSettings
 from copytrade.paper.state import (
     ENTRY_ACTIONS,
     ZERO,
@@ -48,7 +49,6 @@ from copytrade.paper.types import (
 _log = logging.getLogger(__name__)
 
 HOUR_MS = 3_600_000
-_MAX_SZ_DECIMALS = 6
 _SIDES = ("buy", "sell")
 _STOP_REASONS = {"sl": "stop_loss", "tp": "take_profit"}
 # The order in which things that happen at the same millisecond are applied: an exit fill comes before the funding
@@ -145,7 +145,8 @@ class PaperBroker:
         self._meta: Mapping[str, CoinMeta] | None = None
         self._meta_fetched_ms = 0
         self._dues: list[FundingDue] = []
-        self._missing_alerted: set[str] = set()
+        self._missing_alerted: dict[str, int] = {}
+        self._retired: set[tuple[str, str]] = set()
         self._next_boundary_ms: int | None = None
         self._now_ms = 0
         self._failed = False
@@ -189,7 +190,10 @@ class PaperBroker:
             },
             client_order_id=cid,
         )
-        fill_at_ms = intent.decided_at_ms + self._settings.ack_delay_ms
+        decided_at_ms = (
+            intent.decided_at_ms if intent.action in ENTRY_ACTIONS else max(intent.decided_at_ms, self._now_ms)
+        )
+        fill_at_ms = decided_at_ms + self._settings.ack_delay_ms
         self._pending[cid] = PendingOrder(
             client_order_id=cid,
             coin=intent.coin,
@@ -197,7 +201,7 @@ class PaperBroker:
             requested_qty=admitted.qty,
             remaining=admitted.qty,
             action=intent.action,
-            decided_at_ms=intent.decided_at_ms,
+            decided_at_ms=decided_at_ms,
             fill_at_ms=fill_at_ms,
             share_id=intent.share_id,
             trade_id=intent.trade_id,
@@ -206,7 +210,7 @@ class PaperBroker:
             sz_decimals=admitted.meta.sz_decimals,
             max_leverage=admitted.meta.max_leverage,
             next_attempt_ms=fill_at_ms,
-            alert_due_ms=intent.decided_at_ms + self._settings.alert_after_ms,
+            alert_due_ms=decided_at_ms + self._settings.alert_after_ms,
         )
         return SubmitResult(client_order_id=cid, accepted=True, reason=None)
 
@@ -278,20 +282,51 @@ class PaperBroker:
         if update.mark <= 0:
             _log.warning("ignoring a non-positive mark", extra={"event": "paper_bad_mark", "coin": update.coin})
             return tuple(events)
-        liquidation_px = position.view().liquidation_px
-        reached = update.mark <= liquidation_px if position.sign > 0 else update.mark >= liquidation_px
-        if reached:
-            self._force_close(position, liquidation_px, time_ms, "liquidated", events)
+        view = self._guarded_view(position)
+        reached = view is not None and (
+            update.mark <= view.liquidation_px if position.sign > 0 else update.mark >= view.liquidation_px
+        )
+        if view is not None and reached:
+            price = bankruptcy_price(
+                side="long" if position.sign > 0 else "short",
+                avg_entry_px=view.avg_entry_px,
+                leverage=position.leverage,
+            )
+            self._force_close(position, price, time_ms, "liquidated", events)
             self._send_alert(
-                "liquidated", f"{update.coin} position liquidated at {liquidation_px} (mark {update.mark})"
+                "liquidated",
+                f"{update.coin} position liquidated at {price} (mark {update.mark}, trigger {view.liquidation_px})",
             )
         else:
             self._trigger_stops(update.coin, update.mark, time_ms)
         return tuple(events)
 
-    @_fail_closed
+    @staticmethod
+    def _guarded_view(position: Position) -> PositionView | None:
+        """The merged view, or ``None`` (logged) if its liquidation price is not representable: the mark then cannot
+        liquidate, but stops still work."""
+        try:
+            return position.view()
+        except ValueError:
+            _log.error(
+                "paper position has no representable liquidation price",
+                extra={"event": "paper_bad_view", "coin": position.coin},
+            )
+            return None
+
     def on_delist(self, coin: str, settlement_px: Price, time_ms: int) -> Sequence[BrokerEvent]:
-        """Force-settle every share on ``coin`` at ``settlement_px`` ."""
+        """Force-settle every share on ``coin`` at ``settlement_px``.
+
+        Raises:
+            ValueError: ``settlement_px`` is not a positive finite price. Nothing changes and the broker is not
+                latched: the caller passed bad data, and a delisting settled at nothing would be a made-up loss.
+        """
+        if not settlement_px.is_finite() or settlement_px <= 0:
+            raise ValueError("settlement_px must be a positive finite price")
+        return self._settle_delisting(coin, settlement_px, time_ms)
+
+    @_fail_closed
+    def _settle_delisting(self, coin: str, settlement_px: Price, time_ms: int) -> Sequence[BrokerEvent]:
         events: list[BrokerEvent] = []
         time_ms = max(time_ms, self._now_ms)
         self._run_until(time_ms, events)
@@ -324,10 +359,12 @@ class PaperBroker:
 
     def _admit_order(self, intent: OrderIntent) -> _Admitted | str:
         """Apply the exchange rules to a market order: a refusal reason, or the admitted size."""
-        coin_meta = self._coin_meta(intent.coin, intent.side)
+        is_entry = intent.action in ENTRY_ACTIONS
+        coin_meta = self._rules_for(intent.coin, intent.side, is_entry=is_entry)
         if isinstance(coin_meta, str):
             return coin_meta
-        is_entry = intent.action in ENTRY_ACTIONS
+        if is_entry and intent.decided_at_ms < self._now_ms:
+            return "stale_decision"
         qty = self._lot_size(intent.qty, coin_meta)
         if isinstance(qty, str):
             return qty
@@ -350,7 +387,7 @@ class PaperBroker:
     def _admit_stop(self, intent: StopIntent) -> _Admitted | str:
         if intent.kind not in _STOP_REASONS:
             return "invalid_stop_kind"
-        coin_meta = self._coin_meta(intent.coin, intent.side)
+        coin_meta = self._rules_for(intent.coin, intent.side, is_entry=False)
         if isinstance(coin_meta, str):
             return coin_meta
         if intent.qty <= 0:
@@ -363,6 +400,15 @@ class PaperBroker:
         if share is None or share.sign == sign_of_side(intent.side) or qty <= 0 or qty > abs(share.qty):
             return "exceeds_position"
         return _Admitted(qty, coin_meta)
+
+    def _rules_for(self, coin: str, side: str, *, is_entry: bool) -> CoinMeta | str:
+        """The rules an order on ``coin`` is admitted under. An exit or stop on a coin we hold uses the rules stored
+        on the position, so a ``meta`` refresh that dropped or broke the coin can never block it (F10.AC7); every
+        other order needs the exchange's current ``meta``."""
+        position = self._positions.get(coin)
+        if not is_entry and position is not None and side in _SIDES:
+            return CoinMeta(position.sz_decimals, position.max_leverage)
+        return self._coin_meta(coin, side)
 
     def _coin_meta(self, coin: str, side: str) -> CoinMeta | str:
         """The coin's exchange rules, or the reason the order cannot be placed on it."""
@@ -382,12 +428,13 @@ class PaperBroker:
             return
         try:
             fetched = self._meta_source.fetch()
-        except OSError as exc:
+            usable = {coin: rules for coin, rules in fetched.items() if _valid_rules(rules)}
+        except Exception as exc:  # meta is read-only and non-money: any failure is "no data", retried
             _log.warning(
                 "paper meta refresh failed", extra={"event": "paper_meta_failed", "error_type": type(exc).__name__}
             )
             return
-        self._meta = {coin: rules for coin, rules in fetched.items() if _valid_rules(rules)}
+        self._meta = usable
         self._meta_fetched_ms = now_ms
 
     @staticmethod
@@ -399,14 +446,15 @@ class PaperBroker:
         return "leverage_exceeds_max" if leverage > max_leverage else None
 
     def _reduction_refusal(self, intent: OrderIntent, qty: Decimal, *, is_entry: bool) -> tuple[str | None, bool]:
-        """Whether the order reduces a share, and if so whether it fits inside it. Returns ``(refusal, full_close)``.
+        """Whether the order is allowed against the position on its coin. Returns ``(refusal, full_close)``.
 
-        An exit must reduce a share of ours. An entry on the opposite side of the coin's position is netted
-        against the share it names, and so needs the same room."""
+        An entry never reduces a position: on the opposite side of one it is refused (a flip is a CLOSE, then an
+        OPEN once the close has filled). An exit must reduce a share of ours and fit inside what no accepted exit is
+        already going to close."""
         sign = sign_of_side(intent.side)
         position = self._positions.get(intent.coin)
-        if is_entry and (position is None or position.sign == sign):
-            return None, False
+        if is_entry:
+            return ("opposite_side_entry" if position is not None and position.sign != sign else None), False
         share = None if position is None else position.shares.get(intent.share_id)
         if share is None or share.sign == sign:
             return "exceeds_position", False
@@ -416,12 +464,13 @@ class PaperBroker:
         return None, qty == available
 
     def _pending_reduction(self, share: Share) -> Decimal:
-        """Quantity of ``share`` that accepted orders are already going to close."""
+        """Quantity of ``share`` that accepted exits are already going to close (a pending entry reduces nothing)."""
         return sum(
             (
                 order.remaining
                 for order in self._pending.values()
-                if order.coin == share.coin
+                if not order.is_entry
+                and order.coin == share.coin
                 and order.share_id == share.share_id
                 and sign_of_side(order.side) != share.sign
             ),
@@ -472,15 +521,20 @@ class PaperBroker:
         return None
 
     def _probe_exit(self, order: PendingOrder, now_ms: int) -> _Probe | None:
-        """An exit is retried every ``exits.retry_interval_s`` from its fill time. Attempts that provably cannot
-        succeed by ``now_ms`` are skipped in one step, so a long gap costs one book lookup, not one per second."""
+        """An exit is retried every ``exits.retry_interval_s`` from its fill time. An attempt at ``a`` may use the
+        first snapshot at or after ``a`` if it is within ``paper.max_book_age_ms`` of ``a``. An attempt whose window
+        has not closed and whose snapshot is not visible yet stays alive (so the events do not depend on how often
+        ``advance_to`` is called); only attempts that provably cannot succeed by ``now_ms`` are skipped, in one step,
+        so a long gap costs one book lookup, not one per second."""
         retry_ms = self._settings.retry_interval_ms
         max_age_ms = self._settings.max_book_age_ms
         attempt_ms = order.next_attempt_ms
         while attempt_ms <= now_ms:
             book = self._book_from(order.coin, attempt_ms, now_ms)
             if book is None:
-                attempt_ms += retry_ms * ((now_ms - attempt_ms) // retry_ms + 1)
+                closed_ms = now_ms - max_age_ms - attempt_ms
+                if closed_ms > 0:
+                    attempt_ms += retry_ms * -(-closed_ms // retry_ms)
                 break
             if book.time_ms <= attempt_ms + max_age_ms:
                 order.next_attempt_ms = attempt_ms
@@ -495,12 +549,12 @@ class PaperBroker:
         the future is never used), or ``None``."""
         try:
             book = self._books.first_book_at_or_after(coin, from_ms)
-        except OSError as exc:
+            if book is None or book.coin != coin or book.time_ms < from_ms or book.time_ms > now_ms:
+                return None
+        except Exception as exc:  # a read-only, non-money port: any failure is "no book yet"
             _log.warning(
                 "paper book source failed", extra={"event": "paper_book_failed", "error_type": type(exc).__name__}
             )
-            return None
-        if book is None or book.coin != coin or book.time_ms < from_ms or book.time_ms > now_ms:
             return None
         return book
 
@@ -516,15 +570,18 @@ class PaperBroker:
         time_ms = book.time_ms
         position = self._positions.get(order.coin)
         share = None if position is None else position.shares.get(order.share_id)
-        sign = sign_of_side(order.side)
-        reducing = not order.is_entry or (position is not None and position.sign != sign)
         target = order.remaining
-        if reducing:
-            if share is None or share.sign == sign:
-                self._void_order(order, time_ms, events)
+        if order.is_entry:
+            # Re-checked at fill time: what was true when the order was accepted may not be any more.
+            if (order.share_id, order.coin) in self._retired:
+                self._reject_order(order, "share_closed", time_ms, events)
                 return
-            if order.is_entry and order.remaining > abs(share.qty):
-                self._reject_order(order, "exceeds_position", time_ms, events)
+            if position is not None and position.sign != sign_of_side(order.side):
+                self._reject_order(order, "opposite_side_entry", time_ms, events)
+                return
+        else:
+            if share is None or share.sign == sign_of_side(order.side):
+                self._cancel_order(order, "share_closed")
                 return
             target = min(order.remaining, abs(share.qty))
         walk = walk_book(book, side=order.side, qty=target, sz_decimals=order.sz_decimals)
@@ -535,14 +592,6 @@ class PaperBroker:
                 order.next_attempt_ms = time_ms + self._settings.retry_interval_ms
             return
         self._commit_fill(order, position=position, share=share, walk=walk, time_ms=time_ms, events=events)
-
-    def _void_order(self, order: PendingOrder, time_ms: int, events: list[BrokerEvent]) -> None:
-        """An order with no share to act on: an exit is cancelled (its share closed some other way), an entry that
-        would have to reduce a share that is not there is refused."""
-        if order.is_entry:
-            self._reject_order(order, "exceeds_position", time_ms, events)
-        else:
-            self._cancel_order(order, "share_closed")
 
     def _commit_fill(  # noqa: PLR0913 - one fill's context
         self,
@@ -558,7 +607,8 @@ class PaperBroker:
         fee = self._fee(walk.cost)
         gross = ZERO
         closed = False
-        if share is not None and share.sign != sign_of_side(order.side):
+        if not order.is_entry:
+            assert share is not None  # noqa: S101 - _fill_from_book only commits an exit against its share
             updated, gross = share.reduced(walk.qty, walk.cost, fee)
             closed = updated.qty == 0
         else:
@@ -618,7 +668,7 @@ class PaperBroker:
             merged_view(
                 order.coin,
                 shares.values(),
-                leverage=order.leverage,
+                leverage=position.leverage if position is not None else order.leverage,
                 max_leverage=order.max_leverage,
                 sz_decimals=order.sz_decimals,
             )
@@ -636,8 +686,7 @@ class PaperBroker:
         if position is None:
             position = Position(order.coin, order.leverage, order.max_leverage, order.sz_decimals)
             self._positions[order.coin] = position
-        if order.is_entry:
-            position.leverage = order.leverage
+        if order.is_entry:  # the leverage stays the first entry's; the exchange's rules are the latest known
             position.max_leverage = order.max_leverage
             position.sz_decimals = order.sz_decimals
         position.shares[updated.share_id] = updated
@@ -664,8 +713,8 @@ class PaperBroker:
     def _force_close(
         self, position: Position, price: Price, time_ms: int, reason: str, events: list[BrokerEvent]
     ) -> None:
-        """Close every share of ``position`` at ``price`` (the liquidation price, or the settlement price on
-        delisting). The fill pays the taker fee like any other, and the trade carries ``reason`` as its flag."""
+        """Close every share of ``position`` at ``price`` (the bankruptcy price of a liquidation, or the settlement
+        price on delisting). The fill pays the taker fee like any other; the trade carries ``reason`` as its flag."""
         for share in list(position.shares.values()):
             qty = abs(share.qty)
             cost = qty * price
@@ -694,7 +743,9 @@ class PaperBroker:
             events.append(BrokerEvent(reason, time_ms, share.coin, client_order_id, None, fill, trade))
 
     def _retire_share(self, share: Share) -> None:
-        """A share closed: its exit orders and stops are moot, and a coin with no share has no position."""
+        """A share closed: its exit orders and stops are moot, its ID is never opened again by a pending entry, and
+        a coin with no share has no position."""
+        self._retired.add((share.share_id, share.coin))
         for order in [o for o in self._pending.values() if o.share_id == share.share_id and not o.is_entry]:
             self._cancel_order(order, "share_closed")
         for stop in [s for s in self._stops.values() if s.share_id == share.share_id]:
@@ -786,7 +837,7 @@ class PaperBroker:
     def _send_alert(self, kind: str, message: str) -> None:
         try:
             self._alerts.send(Alert(kind=kind, message=message))
-        except OSError as exc:
+        except Exception as exc:  # a non-money sink: a failed alert must never stop the books
             _log.warning(
                 "paper alert delivery failed", extra={"event": "paper_alert_failed", "error_type": type(exc).__name__}
             )
@@ -812,38 +863,38 @@ class PaperBroker:
         self._settle_funding()
 
     def _settle_funding(self) -> None:
-        """Post every owed funding whose hour's actual rate is known, oldest first. A missing rate is retried on
-        every call and alerted once; it is never skipped (D3), and it holds back later hours of the same coin."""
+        """Post every owed funding whose hour's actual rate is known, oldest first. Each hour settles on its own: a
+        missing rate is retried on every call (never skipped, D3) and alerted once per coin per stretch, and it does
+        not hold back the later hours."""
         waiting: list[FundingDue] = []
-        blocked: set[str] = set()
         for due in self._dues:
-            snapshot = None if due.coin in blocked else self._funding_snapshot(due)
+            snapshot = self._funding_snapshot(due)
             if snapshot is None:
-                blocked.add(due.coin)
                 waiting.append(due)
                 self._alert_funding_missing(due)
-                continue
-            self._post_funding(due, snapshot)
+            else:
+                self._post_funding(due, snapshot)
         self._dues = waiting
 
     def _funding_snapshot(self, due: FundingDue) -> FundingSnapshot | None:
         try:
             snapshot = self._funding.funding_at(due.coin, due.hour_ms)
-        except OSError as exc:
+            usable = (
+                snapshot is not None
+                and snapshot.coin == due.coin
+                and snapshot.hour_ms == due.hour_ms
+                and snapshot.rate.is_finite()
+                and abs(snapshot.rate) <= MAX_FUNDING_RATE_PER_HOUR
+                and snapshot.oracle_px.is_finite()
+                and snapshot.oracle_px > 0
+            )
+        except Exception as exc:  # a read-only, non-money port: any failure is "no data", retried
             _log.warning(
                 "paper funding source failed",
                 extra={"event": "paper_funding_failed", "error_type": type(exc).__name__},
             )
             return None
-        if (
-            snapshot is None
-            or snapshot.coin != due.coin
-            or snapshot.hour_ms != due.hour_ms
-            or not snapshot.rate.is_finite()
-            or snapshot.oracle_px <= 0
-        ):
-            return None
-        return snapshot
+        return snapshot if usable else None
 
     def _post_funding(self, due: FundingDue, snapshot: FundingSnapshot) -> None:
         """``qty x oracle_px x rate``, paid by longs when the rate is positive; the amount is a cash flow to us."""
@@ -860,18 +911,20 @@ class PaperBroker:
             },
         )
         self._cash += amount
-        self._missing_alerted.discard(due.coin)
+        if self._missing_alerted.get(due.coin) == due.hour_ms:
+            del self._missing_alerted[due.coin]
         position = self._positions.get(due.coin)
         share = None if position is None else position.shares.get(due.share_id)
         if position is not None and share is not None:
             position.shares[due.share_id] = share.with_funding(amount)
 
     def _alert_funding_missing(self, due: FundingDue) -> None:
-        """One alert per coin per stretch of missing data; the next stretch alerts again once a rate has arrived."""
+        """One alert per coin per stretch of missing data: the hour alerted about is remembered, and the coin alerts
+        again only after that hour's rate has arrived and a later hour goes missing."""
         if due.coin in self._missing_alerted:
             return
         self._ledger.append("paper_alert", {"kind": "funding_missing", "coin": due.coin, "hour_ms": due.hour_ms})
-        self._missing_alerted.add(due.coin)
+        self._missing_alerted[due.coin] = due.hour_ms
         self._send_alert("funding_missing", f"no funding rate for {due.coin} at hour {due.hour_ms}; retrying")
 
 
@@ -880,7 +933,7 @@ def _valid_rules(rules: object) -> bool:
     return (
         isinstance(rules, CoinMeta)
         and type(rules.sz_decimals) is int
-        and 0 <= rules.sz_decimals <= _MAX_SZ_DECIMALS
+        and 0 <= rules.sz_decimals <= MAX_SZ_DECIMALS
         and type(rules.max_leverage) is int
         and rules.max_leverage >= 1
     )

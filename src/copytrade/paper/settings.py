@@ -17,6 +17,8 @@ BPS_DIVISOR = 10_000
 # Every money computation of the package runs at this precision: enough for any price x size x rate product and
 # any VWAP quotient without silent rounding at the 28 digits of the default context.
 MONEY_CONTEXT = Context(prec=60)
+# Hyperliquid caps the hourly funding rate at 4%; a rate beyond it is bad data, not a rate (fail closed: retried).
+MAX_FUNDING_RATE_PER_HOUR = Decimal("0.04")
 
 
 @dataclass(frozen=True)

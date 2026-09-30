@@ -31,3 +31,19 @@ def liquidation_price(*, side: str, avg_entry_px: Price, leverage: int, max_leve
     distance = _PRECISE.subtract(_PRECISE.divide(one, leverage), _PRECISE.divide(one, 2 * max_leverage))
     factor = _PRECISE.subtract(one, distance) if side == "long" else _PRECISE.add(one, distance)
     return round_price(_PRECISE.multiply(avg_entry_px, factor), sz_decimals)
+
+
+def bankruptcy_price(*, side: str, avg_entry_px: Price, leverage: int) -> Price:
+    """The price at which an isolated position has lost its whole posted margin: entry x (1 - 1/L) for a long,
+    entry x (1 + 1/L) for a short (Amendment 9). It is exact (not snapped to the price grid): a liquidation must
+    always be able to close, whatever the grid says about this price.
+
+    Raises:
+        ValueError: ``side`` is not ``"long"`` or ``"short"``, or ``leverage`` is not a positive integer.
+    """
+    if side not in _SIDES:
+        raise ValueError("side must be 'long' or 'short'")
+    if type(leverage) is not int or leverage < 1:
+        raise ValueError("leverage must be a positive integer")
+    numerator = leverage - 1 if side == "long" else leverage + 1
+    return Price(_PRECISE.divide(_PRECISE.multiply(avg_entry_px, numerator), leverage))

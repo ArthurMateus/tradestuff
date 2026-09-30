@@ -101,8 +101,8 @@ class Share:
 
 @dataclass
 class Position:
-    """The merged isolated position on one coin: its shares in the order they were opened, and the leverage and
-    exchange rules of the latest entry."""
+    """The merged isolated position on one coin: its shares in the order they were opened, and the
+    leverage of its first entry (a later entry never changes it) and the latest exchange rules."""
 
     coin: str
     leverage: int
