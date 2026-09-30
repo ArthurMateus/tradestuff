@@ -318,7 +318,10 @@ class RecordingReader:
         return self._pinned_index if self._pinned_index is not None else _Index.build(self._ledger_records())
 
     def files(self) -> tuple[ClosedFile, ...]:
-        """Every closed file, in ledger order."""
+        """Every closed file, in ledger order.
+
+        The ledger is the truth: a file is listed as soon as its close is ledgered, even if the final name does not
+        exist yet (the rename follows the ledger record); reading it then goes through the ``.part`` name."""
         return tuple(self._snapshot().closed_in_order)
 
     def read_file(self, path: str) -> tuple[Record, ...]:
@@ -425,13 +428,27 @@ class RecordingReader:
         return decoded
 
     def _verified_closed_bytes(self, closed: ClosedFile) -> bytes:
-        try:
-            data = (self._dir / closed.path).read_bytes()
-        except OSError as exc:
-            raise RecordingIntegrityError(f"{closed.path} cannot be read ({type(exc).__name__})") from exc
+        """The transport bytes of a closed file, checked against the ledgered byte count and transport sha256.
+
+        The writer ledgers ``recording_file_closed`` before it renames ``<name>.xz.part`` to ``<name>.xz`` (and a crash
+        can leave the file under the ``.part`` name until the restart), so a reader that sees the closed record may
+        find only the ``.part`` name. It is read with exactly the same checks as the final name."""
+        data = self._read_either_name(closed.path)
         if len(data) != closed.byte_count or _hex_sha256(data) != closed.transport_sha256:
             raise RecordingIntegrityError(f"{closed.path} does not match its ledgered transport sha256")
         return data
+
+    def _read_either_name(self, path: str) -> bytes:
+        final = self._dir / path
+        # final, then the part name, then final again: the writer may rename between the two attempts
+        for candidate in (final, self._dir / (path + PART_SUFFIX), final):
+            try:
+                return candidate.read_bytes()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise RecordingIntegrityError(f"{path} cannot be read ({type(exc).__name__})") from exc
+        raise RecordingIntegrityError(f"{path} is missing")
 
     def _block_bytes(self, info: _FileInfo, block: _Block, closed_bytes: bytes | None) -> bytes:
         if closed_bytes is not None:

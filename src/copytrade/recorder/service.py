@@ -209,11 +209,13 @@ class Recorder:
             return
         self._next_disk_check_ms = now + self._disk_check_ms
         free, where = self._smallest_free_gb()
-        if free < self._disk_alert_gb and (
-            self._last_low_alert_ms is None or now - self._last_low_alert_ms >= DISK_ALERT_REPEAT_MS
+        alert_due = self._last_low_alert_ms is None or now - self._last_low_alert_ms >= DISK_ALERT_REPEAT_MS
+        if (
+            free < self._disk_alert_gb
+            and alert_due
+            and self._send(ALERT_DISK_FREE_LOW, self._low_disk_message(free, where))
         ):
             self._last_low_alert_ms = now
-            self._send(ALERT_DISK_FREE_LOW, self._low_disk_message(free, where))
         if self._recording and free < self._disk_floor_gb:
             self._stop(now, free, where)
         elif not self._recording and free >= self._disk_resume_gb:
@@ -266,7 +268,8 @@ class Recorder:
         self._recording = True
         _log.warning("recording resumed", extra={"event": "recording_resumed"})
 
-    def _send(self, kind: str, message: str) -> None:
+    def _send(self, kind: str, message: str) -> bool:
+        """True when the alert was delivered; a delivery failure is logged and returns False."""
         try:
             self._alerts.send(Alert(kind=kind, message=message))
         except OSError as exc:
@@ -274,6 +277,8 @@ class Recorder:
                 "recorder alert delivery failed",
                 extra={"event": "recorder_alert_failed", "error_type": type(exc).__name__},
             )
+            return False
+        return True
 
     # --- the streams -----------------------------------------------------------------------------------------------
 
