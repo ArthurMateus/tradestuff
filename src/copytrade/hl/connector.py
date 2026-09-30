@@ -6,13 +6,17 @@ import logging
 import math
 from urllib.parse import urlsplit
 
-from websockets.exceptions import ConnectionClosed, WebSocketException
+from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
 from websockets.frames import CloseCode
 from websockets.sync.client import ClientConnection, connect
 
 from copytrade.hl.ws import WsConnection
 
-__all__ = ["WebsocketsConnector"]
+__all__ = ["CLOSE_TIMEOUT_CAP_S", "WebsocketsConnector"]
+
+# Upper bound on the close handshake. F3 closes stale (possibly half-open) connections from its tick, which must
+# never sleep, so close may not wait for a silent peer for the full connect timeout.
+CLOSE_TIMEOUT_CAP_S = 1.0
 
 _log = logging.getLogger(__name__)
 _SCHEMES = frozenset({"ws", "wss"})
@@ -57,7 +61,7 @@ class _Connection:
         raise OSError("websocket peer sent a binary frame; only text frames are accepted")
 
     def close(self, code: CloseCode = CloseCode.NORMAL_CLOSURE) -> None:
-        """Idempotent. Waits at most the library ``close_timeout`` for the peer, then releases the socket."""
+        """Idempotent. Waits at most ``min(connect_timeout_s, CLOSE_TIMEOUT_CAP_S)`` for the peer, then releases."""
         try:
             self._ws.close(code)
         except OSError:
@@ -76,7 +80,8 @@ class WebsocketsConnector:
       binary frame, invalid UTF-8 or a frame above ``max_message_bytes``. ``send`` raises ``OSError`` when closed.
     - Heartbeat is F3's (application-level ``{"method":"ping"}``); the library's keepalive is off and protocol
       pings from the server are answered by the library and never surfaced. ``close`` is idempotent, waits at most
-      ``connect_timeout_s`` for the peer's close frame and releases the socket.
+      ``min(connect_timeout_s, CLOSE_TIMEOUT_CAP_S)`` (1 s) for the peer's close frame, so a half-open peer cannot
+      stall F3's tick, and releases the socket.
     - No proxy is used (an ambient HTTPS_PROXY must not redirect the feed) and compression is off.
     """
 
@@ -89,20 +94,26 @@ class WebsocketsConnector:
         self._url = url
         self._timeout_s = connect_timeout_s
         self._max_bytes = max_message_bytes
+        self._close_timeout_s = min(connect_timeout_s, CLOSE_TIMEOUT_CAP_S)
 
     def connect(self) -> WsConnection:
         try:
             ws = connect(
                 self._url,
                 open_timeout=self._timeout_s,
-                close_timeout=self._timeout_s,
+                close_timeout=self._close_timeout_s,
                 ping_interval=None,
                 ping_timeout=None,
                 max_size=self._max_bytes,
+                # (frames, bytes-unused): memory is bounded by max_size x 256. F3 drains every tick and fill bursts
+                # reach 100 fills/s, so a small queue would apply backpressure and add up to 1 s of latency.
+                max_queue=(256, 64),
                 compression=None,
                 proxy=None,
-                legacy=True,
+                legacy=True,  # documented opt-in in websockets 17.1 that silences the pending deprecation warning
             )
-        except WebSocketException as exc:  # InvalidStatus, InvalidHandshake, InvalidMessage, ...
+        except InvalidStatus as exc:  # status code only: never the body, headers or url
+            raise OSError(f"websocket handshake failed: InvalidStatus {exc.response.status_code}") from exc
+        except WebSocketException as exc:  # InvalidHandshake, InvalidHandshake, InvalidMessage, ...
             raise OSError(f"websocket handshake failed: {type(exc).__name__}") from exc
         return _Connection(ws)
