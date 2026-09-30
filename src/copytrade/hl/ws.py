@@ -66,6 +66,13 @@ def _subscription(method: str, wallet: str) -> str:
     return json.dumps({"method": method, "subscription": {"type": "userFills", "user": wallet}})
 
 
+def _claimed_user(message: Mapping[str, Any]) -> str | None:
+    """The wallet a rejected userFills message says it is for, if it says so as a string."""
+    data = message.get("data")
+    user = data.get("user") if isinstance(data, dict) else None
+    return user if isinstance(user, str) else None
+
+
 class _WalletState:
     """What the feed remembers about one subscribed wallet.
 
@@ -99,13 +106,14 @@ class _WalletState:
 
 
 class HlWsFeed:
-    """Drives everything from ``tick()`` (called by the scheduler at least once per second); it never sleeps.
+    """Drives everything from ``tick()`` (called by the scheduler at least once per second). ``tick`` never sleeps
+    itself, but it blocks while a gap resync runs over the synchronous REST client (see below).
 
     ``tick`` connects when due (respecting ``hl.ws_max_new_conns_per_min`` and reconnect backoff), sends
     ``{"method": "ping"}`` every ``hl.ws_ping_interval_s`` (never slower than 3/4 of ``feed.stale_after_s``),
-    drains messages, marks a connection stale when it has produced no message or pong for more than
-    ``feed.stale_after_s``, closes and reconnects it, and resyncs the gap over REST before releasing any new
-    fill for an affected wallet.
+    drains messages, marks a connection stale when it has produced no message or pong for ``feed.stale_after_s``
+    (stale at exactly that many seconds of silence), closes and reconnects it, and resyncs the gap over REST
+    before releasing any new fill for an affected wallet. A malformed or unreadable userFills frame opens a gap too.
 
     Subscribe message: ``{"method":"subscribe","subscription":{"type":"userFills","user":<wallet>}}``.
 
@@ -181,8 +189,8 @@ class HlWsFeed:
         now = self._clock.now_ms()
         if self._conn is not None:
             self._read_messages(now)
-        if self._conn is not None and now - self._last_activity_ms > self._stale_after_ms:
-            self._lose_connection(now, "no message or pong within feed.stale_after_s")
+        if self._conn is not None and now - self._last_activity_ms >= self._stale_after_ms:
+            self._lose_connection(now, "no message or pong for feed.stale_after_s")
         if self._conn is not None:
             self._ping_if_due(now)
         if self._conn is None:
@@ -199,7 +207,7 @@ class HlWsFeed:
         state = self._wallets.get(key)
         if state is None or self._conn is None or key not in self._subscribed or state.gap_start_ms is not None:
             return True
-        return self._clock.now_ms() - self._last_activity_ms > self._stale_after_ms
+        return self._clock.now_ms() - self._last_activity_ms >= self._stale_after_ms
 
     def refusal_reason(self, wallet: str, action: ActionKind) -> str | None:
         """``"feed_stale"`` for OPEN/ADD while ``is_stale(wallet)``; ``None`` otherwise (exits are never refused)."""
@@ -298,13 +306,15 @@ class HlWsFeed:
                 return
             if raw is None:
                 return
-            self._last_activity_ms = now
+            previous_activity_ms, self._last_activity_ms = self._last_activity_ms, now
             if not self._confirmed:
                 self._confirmed = True
                 self._reconnect_failures = 0
-            self._handle_message(raw)
+            self._handle_message(raw, previous_activity_ms)
 
-    def _handle_message(self, raw: str) -> None:
+    def _handle_message(self, raw: str, previous_activity_ms: int) -> None:
+        """Route one frame. A frame that may have carried fills but cannot be used opens a data gap (fills may be
+        lost) for its wallet, or for every wallet on the connection when the wallet cannot be identified."""
         try:
             message = json.loads(raw)
         except (ValueError, RecursionError):
@@ -312,6 +322,7 @@ class HlWsFeed:
         if type(message) is not dict or type(message.get("channel")) is not str:
             self._schema_monitor.record_failure(WS_FRAME_ENDPOINT)
             _log.warning("unreadable websocket frame dropped", extra={"event": "ws_bad_frame"})
+            self._open_gaps(None, previous_activity_ms)
             return
         if message["channel"] != "userFills":  # pong, subscriptionResponse and channels we never subscribed to
             return
@@ -320,6 +331,7 @@ class HlWsFeed:
         except HlSchemaError as exc:
             self._schema_monitor.record_failure(exc.endpoint)
             _log.warning("websocket message rejected", extra={"event": "ws_schema_failure", "field": exc.field})
+            self._open_gaps(_claimed_user(message), previous_activity_ms)
             return
         state = self._wallets.get(user.lower())
         if state is None:
@@ -328,6 +340,18 @@ class HlWsFeed:
             state.held.extend(fills)
         else:
             self._deliver(user.lower(), state, fills)
+
+    def _open_gaps(self, user: str | None, previous_activity_ms: int) -> None:
+        """Open a gap from the last good message on for ``user`` if it is a subscribed wallet, else (fail closed)
+        for every wallet on the connection. Wallets already in a gap keep their earlier start."""
+        key = None if user is None else user.lower()
+        targets = [key] if key in self._subscribed else sorted(self._subscribed)
+        for wallet in targets:
+            state = self._wallets.get(wallet)
+            if state is not None and state.gap_start_ms is None:
+                state.gap_start_ms = previous_activity_ms
+                state.retry_at_ms = 0
+                state.failures = 0
 
     def _deliver(self, wallet: str, state: _WalletState, fills: Sequence[Fill]) -> None:
         fresh = state.unseen(fills)
