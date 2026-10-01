@@ -167,7 +167,7 @@ class FakeHl:
             return [req for t, req in self.http_requests if t == rtype]
 
     # ------------------------------------------------------------------------------------------------ answers
-    def book_levels(self, coin: str) -> list[list[dict[str, str]]]:
+    def book_levels(self, coin: str) -> list[list[dict[str, Any]]]:
         mid = Decimal(self.mids.get(coin, "100.0"))
         bids = [{"px": str(mid - Decimal("0.1") - i), "sz": "500.0", "n": 3} for i in range(5)]
         asks = [{"px": str(mid + Decimal("0.1") + i), "sz": "500.0", "n": 3} for i in range(5)]
