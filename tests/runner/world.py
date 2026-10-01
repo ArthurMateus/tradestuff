@@ -169,7 +169,14 @@ class World:
             ledger.close()
 
     def seed_follow(self, wallet: str = LEADER) -> None:
-        """What an earlier run left behind: the wallet is followed (F6 cycle record + F7 follow record)."""
+        """What an earlier run left behind: the wallet is followed (F6 cycle record + F7 follow record). The wallet
+        also traded SOL two days ago (exchange history), so SOL is in the recording universe and its books are live."""
+        self.hl.leader_fills.setdefault(wallet.lower(), []).append(
+            fill_json(
+                8_000_000, coin="SOL", side="B", sz="1.0", px="100.0", direction="Open Long",
+                time_ms=T0 - 2 * 86_400_000,
+            )
+        )
         self.seed_ledger(
             [
                 ("follow_started", {"wallet": wallet, "followed_at_ms": T0 - 3_600_000, "held": []}),
