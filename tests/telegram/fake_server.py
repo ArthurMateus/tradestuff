@@ -11,6 +11,7 @@ import json
 import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections.abc import Callable
 from typing import Any
 
 
@@ -29,6 +30,7 @@ class FakeTelegram:
     script: list[tuple[int, dict[str, Any]]] = field(default_factory=list)  # forced replies, consumed first
     requests: list[Req] = field(default_factory=list)
     updates: list[dict[str, Any]] = field(default_factory=list)
+    date_fn: Callable[[], int] | None = None  # stamps message.date (seconds) when a push gives none; else a fixed date
     _next_message_id: int = 100
     _next_update_id: int = 1
     _release: threading.Event = field(default_factory=threading.Event)
@@ -118,14 +120,20 @@ class FakeTelegram:
 
     # ---------------------------------------------------------------------------------------------- scripting
     def push_text(
-        self, text: str | None, *, user_id: int = 111111111, chat_id: int = 111111111, update_id: int | None = None
+        self,
+        text: str | None,
+        *,
+        user_id: int = 111111111,
+        chat_id: int = 111111111,
+        update_id: int | None = None,
+        date: int | None = None,
     ) -> int:
         with self._lock:
             uid = self._next_update_id if update_id is None else update_id
             self._next_update_id = max(self._next_update_id, uid) + 1
             message: dict[str, Any] = {
                 "message_id": 5000 + uid, "from": {"id": user_id, "is_bot": False}, "chat": {"id": chat_id},
-                "date": 1_700_000_000,
+                "date": date if date is not None else (self.date_fn() if self.date_fn else 1_700_000_000),
             }
             if text is not None:
                 message["text"] = text

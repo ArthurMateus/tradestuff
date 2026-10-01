@@ -101,12 +101,17 @@ def bot_env(tmp_path: Path, monkeypatch: Any, **overrides: Any) -> Iterator[BotE
     monkeypatch.setenv("no_proxy", "127.0.0.1")
     for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(var, raising=False)
+    prime = bool(overrides.pop("prime", True))  # True: one start-up poll on an empty server (the backlog drain)
     server = FakeTelegram(token=TOKEN)
     base_url = server.start()
     rig = build_rig(tmp_path, **overrides)
     clock, lock = FakeClock(START_MS), SpyLock()
+    server.date_fn = lambda: clock.now // 1000  # a message pushed "now" is dated by the bot's clock
     try:
-        yield BotEnv(rig, server, make_bot(rig, base_url, clock, lock), clock, lock, base_url)
+        env = BotEnv(rig, server, make_bot(rig, base_url, clock, lock), clock, lock, base_url)
+        if prime:
+            env.bot.poll_once()
+        yield env
     finally:
         server.stop()
         rig.env.ledger.close()

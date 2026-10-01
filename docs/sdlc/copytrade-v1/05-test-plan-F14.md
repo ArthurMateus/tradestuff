@@ -40,3 +40,27 @@ Not covered here: real HTTPS/TLS to api.telegram.org (QA with a throwaway bot on
 
 ## Revision: fake server bookkeeping fix [F14.AC8]
 `FakeTelegram` recorded every `sendMessage` request before applying mode `down`/`http500`, so `sent()` counted failed delivery attempts as delivered. That made `test_F14_AC8_failed_delivery_backs_off_and_drains_in_order_on_recovery` and `test_F14_AC8_queue_age_boundary_drops_only_messages_older_than_queue_max_age` unsatisfiable (the required attempt while down appeared as a duplicate/stale "send"). Fix: `Req.delivered` is set only on a 2xx reply; `sent()` and new `delivered_calls()` return delivered requests only; `calls()`, `requests` and `request_count()` still include all attempts. No assertion was changed or weakened. All 68 tests pass.
+
+## Round 1 addendum (review r1 batch `reviews/F14-r1-batch.md`)
+
+New files: `tests/telegram/test_r1_stale.py` (item 1), `test_r1_failures.py` (items 2, 3), `test_r1_outbox_pin.py` (items 4, 5, backoff cap). 32 new tests: 20 fail on purpose on d2db7af (AttributeError/assert on missing behaviour, `UnicodeEncodeError` and `LedgerWriteError` escaping `poll_once`, `LedgerCorruptError` escaping `sync_posts`, book reads at lock depth 0), 12 are guards that pass today. Existing telegram suite: 68/68 still pass; no existing assertion changed.
+
+### Pinned contracts (the developer implements exactly these)
+- `Update.date: int`, seconds, parsed from `message.date`. A message whose `date` is missing or not an int is dropped by `_parse_update` (fail closed).
+- `copytrade.telegram.bot.MAX_COMMAND_AGE_S = 60` (code constant, no config key). Age = `clock.now_ms() // 1000 - update.date`. Age 60 runs, 61 is refused.
+- First SUCCESSFUL `getUpdates` after start (a failed poll does not count) is the backlog drain: every update in it is confirmed (offset advanced, so the next call carries a higher offset) and none acts. One `telegram_audit` record per COMMAND update (text starting with `/`, any sender): `result == "stale_dropped"`, `command` = the parsed name. Non-command updates: no audit.
+- Later polls: a command older than the limit is not executed; audit `result == "stale_command"`. Fresh commands behave as before. Replies to stale updates are unspecified (not asserted).
+- A handler that raises (incl. `_pin.check`; test uses `"/flatten \ud800"`, a lone-surrogate argument, and a closed ledger): audit `result == "error"` with the command name, reply text containing "command failed" (case-insensitive, no argument/secret echoed), offset already advanced so it is never replayed, later updates in the same batch still run. `poll_once` returns the number of updates taken (a failed one counts) and never raises, also when the audit append itself fails (closed ledger); `sync_posts` never raises (ledger scan failure = `LedgerCorruptError`).
+- Every `PositionBook` call the bot makes (`open_shares` in /status, /positions, /flatten; `states` in `sync_posts`) runs at gate_lock depth >= 1; the bot never calls the ledger at depth > 0 (guard).
+- 4xx on send/edit: message dropped, no backoff, next delivered, one call per rejected message. Half-configured PIN (hash only or salt only): audit `pin_not_configured`, reply contains "no PIN", nothing closed, other commands keep working. Backoff waits 1,2,4,8,16,32 then 60 s (cap).
+- `/resume` stays PIN-less (PO decision pending; tests unchanged).
+
+### Harness changes (backward compatible, no assertion touched)
+- `fake_server.py`: `FakeTelegram.date_fn` (optional callable) and `push_text(..., date=None)`. Default date is still `1_700_000_000` unless `date_fn` is set. The fake already keeps unconfirmed updates until a later `getUpdates` carries a higher offset (needed for restart/redelivery tests).
+- `helpers.py` `bot_env`: sets `server.date_fn` to the bot clock in seconds (so a message pushed "now" is fresh), and primes the bot with one `poll_once()` on an empty server (the new start-up drain) unless `prime=False` (`new_bot(prime=False)`). Without this every existing test would lose its first command to the backlog drain.
+
+### Guards (pass today; mutant killed)
+`test_R1_4_GUARD_*` (3 tests, 400/403 drop, no backoff, rejected edit) kill M13 (no pop); `test_R1_5_GUARD_*` (4) kill M5 (`or`->`and`); `test_R1_GUARD_backoff_*` (2) kill M21 (cap 600); `test_R1_3_GUARD_the_ledger_is_never_read...` kills "whole of sync_posts/_handle under gate_lock"; `test_R1_1_a_fresh_command_runs` kills "age check refuses everything". M5, M13, M21 were each re-applied by hand: the guards fail. M16 (send never-raise guard) stays skipped (needs mocking our own code).
+
+### Not covered here
+Concurrent book mutation under a real lock (lock depth observed instead); Telegram's real redelivery semantics beyond the fake (QA/simulation); advisory items 7-13.
