@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
@@ -69,6 +69,7 @@ STATE_FILENAME = "risk_state.json"
 RATE_WINDOW_MS = 60_000  # "orders per minute": the unit of ``risk.max_orders_per_min``, not a tunable
 MS_PER_SECOND = 1000
 _ZERO = Decimal(0)
+_FLATTEN_MAX_PASSES = 5  # a bound on the passes of one flatten (each pass closes what the last one's advance filled)
 _BTC = "BTC"
 _STOP_KINDS = ("sl", "tp")
 _ENTRY_TYPES = (OpenRequest, AddRequest)
@@ -305,17 +306,35 @@ class RiskGate:
         Entries the broker has accepted but not filled are not positions yet: the pause blocks new ones and the
         report's ``in_flight`` lists these, so the supervisor runs ``flatten`` again (a new ``run_id``) once they
         fill. The client order ID of a flatten close is fixed by ``run_id``, the share and the action, so a second call
-        in the same run finds it already sent and refuses it ``duplicate_order``."""
+        in the same run finds it already sent and refuses it ``duplicate_order``.
+
+        A close refused (e.g. ``exceeds_position`` while a reduce is pending) is retried in later passes of the run
+        only while some close is still being accepted; what is left open is ``still_open``. Contract: re-run
+        ``flatten`` with a new ``run_id`` while ``in_flight`` or ``still_open`` is not empty (a close that is
+        accepted and not yet filled counts as covered). Every pass's outcomes are returned, so all their broker
+        events reach the caller."""
         pause_saved = self._pause_reporting()
         listed = {(share.coin, share.share_id): share for share in self._book_shares_or_none()}
         outcomes: list[Outcome] = []
-        for coin, share_id in [(v.coin, sid) for v in self._broker.positions() for sid in v.share_ids]:
-            view = self._broker.position(coin)  # fresh: an earlier close advanced the broker and may have filled more
-            if view is None or share_id not in view.share_ids:
-                continue
-            booked = listed.get((coin, share_id))
-            outcomes.append(
-                self.submit(
+        closed: set[tuple[str, str]] = set()
+        carried: tuple[BrokerEvent, ...] = ()
+        for _ in range(_FLATTEN_MAX_PASSES):
+            accepted_now = False
+            candidates = [
+                (v.coin, sid) for v in self._broker.positions() for sid in v.share_ids if (v.coin, sid) not in closed
+            ]
+            if not candidates:
+                # nothing is held: an entry that is due fills only when the broker advances, and then it is a position
+                # the next pass closes; the events of that advance go with the first outcome after it
+                advanced = self._advance_for_flatten()
+                carried = (*carried, *advanced)
+                accepted_now = bool(advanced)
+            for coin, share_id in candidates:
+                view = self._broker.position(coin)  # fresh: an earlier close advanced the broker, may have filled more
+                if view is None or share_id not in view.share_ids:
+                    continue
+                booked = listed.get((coin, share_id))
+                outcome = self.submit(
                     ExitRequest(
                         run_id=run_id,
                         signal_id=f"flatten:{share_id}",
@@ -331,8 +350,32 @@ class RiskGate:
                         reason=FLATTEN_REASON,
                     )
                 )
-            )
-        return FlattenReport(outcomes, in_flight=self._broker.pending_entries(), pause_saved=pause_saved)
+                if carried:
+                    outcome = replace(outcome, broker_events=(*carried, *outcome.broker_events))
+                    carried = ()
+                outcomes.append(outcome)
+                if outcome.result is not None and outcome.result.accepted:
+                    closed.add((coin, share_id))
+                    accepted_now = True
+            if not accepted_now:
+                break
+        still_open = tuple(
+            (view.coin, share_id, qty)
+            for view in self._broker.positions()
+            for share_id, qty in zip(view.share_ids, view.share_qtys, strict=True)
+            if (view.coin, share_id) not in closed
+        )
+        return FlattenReport(
+            outcomes, in_flight=self._broker.pending_entries(), still_open=still_open, pause_saved=pause_saved
+        )
+
+    def _advance_for_flatten(self) -> tuple[BrokerEvent, ...]:
+        """Advance the broker to exchange time when entries are pending (a flatten with nothing held has no close whose
+        own advance would fill them), returning the events; nothing when none is pending or the clock is unsynced."""
+        now_ms = self._read_exchange_ms()
+        if now_ms is None or not self._broker.pending_entries():
+            return ()
+        return tuple(self._broker.advance_to(now_ms))
 
     def _book_shares_or_none(self) -> tuple[ShareExposure, ...]:
         """The share book for a better price on a flatten close; it is optional there, so a failure is only logged."""
@@ -551,6 +594,9 @@ class RiskGate:
         of the filled ones and the exposures. A record the broker no longer holds in either form, or whose fill the
         book now carries, is dropped, so nothing is counted twice and nothing leaks."""
         booked = {(share.coin, share.share_id) for share in book}
+        book_qty: dict[tuple[str, str], Decimal] = {}
+        for share in book:
+            book_qty[(share.coin, share.share_id)] = book_qty.get((share.coin, share.share_id), _ZERO) + share.qty
         held = {
             (view.coin, share_id): (view, qty)
             for view in positions
@@ -580,10 +626,18 @@ class RiskGate:
             key = (sent.coin, sent.share_id)
             if order_id in pending_ids:
                 continue
-            if sent.is_add or key in booked or key not in held:
+            if key not in held or (not sent.is_add and key in booked):
                 del self._sent_entries[order_id]
                 continue
             view, qty = held[key]
+            if sent.is_add:
+                # a filled ADD the book has not caught up with: its approved risk still counts (a second ADD decided
+                # before F12 books the fill must not see only the old book risk); it never marks the share unbooked
+                if qty <= book_qty.get(key, _ZERO):
+                    del self._sent_entries[order_id]
+                    continue
+                exposures.append(self._filled_add_exposure(sent, view, qty))
+                continue
             filled.add(key)
             exposures.append(
                 ShareExposure(
@@ -600,6 +654,22 @@ class RiskGate:
                 )
             )
         return filled, tuple(exposures)
+
+    @staticmethod
+    def _filled_add_exposure(sent: _Sent, view: PositionView, qty: Qty) -> ShareExposure:
+        """A filled ADD the share book does not carry yet, as an extra exposure on its share."""
+        return ShareExposure(
+            share_id=sent.share_id,
+            trade_id=sent.trade_id,
+            coin=sent.coin,
+            leader=sent.leader,
+            is_long=sent.is_long,
+            qty=qty,
+            entry_px=view.avg_entry_px,
+            stop_px=sent.stop_px,
+            mark_px=view.avg_entry_px,
+            open_risk_usd=sent.risk_usd,
+        )
 
     def _note_entry_sent(self, request: OpenRequest | AddRequest, decision: Decision) -> None:
         """Remember what the broker accepted (see ``_Sent``)."""
@@ -716,8 +786,8 @@ class RiskGate:
         if widening:
             draft.fail("stop_widening", f"the add's stop {request.stop_px} is beyond the current stop")
         draft.ok("stop_widening", "the add's stop does not widen the share's stop")
-        share = next((s for s in entry.book if s.share_id == request.share_id and s.coin == request.coin), None)
-        if share is None:
+        shares = [s for s in entry.shares if s.share_id == request.share_id and s.coin == request.coin]
+        if not any(s in entry.book for s in shares):
             draft.fail("unknown_share", "the share being added to is not in the share book")
         if entry.position is None:
             draft.fail("position_unknown", "the broker holds no position on the coin")
@@ -727,7 +797,7 @@ class RiskGate:
             leader_pre_add_position=request.leader_pre_add_position,
         )
         draft.ok("sizing", f"add quantity {qty}")
-        return MONEY_CONTEXT.multiply(qty, request.decision_px), counted_risk_usd(share)
+        return MONEY_CONTEXT.multiply(qty, request.decision_px), _sum_counted(shares)
 
     def _apply_caps(  # noqa: PLR0913
         self,
@@ -1119,6 +1189,14 @@ class RiskGate:
             self._persist_failed = True
             raise
         self._persist_failed = False
+
+
+def _sum_counted(shares: Iterable[ShareExposure]) -> Decimal:
+    """The open risk of ``shares`` as the caps count it."""
+    total = _ZERO
+    for share in shares:
+        total = MONEY_CONTEXT.add(total, counted_risk_usd(share))
+    return total
 
 
 def _usable(rules: object) -> TypeGuard[CoinMeta]:

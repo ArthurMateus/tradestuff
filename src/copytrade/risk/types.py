@@ -159,16 +159,26 @@ class FlattenReport(tuple[Outcome, ...]):
 
     ``in_flight`` are the entries the broker still had pending after the closes were sent: the pause blocks new ones,
     but one already sent fills later, and then another ``flatten`` (a new ``run_id``) must close it, so a supervisor
-    re-runs it while this is not empty. ``pause_saved`` is ``False`` when the manual pause is in force in memory but
-    could not be written to disk (it would not survive a restart)."""
+    re-runs it while this is not empty. ``still_open`` are the ``(coin, share_id, qty)`` the broker still holds after
+    the passes with no accepted close of this run (e.g. a close refused ``exceeds_position`` behind a pending
+    reduce): the supervisor re-runs ``flatten`` (a new ``run_id``) while this is not empty too.
+    ``pause_saved`` is ``False`` when the manual pause is in force in memory but could not be written to
+    disk (it would not survive a restart)."""
 
     in_flight: tuple[PendingEntry, ...]
+    still_open: tuple[tuple[str, str, Decimal], ...]
     pause_saved: bool
 
     def __new__(
-        cls, outcomes: Iterable[Outcome], *, in_flight: tuple[PendingEntry, ...], pause_saved: bool
+        cls,
+        outcomes: Iterable[Outcome],
+        *,
+        in_flight: tuple[PendingEntry, ...],
+        still_open: tuple[tuple[str, str, Decimal], ...],
+        pause_saved: bool,
     ) -> FlattenReport:
         report = super().__new__(cls, outcomes)
         report.in_flight = in_flight
+        report.still_open = still_open
         report.pause_saved = pause_saved
         return report
