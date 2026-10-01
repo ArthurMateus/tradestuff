@@ -691,11 +691,11 @@ class PositionManager:
         self._append_share("added", updated)
         self._actions.append(partial(self._replace_stop, share.share_id))
 
-    def _opened(self, share: ShareState, qty: Decimal, entry: Price) -> None:
+    def _opened(self, share: ShareState, qty: Decimal, entry: Price, mark: Decimal | None = None) -> None:
         stop = rules.initial_stop(
             is_long=share.is_long, entry_px=entry, atr=share.atr, stop_atr_mult=self._settings.stop_atr_mult
         )
-        usable = stop > 0
+        usable = stop > 0 and (mark is None or (stop < mark if share.is_long else stop > mark))
         stop_px = Price(stop if usable else 0)
         risk = rules.open_risk_usd(is_long=share.is_long, qty=qty, entry_px=entry, stop_px=stop_px)
         updated = self._book.update(
@@ -734,6 +734,7 @@ class PositionManager:
             waiting = self._flip_wait.get(key)
             if waiting is not None and waiting[1] == share.share_id:
                 del self._flip_wait[key]
+                self._ours_won.discard(key)  # the flip leg is a new signal
                 self._actions.append(partial(self._open_share, waiting[0]))
             return
         take_profit = reason == "take_profit"
@@ -962,7 +963,8 @@ class PositionManager:
             if share.status == PENDING_ENTRY and share.share_id not in pending_ids:
                 if (share.coin, share.share_id) in held:
                     view, qty = held[(share.coin, share.share_id)]
-                    self._heal_entry(share, Decimal(qty), view.avg_entry_px)
+                    entry_px = share.entry_px if len(view.share_ids) > 1 else view.avg_entry_px
+                    self._heal_entry(share, Decimal(qty), entry_px)
                 else:
                     self._drop_ghost(share, "the entry is neither pending nor held at the broker")
             elif share.status == OPEN:
@@ -979,7 +981,7 @@ class PositionManager:
             "position_mismatch", f"{share.coin}: {share.share_id} is held at the broker ({qty}) but pending in the book"
         )
         self._entry_orders = {cid: sid for cid, sid in self._entry_orders.items() if sid != share.share_id}
-        self._opened(share, qty, entry_px)
+        self._opened(share, qty, entry_px, self._book.mark_px(share.coin))
         self._book_events(())
 
     def _close_orphan(self, coin: str, share_id: str, is_long: bool, qty: Decimal, avg_px: Price) -> None:
