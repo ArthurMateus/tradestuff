@@ -34,7 +34,6 @@ from copytrade.hl.errors import (
 from copytrade.hl.models import (
     Candle,
     ClearinghouseState,
-    CoinSpec,
     Fill,
     FundingRow,
     L2Book,
@@ -259,10 +258,6 @@ class HlRestClient:
             "endTime": end_ms,
         }
         result: tuple[Candle, ...] = self.info("candleSnapshot", {"req": request}, priority=priority)
-        return result
-
-    def meta(self, *, priority: Priority) -> tuple[CoinSpec, ...]:
-        result: tuple[CoinSpec, ...] = self.info("meta", {}, priority=priority)
         return result
 
     def meta_and_asset_ctxs(self, *, priority: Priority) -> MetaAndCtxs:

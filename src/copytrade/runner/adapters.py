@@ -4,16 +4,47 @@ Every adapter is READ-ONLY toward Hyperliquid (info endpoint and info WebSocket 
 
 from __future__ import annotations
 
+import http.client
+import json
+import logging
+import random
+import threading
+import time
+from collections import deque
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
+from typing import Any
+from urllib.parse import urlsplit
 
 from copytrade.core.clock import Clock, OffsetEstimate
 from copytrade.core.money import Price
-from copytrade.hl.models import L2Book
+from copytrade.hl.backoff import backoff_delay_s
+from copytrade.hl.budget import Priority
+from copytrade.hl.errors import HlError, HlSchemaError
+from copytrade.hl.models import CoinSpec, L2Book
 from copytrade.hl.rest import HlRestClient
-from copytrade.hl.ws import WsConnector
-from copytrade.paper.types import CoinMeta
-from copytrade.recorder.ports import AssetContext, FeedEvent, FundingPoint
+from copytrade.hl.schema import parse_response
+from copytrade.hl.ws import RECONNECT_BASE_S, WsConnection, WsConnector
+from copytrade.paper.types import CoinMeta, FundingSnapshot
+from copytrade.recorder.ports import AssetContext, FeedEvent, FundingPoint, MidsUpdate
+
+_log = logging.getLogger(__name__)
+
+MAX_BOOKS_PER_COIN = 64
+BOOK_RETENTION_FACTOR = 4
+RECONNECT_MAX_S = 30.0
+PING_INTERVAL_MS = 20_000
+MAX_FRAMES_PER_POLL = 10_000
+LEADERBOARD_MAX_BYTES = 64 * 1024 * 1024
+_READ_CHUNK_BYTES = 64 * 1024
+_HOUR_MS = 3_600_000
+_MAJOR_COINS = frozenset({"BTC", "ETH"})
+_CONTROL_CHANNELS = frozenset({"subscriptionResponse", "pong"})
+_PING = json.dumps({"method": "ping"})
+
+
+def _oserror(exc: HlError) -> OSError:
+    return OSError(f"exchange request failed: {type(exc).__name__}")
 
 
 class ExchangeOffsetSource:
@@ -23,10 +54,26 @@ class ExchangeOffsetSource:
     as ``OSError`` (ClockSync treats that as a failed estimate)."""
 
     def __init__(self, *, rest: HlRestClient, clock: Clock, probe_coin: str) -> None:
-        raise NotImplementedError
+        self._rest = rest
+        self._clock = clock
+        self._probe_coin = probe_coin
 
     def estimate(self) -> OffsetEstimate:
-        raise NotImplementedError
+        before = self._clock.now_ms()
+        try:
+            book = self._rest.l2_book(self._probe_coin, priority=Priority.CRITICAL)
+        except HlError as exc:
+            raise _oserror(exc) from exc
+        after = self._clock.now_ms()
+        round_trip = max(0, after - before)
+        return OffsetEstimate(
+            offset_ms=book.time_ms - (before + after) // 2,
+            uncertainty_ms=max(1, (round_trip + 1) // 2) + 1,
+        )
+
+
+def _positive(value: Price) -> bool:
+    return value.is_finite() and value > 0
 
 
 class MarketHub:
@@ -35,50 +82,228 @@ class MarketHub:
     books per coin (``paper.ports.BookSource``) and (b) the latest mids (marks).
 
     - ``subscribe(coins)`` replaces the subscription set (subscribes the new coins, unsubscribes the dropped ones,
-      ``allMids`` once). ``poll()`` never blocks and never raises: a lost connection is retried on a later poll
-      (jittered backoff, resubscribing everything) and polls return ``()`` meanwhile.
+      ``allMids`` once). ``poll()`` never raises: a lost connection is retried on a later poll (jittered backoff,
+      resubscribing everything) and polls return ``()`` meanwhile. A connect attempt can take up to
+      ``hl.ws_connect_timeout_s`` (the connector's bound), like F3's feed.
     - Frames: ``{"channel":"l2Book","data":{"coin","time","levels":[bids,asks]}}`` -> ``L2Book``;
       ``{"channel":"allMids","data":{"mids":{coin: px}}}`` -> ``MidsUpdate(time_ms=None, ...)``. Anything else
-      (subscriptionResponse, pong, malformed, non-finite or negative prices) is dropped and counted, never raised.
+      (malformed, non-finite or non-positive prices, unknown channels) is dropped and counted, never raised;
+      ``subscriptionResponse`` and ``pong`` are ignored.
     - ``first_book_at_or_after(coin, time_ms)``: the earliest kept book with ``time_ms >= time_ms``, else ``None``
-      (the paper broker then treats the book as unavailable). Books older than ``paper.max_book_age_ms`` x 4 are
-      pruned and at most 64 books per coin are kept.
+      (the paper broker then treats the book as unavailable). Books more than ``paper.max_book_age_ms`` x 4 older
+      than the newest book of the coin are pruned and at most 64 books per coin are kept.
     - ``mids()``: latest mid per coin as ``Price`` and ``mid_time_ms`` the local receive time of that update.
+
+    Thread-safe: the recorder polls it on the trading thread while the gate (Telegram flatten) reads books.
     """
 
     def __init__(self, *, connector: WsConnector, clock: Clock, max_book_age_ms: int, seed: int) -> None:
-        raise NotImplementedError
+        self._connector = connector
+        self._clock = clock
+        self._keep_ms = max_book_age_ms * BOOK_RETENTION_FACTOR
+        self._rng = random.Random(seed)  # noqa: S311 - reconnect jitter, not security
+        self._lock = threading.Lock()
+        self._conn: WsConnection | None = None
+        self._closed = False
+        self._wanted: frozenset[str] = frozenset()
+        self._subscribed: set[str] = set()
+        self._mids_subscribed = False
+        self._attempt = 0
+        self._next_attempt_ms = 0
+        self._last_ping_ms = 0
+        self._books: dict[str, deque[L2Book]] = {}
+        self._mids: dict[str, Price] = {}
+        self._mid_time_ms: int | None = None
+        self.dropped_frames = 0
 
     def subscribe(self, coins: Sequence[str]) -> None:
-        raise NotImplementedError
+        with self._lock:
+            self._wanted = frozenset(coins)
 
     def poll(self) -> Sequence[FeedEvent]:
-        raise NotImplementedError
+        with self._lock:
+            conn = None if self._closed else self._ensure_connected()
+            if conn is None:
+                return ()
+            events: list[FeedEvent] = []
+            try:
+                self._sync_subscriptions(conn)
+                self._ping_when_due(conn)
+                self._drain(conn, events)
+            except OSError as exc:
+                self._lost(exc)
+            return tuple(events)
 
     def first_book_at_or_after(self, coin: str, time_ms: int) -> L2Book | None:
-        raise NotImplementedError
+        with self._lock:
+            qualifying = [book for book in self._books.get(coin, ()) if book.time_ms >= time_ms]
+        return min(qualifying, key=lambda book: book.time_ms, default=None)
 
     def mids(self) -> Mapping[str, Price]:
-        raise NotImplementedError
+        with self._lock:
+            return dict(self._mids)
 
     def mid_time_ms(self) -> int | None:
-        raise NotImplementedError
+        with self._lock:
+            return self._mid_time_ms
 
     def close(self) -> None:
-        raise NotImplementedError
+        with self._lock:
+            self._closed = True
+            conn, self._conn = self._conn, None
+        if conn is not None:
+            conn.close()
+
+    # ------------------------------------------------------------------------------------------ connection
+    def _ensure_connected(self) -> WsConnection | None:
+        if self._conn is not None:
+            return self._conn
+        now = self._clock.now_ms()
+        if now < self._next_attempt_ms:
+            return None
+        try:
+            self._conn = self._connector.connect()
+        except OSError as exc:
+            self._schedule_retry(exc)
+            return None
+        self._subscribed = set()
+        self._mids_subscribed = False
+        self._last_ping_ms = now
+        return self._conn
+
+    def _lost(self, error: OSError) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            conn.close()
+        self._schedule_retry(error)
+
+    def _schedule_retry(self, error: OSError) -> None:
+        delay_s = backoff_delay_s(self._attempt, base_s=RECONNECT_BASE_S, max_s=RECONNECT_MAX_S, rng=self._rng)
+        self._attempt += 1
+        self._next_attempt_ms = self._clock.now_ms() + int(delay_s * 1000)
+        _log.warning(
+            "market websocket unavailable",
+            extra={"event": "market_ws_down", "error_type": type(error).__name__, "retry_in_s": delay_s},
+        )
+
+    # ------------------------------------------------------------------------------------------ subscriptions
+    @staticmethod
+    def _send(conn: WsConnection, method: str, subscription: Mapping[str, str]) -> None:
+        conn.send(json.dumps({"method": method, "subscription": dict(subscription)}))
+
+    def _sync_subscriptions(self, conn: WsConnection) -> None:
+        if not self._mids_subscribed:
+            self._send(conn, "subscribe", {"type": "allMids"})
+            self._mids_subscribed = True
+        for coin in sorted(self._wanted - self._subscribed):
+            self._send(conn, "subscribe", {"type": "l2Book", "coin": coin})
+            self._subscribed.add(coin)
+        for coin in sorted(self._subscribed - self._wanted):
+            self._send(conn, "unsubscribe", {"type": "l2Book", "coin": coin})
+            self._subscribed.discard(coin)
+            self._books.pop(coin, None)
+
+    def _ping_when_due(self, conn: WsConnection) -> None:
+        now = self._clock.now_ms()
+        if now - self._last_ping_ms >= PING_INTERVAL_MS:
+            conn.send(_PING)
+            self._last_ping_ms = now
+
+    # ------------------------------------------------------------------------------------------ frames
+    def _drain(self, conn: WsConnection, events: list[FeedEvent]) -> None:
+        for _ in range(MAX_FRAMES_PER_POLL):
+            text = conn.recv()
+            if text is None:
+                return
+            self._attempt = 0
+            event = self._decode(text)
+            if isinstance(event, L2Book):
+                self._keep_book(event)
+            elif isinstance(event, MidsUpdate):
+                self._mids.update(event.mids)
+                self._mid_time_ms = self._clock.now_ms()
+            else:
+                continue
+            events.append(event)
+
+    def _decode(self, text: str) -> FeedEvent | None:
+        try:
+            message = json.loads(text)
+            channel = message.get("channel") if isinstance(message, dict) else None
+            if channel in _CONTROL_CHANNELS:
+                return None
+            if channel == "l2Book":
+                return self._decode_book(message["data"])
+            if channel == "allMids":
+                return self._decode_mids(message["data"])
+        except (ValueError, KeyError, TypeError, HlSchemaError):
+            pass
+        self.dropped_frames += 1
+        return None
+
+    @staticmethod
+    def _decode_book(data: Any) -> L2Book:
+        book: L2Book = parse_response("l2Book", data)
+        if not all(_positive(level.px) for level in (*book.bids, *book.asks)):
+            raise ValueError("non-positive price")
+        return book
+
+    @staticmethod
+    def _decode_mids(data: Any) -> MidsUpdate:
+        mids: dict[str, Price] = parse_response("allMids", data["mids"])
+        if not all(_positive(px) for px in mids.values()):
+            raise ValueError("non-positive mid")
+        return MidsUpdate(time_ms=None, mids=mids)
+
+    def _keep_book(self, book: L2Book) -> None:
+        kept = self._books.setdefault(book.coin, deque(maxlen=MAX_BOOKS_PER_COIN))
+        kept.append(book)
+        while kept and kept[0].time_ms < book.time_ms - self._keep_ms:
+            kept.popleft()
 
 
 class RestMarketSource:
-    """``recorder.ports.MarketSource`` over ``metaAndAssetCtxs`` and ``fundingHistory`` (CRITICAL priority)."""
+    """``recorder.ports.MarketSource`` over ``metaAndAssetCtxs`` and ``fundingHistory`` (CRITICAL priority), and
+    ``paper.ports.FundingSource`` over the same two requests. ``clock`` is part of the pinned signature; the
+    exchange timestamps here come from the responses, so it is not used."""
 
-    def __init__(self, *, rest: HlRestClient, clock: Clock) -> None:
-        raise NotImplementedError
+    def __init__(self, *, rest: HlRestClient, clock: Clock) -> None:  # noqa: ARG002 - pinned signature
+        self._rest = rest
 
     def asset_contexts(self) -> Sequence[AssetContext]:
-        raise NotImplementedError
+        snapshot = self._rest.meta_and_asset_ctxs(priority=Priority.CRITICAL)
+        return tuple(
+            AssetContext(
+                coin=row.coin,
+                mark=row.mark_px,
+                oracle=row.oracle_px,
+                funding=row.funding,
+                open_interest=row.open_interest,
+                time_ms=None,
+            )
+            for row in snapshot.contexts
+        )
 
     def funding_history(self, coin: str, start_ms: int) -> Sequence[FundingPoint]:
-        raise NotImplementedError
+        rows = self._rest.funding_history(coin, start_ms, priority=Priority.CRITICAL)
+        return tuple(
+            FundingPoint(coin=row.coin, time_ms=row.time_ms, rate=row.rate, premium=row.premium)
+            for row in sorted(rows, key=lambda r: r.time_ms)
+            if row.coin == coin and row.time_ms >= start_ms
+        )
+
+    def funding_at(self, coin: str, hour_ms: int) -> FundingSnapshot | None:
+        """The funding rate paid for the hour starting at ``hour_ms`` (the exchange stamps it inside that hour) and the
+        CURRENT oracle price of the coin (the exchange does not serve the hour's own oracle). ``OSError`` on failure."""
+        try:
+            points = self.funding_history(coin, hour_ms)
+            oracle = next((c.oracle for c in self.asset_contexts() if c.coin == coin), None)
+        except HlError as exc:
+            raise _oserror(exc) from exc
+        point = next((p for p in points if p.time_ms < hour_ms + _HOUR_MS), None)
+        if point is None or oracle is None:
+            return None
+        return FundingSnapshot(coin=coin, hour_ms=hour_ms, rate=point.rate, oracle_px=oracle)
 
 
 class RestMetaSource:
@@ -87,13 +312,23 @@ class RestMetaSource:
     ``isDelisted``. A failed fetch raises ``OSError`` (the gate then refuses entries ``meta_unavailable``)."""
 
     def __init__(self, *, rest: HlRestClient) -> None:
-        raise NotImplementedError
+        self._rest = rest
+
+    def _coins(self) -> tuple[CoinSpec, ...]:
+        try:
+            return self._rest.meta_and_asset_ctxs(priority=Priority.CRITICAL).coins
+        except HlError as exc:
+            raise _oserror(exc) from exc
 
     def fetch(self) -> Mapping[str, CoinMeta]:
-        raise NotImplementedError
+        return {
+            spec.name: CoinMeta(sz_decimals=spec.sz_decimals, max_leverage=spec.max_leverage)
+            for spec in self._coins()
+            if not spec.is_delisted
+        }
 
     def delisted(self) -> frozenset[str]:
-        raise NotImplementedError
+        return frozenset(spec.name for spec in self._coins() if spec.is_delisted)
 
 
 class HttpLeaderboardSource:
@@ -102,10 +337,49 @@ class HttpLeaderboardSource:
     ``OSError`` / ``TimeoutError``. No redirects are followed."""
 
     def __init__(self, *, url: str, timeout_s: float) -> None:
-        raise NotImplementedError
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or parts.hostname is None:
+            raise ValueError("url must be an absolute http or https URL")
+        self._host: str = parts.hostname
+        self._parts = parts
+        self._timeout_s = timeout_s
 
     def fetch(self) -> bytes:
-        raise NotImplementedError
+        parts = self._parts
+        connection_type = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+        deadline = time.monotonic() + self._timeout_s
+        connection = connection_type(self._host, parts.port, timeout=self._timeout_s)
+        target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        try:
+            connection.request("GET", target)
+            response = connection.getresponse()
+            if not 200 <= response.status < 300:
+                raise OSError(f"leaderboard answered HTTP {response.status}")
+            return self._read_body(response, connection, deadline)
+        except http.client.HTTPException as exc:
+            raise OSError(f"invalid HTTP exchange: {type(exc).__name__}") from exc
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _read_body(
+        response: http.client.HTTPResponse, connection: http.client.HTTPConnection, deadline: float
+    ) -> bytes:
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("leaderboard not complete before the deadline")
+            if connection.sock is not None:
+                connection.sock.settimeout(remaining)
+            chunk = response.read(_READ_CHUNK_BYTES)
+            if not chunk:
+                return b"".join(chunks)
+            size += len(chunk)
+            if size > LEADERBOARD_MAX_BYTES:
+                raise OSError("leaderboard body exceeds the size cap")
+            chunks.append(chunk)
 
 
 class ConfigCostModel:
@@ -115,13 +389,18 @@ class ConfigCostModel:
     spread (the conservative fallback of the F11 cost model; recorded data is stage 2)."""
 
     def __init__(self, config: Mapping[str, object]) -> None:
-        raise NotImplementedError
+        self._config = config
+
+    def _tiered(self, key: str, coin: str) -> Decimal:
+        tier = "major" if coin in _MAJOR_COINS else "alt"
+        return Decimal(str(self._config[f"{key}.{tier}"]))
 
     def taker_fee_bps(self) -> Decimal:
-        raise NotImplementedError
+        return Decimal(str(self._config["cost.taker_fee_bps"]))
 
-    def half_spread_bps(self, coin: str, t_ms: int) -> Decimal:
-        raise NotImplementedError
+    def half_spread_bps(self, coin: str, t_ms: int) -> Decimal:  # noqa: ARG002 - the fallback does not depend on time
+        multiplier = Decimal(str(self._config["cost.fallback_half_spread_mult"]))
+        return self._tiered("cost.fallback_half_spread_bps", coin) * multiplier
 
-    def delay_bps(self, coin: str, t_ms: int) -> Decimal:
-        raise NotImplementedError
+    def delay_bps(self, coin: str, t_ms: int) -> Decimal:  # noqa: ARG002 - the fallback does not depend on time
+        return self._tiered("cost.fallback_delay_slippage_bps", coin)

@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import secrets
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from copytrade.core.clock import Clock
+from copytrade.core.clock import Clock, SystemClock
 from copytrade.hl.budget import Sleeper
-from copytrade.recorder.identity import IdentitySource
+from copytrade.recorder.identity import IdentitySource, SystemIdentitySource
 from copytrade.recorder.ports import DiskProbe
-from copytrade.runner.endpoints import Endpoints
+from copytrade.runner.endpoints import Endpoints, mainnet_endpoints
 
 DEFAULT_THREAD_PAUSE_S = 0.5
 
@@ -31,7 +33,20 @@ class RunnerDeps:
     gate_key: bytes | None
 
 
+class _RealSleeper:
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+
 def production_deps(root: Path) -> RunnerDeps:
     """SystemClock, a real ``time.sleep`` sleeper, mainnet endpoints, ``SystemIdentitySource(root)``, the real disk
     probe, ``DEFAULT_THREAD_PAUSE_S`` and a per-process random gate key."""
-    raise NotImplementedError
+    return RunnerDeps(
+        clock=SystemClock(),
+        sleeper=_RealSleeper(),
+        endpoints=mainnet_endpoints(),
+        identity=SystemIdentitySource(root),
+        disk=None,
+        thread_pause_s=DEFAULT_THREAD_PAUSE_S,
+        gate_key=secrets.token_bytes(32),
+    )

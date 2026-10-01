@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from copytrade.ledger.store import Ledger
+from copytrade.recorder.store import PART_SUFFIX, RecordingReader
 
 KIND_RECORDING_PRUNED = "recording_pruned"
+_HASH_CHUNK_BYTES = 1 << 20
+
+
+def _sha256_and_size(path: Path) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(_HASH_CHUNK_BYTES):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
 
 
 def prune_recordings(
@@ -18,4 +32,19 @@ def prune_recordings(
     ``now_ms``) and return their paths (relative to ``recordings_dir``, POSIX, sorted). For each file one ledger
     record of kind ``recording_pruned`` with ``path``, ``sha256`` and ``bytes`` is appended BEFORE the file is
     deleted. Never touches the current or a newer day, the wallet registry, the ledger or any other directory."""
-    raise NotImplementedError
+    today = datetime.fromtimestamp(now_ms / 1000, UTC).date()
+    oldest_kept = (today - timedelta(days=int(config["storage.local_retention_days"]))).isoformat()
+    already = {r.payload["path"] for r in ledger.records() if r.kind == KIND_RECORDING_PRUNED}
+    pruned: list[str] = []
+    for closed in RecordingReader(recordings_dir, ledger.records).files():
+        if closed.day >= oldest_kept or closed.path in already:
+            continue
+        final = recordings_dir / closed.path
+        target = final if final.exists() else final.with_name(final.name + PART_SUFFIX)
+        if not target.is_file():
+            continue
+        sha256, size = _sha256_and_size(target)
+        ledger.append(KIND_RECORDING_PRUNED, {"path": closed.path, "sha256": sha256, "bytes": size})
+        target.unlink()
+        pruned.append(closed.path)
+    return tuple(sorted(pruned))

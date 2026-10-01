@@ -19,4 +19,9 @@ class Endpoints:
 
 def mainnet_endpoints() -> Endpoints:
     """The real hosts: Hyperliquid mainnet info/ws (READ-ONLY use), its stats host and api.telegram.org."""
-    raise NotImplementedError
+    return Endpoints(
+        info_url="https://api.hyperliquid.xyz/info",
+        ws_url="wss://api.hyperliquid.xyz/ws",
+        leaderboard_url="https://stats-data.hyperliquid.xyz/Mainnet/leaderboard",
+        telegram_base_url="https://api.telegram.org",
+    )
