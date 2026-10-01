@@ -37,3 +37,6 @@ Tests: `tests/telegram/` (real RiskGate, paper broker, ledger, PositionBook and 
 ## Run summary
 68 new tests (64 functions, 6 parametrised cases); at this commit every new test fails on the missing `copytrade.telegram` module (ModuleNotFoundError), existing suites pass.
 Not covered here: real HTTPS/TLS to api.telegram.org (QA with a throwaway bot on the PO's machine), p95 latency (QA), the R0 flatten re-run loop and the real alert wiring into F3/F4/F6/F10/F12 (R0).
+
+## Revision: fake server bookkeeping fix [F14.AC8]
+`FakeTelegram` recorded every `sendMessage` request before applying mode `down`/`http500`, so `sent()` counted failed delivery attempts as delivered. That made `test_F14_AC8_failed_delivery_backs_off_and_drains_in_order_on_recovery` and `test_F14_AC8_queue_age_boundary_drops_only_messages_older_than_queue_max_age` unsatisfiable (the required attempt while down appeared as a duplicate/stale "send"). Fix: `Req.delivered` is set only on a 2xx reply; `sent()` and new `delivered_calls()` return delivered requests only; `calls()`, `requests` and `request_count()` still include all attempts. No assertion was changed or weakened. All 68 tests pass.

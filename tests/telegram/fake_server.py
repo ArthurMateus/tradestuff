@@ -19,6 +19,7 @@ class Req:
     method: str
     payload: dict[str, Any]
     path: str
+    delivered: bool = False  # True only when the server answered with a 2xx (a real delivery)
 
 
 @dataclass
@@ -71,12 +72,14 @@ class FakeTelegram:
         parts = h.path.strip("/").split("/")
         method = parts[-1] if parts else ""
         with self._lock:
-            self.requests.append(Req(method, payload, h.path))
+            req = Req(method, payload, h.path)
+            self.requests.append(req)
             mode, forced = self.mode, (self.script.pop(0) if self.script else None)
         if parts[0] != f"bot{self.token}":
             self._reply(h, 401, {"ok": False, "error_code": 401, "description": "Unauthorized"})
             return
         if forced is not None:
+            req.delivered = 200 <= forced[0] < 300
             self._reply(h, forced[0], forced[1])
             return
         if mode == "down":
@@ -90,6 +93,7 @@ class FakeTelegram:
         if mode == "http500":
             self._reply(h, 500, {"ok": False, "error_code": 500, "description": "Internal Server Error"})
             return
+        req.delivered = True
         self._reply(h, 200, {"ok": True, "result": self._result(method, payload)})
 
     def _result(self, method: str, payload: dict[str, Any]) -> Any:
@@ -134,11 +138,17 @@ class FakeTelegram:
 
     # ---------------------------------------------------------------------------------------------- reads
     def calls(self, method: str) -> list[dict[str, Any]]:
+        """Every request received for `method`, including attempts that failed (down/5xx/4xx)."""
         with self._lock:
             return [r.payload for r in self.requests if r.method == method]
 
+    def delivered_calls(self, method: str) -> list[dict[str, Any]]:
+        """Only requests the server accepted (2xx): what the chat actually received."""
+        with self._lock:
+            return [r.payload for r in self.requests if r.method == method and r.delivered]
+
     def sent(self, chat_id: int | None = None) -> list[str]:
-        return [str(p["text"]) for p in self.calls("sendMessage") if chat_id is None or p.get("chat_id") == chat_id]
+        return [str(p["text"]) for p in self.delivered_calls("sendMessage") if chat_id is None or p.get("chat_id") == chat_id]
 
     def edits(self) -> list[dict[str, Any]]:
         return self.calls("editMessageText")
