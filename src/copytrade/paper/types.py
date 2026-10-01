@@ -177,3 +177,16 @@ class PendingExit:
     coin: str
     share_id: str
     qty: Qty
+
+
+@dataclass(frozen=True)
+class StopView:
+    """A registered stop-loss or take-profit that has not triggered (read-only view, R0)."""
+
+    client_order_id: str
+    coin: str
+    kind: str
+    side: str
+    qty: Qty
+    trigger_px: Price
+    share_id: str

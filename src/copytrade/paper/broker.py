@@ -45,6 +45,7 @@ from copytrade.paper.types import (
     PendingExit,
     PositionView,
     StopIntent,
+    StopView,
     SubmitResult,
 )
 
@@ -201,6 +202,10 @@ class PaperBroker:
             for order in self._pending.values()
             if not order.is_entry
         )
+
+    def stops(self) -> tuple[StopView, ...]:
+        """Every registered stop that has not triggered, in registration order (a snapshot). Read-only (R0)."""
+        raise NotImplementedError
 
     def cash_usd(self) -> Decimal:
         """Wallet cash (a ``Decimal``): ``paper.wallet_usd`` plus realised P&L, minus fees, plus funding."""
