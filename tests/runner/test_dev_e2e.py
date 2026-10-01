@@ -5,6 +5,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from copytrade.core.domain import ActionKind
+from copytrade.core.money import Price, Qty
+from copytrade.paper.types import OrderIntent
 from copytrade.runner import reload as rl
 from tests.runner.fake_hl import fill_json
 from tests.runner.world import LEADER, T0, World
@@ -65,7 +68,13 @@ def test_what_a_leader_did_while_we_were_down_is_resynced_at_the_restart_and_mir
     run1.stop()
     world.hl.leader_positions[LEADER.lower()] = []
     close = fill_json(
-        9, coin="SOL", side="A", sz="5.0", px="100.0", direction="Close Long", time_ms=world.exchange_ms() + 500,
+        9,
+        coin="SOL",
+        side="A",
+        sz="5.0",
+        px="100.0",
+        direction="Close Long",
+        time_ms=world.exchange_ms() + 500,
         start_position="5.0",
     )
     world.hl.leader_fills[LEADER.lower()].append(close)  # exchange history only: nothing is pushed live
@@ -84,3 +93,31 @@ def test_a_losing_copy_pauses_its_leader_and_the_pause_is_ledgered(new_world: An
     assert [r.payload["wallet"] for r in world.records("leader_paused")] == [LEADER]
     assert LEADER not in runner.follow.followed
     assert T0 > 0
+
+
+def test_every_process_gets_its_own_gate_key_so_a_token_from_a_previous_run_is_refused(new_world: Any) -> None:
+    world: World = new_world()
+    run1, _ = world.start()
+    world.step(run1, 3)
+    now = run1.last_advanced_ms
+    assert now is not None
+    intent = OrderIntent(
+        client_order_id="replayed",
+        coin="SOL",
+        side="buy",
+        qty=Qty("1"),
+        action=ActionKind.OPEN,
+        decided_at_ms=now,
+        decision_px=Price("100"),
+        trade_id="t-r",
+        share_id="s-r",
+        leverage=2,
+        exit_reason=None,
+    )
+    old_token = run1.gate._authority.issue(intent)  # noqa: SLF001 - the previous process's only way to mint a token
+    run1.stop()
+    run2, _ = world.start()
+    world.step(run2, 3)
+    result = run2.broker.submit(intent, old_token)
+    assert result.reason == "invalid_gate_token"
+    assert run2.broker.position("SOL") is None
