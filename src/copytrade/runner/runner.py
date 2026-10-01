@@ -47,7 +47,8 @@ class Runner:
     """The real components, wired. Read-only attributes (for diagnostics and tests): ``config``, ``paths``,
     ``run_id``, ``ledger``, ``sync`` (ClockSync), ``broker``, ``gate``, ``book``, ``manager``, ``bot``,
     ``recorder``, ``follow`` (FollowManager), ``detector``, ``feed`` (HlWsFeed), ``hub`` (MarketHub),
-    ``policy`` (RunnerEntryPolicy), ``flatten_runs`` (the run ids of every ``flatten`` call so far: the bot's first, then the supervisor's re-runs), ``gate_lock``
+    ``policy`` (RunnerEntryPolicy), ``flatten_runs`` (the run ids of every ``flatten`` call so far:
+    the bot's first, then the supervisor's re-runs), ``gate_lock``
     (the ONE ``threading.RLock`` shared by the loop, the sinks and the bot), ``threads``, ``last_advanced_ms``,
     ``entries_blocked``, ``stopping``.
 
