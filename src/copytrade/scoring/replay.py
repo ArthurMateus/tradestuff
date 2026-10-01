@@ -15,8 +15,8 @@ from __future__ import annotations
 from bisect import bisect_left
 from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal
-from itertools import pairwise
 
+from copytrade.core.atr import true_range_sum
 from copytrade.core.config import Config
 from copytrade.scoring.models import Candle, CostModel, RoundTrip
 
@@ -47,10 +47,7 @@ class CandleBook:
         if end < atr_period + 1:
             return None
         window = bars[end - atr_period - 1 : end]
-        true_ranges = [
-            max(cur.hi - cur.lo, abs(cur.hi - prev.c), abs(cur.lo - prev.c)) for prev, cur in pairwise(window)
-        ]
-        distance = atr_mult * sum(true_ranges, Decimal(0)) / atr_period
+        distance = atr_mult * true_range_sum([(bar.hi, bar.lo, bar.c) for bar in window]) / atr_period
         return distance if distance > 0 else None
 
     def bars_between(self, coin: str, start_ms: int, end_ms: int) -> Iterable[Candle]:
