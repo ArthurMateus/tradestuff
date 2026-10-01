@@ -79,6 +79,8 @@ class FakeHl:
     hang_types: set[str] = field(default_factory=set)  # info request types never answered until release()
     leaderboard_status: int = 200
     leaderboard_body: bytes = b""
+    leaderboard_delay_s: float = 0.0
+    hook: Callable[[], None] | None = None  # called at the start of every info request (e.g. to advance a fake clock)
     _release: threading.Event = field(default_factory=threading.Event)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _httpd: ThreadingHTTPServer | None = None
@@ -145,6 +147,8 @@ class FakeHl:
             return
         req = json.loads(raw or b"{}")
         rtype = str(req.get("type"))
+        if self.hook is not None:
+            self.hook()
         with self._lock:
             self.http_requests.append((rtype, req))
         if rtype in self.hang_types:
@@ -160,6 +164,8 @@ class FakeHl:
         if h.path != "/leaderboard":
             self._reply(h, 404, b"{}")
             return
+        if self.leaderboard_delay_s:
+            self._release.wait(self.leaderboard_delay_s)
         self._reply(h, self.leaderboard_status, self.leaderboard_body)
 
     def requests_of(self, rtype: str) -> list[dict[str, Any]]:
