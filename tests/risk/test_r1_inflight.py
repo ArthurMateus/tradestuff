@@ -71,7 +71,6 @@ def test_F10_B1_opens_on_different_coins_never_commit_more_margin_than_the_equit
 def test_F10_B1_margin_of_a_pending_entry_is_not_free_and_is_released_when_it_expires(new_risk: NewRisk) -> None:
     r = mk(new_risk)
     r.seed("BTC", leader="LZ", qty="2.5", entry="100", stop="99", leverage=1, share="BIGS")  # margin 250, free 50
-    r.book("ETH", "100")
     first = _open(r, "ETH", 1)
     assert first.decision.approved and first.result is not None and first.result.accepted
     blocked = _open(r, "DOGE", 2)  # free equity is ~0 while ETH is in flight; DOGE tops out at 5x (20 margin)
