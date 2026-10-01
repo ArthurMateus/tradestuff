@@ -5,20 +5,24 @@ Read-only toward Hyperliquid (info requests only). Everything that touches the b
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from decimal import Decimal
 from itertools import pairwise
+from typing import Any
 
 from copytrade.core.clock import Clock
 from copytrade.hl.budget import Priority
+from copytrade.hl.errors import HlError
 from copytrade.hl.ledger_port import DowntimeRecord
 from copytrade.hl.models import Candle, ClearinghouseState, Fill
 from copytrade.hl.rest import HlRestClient
 from copytrade.ledger.store import Ledger
 from copytrade.paper.broker import PaperBroker
 from copytrade.positions.book import PositionBook
-from copytrade.positions.types import CLOSED
+from copytrade.positions.types import CLOSED, ShareState
 from copytrade.recorder.ports import Backlog
-from copytrade.scoring.models import CycleResult
+from copytrade.scoring.models import CycleResult, WalletInputs
+from copytrade.selection.backfill import Backfiller
 
 KIND_DOWNTIME = "downtime"
 KIND_SCORE_CYCLE = "score_cycle"
@@ -179,20 +183,25 @@ class StoredReturns:
 class BookShares:
     """``selection.OpenShareSource`` and ``recorder.ports.OpenCoinsSource`` over the share book: a wallet has open
     shares while any of its shares is not closed; the coins of those shares (pending entries included) are the ones
-    whose candles and books matter."""
+    whose candles and books matter. The book is read under the gate lock (the Telegram thread books flatten fills)."""
 
-    def __init__(self, book: PositionBook) -> None:
+    def __init__(self, book: PositionBook, lock: AbstractContextManager[Any]) -> None:
         self._book = book
+        self._lock = lock
+
+    def _live(self) -> tuple[ShareState, ...]:
+        with self._lock:
+            return tuple(s for s in self._book.states() if s.status != CLOSED)
 
     def has_open_shares(self, wallet: str) -> bool:
         key = wallet.lower()
-        return any(s.leader.lower() == key and s.status != CLOSED for s in self._book.states())
+        return any(s.leader.lower() == key for s in self._live())
 
     def wallets(self) -> frozenset[str]:
-        return frozenset(s.leader.lower() for s in self._book.states() if s.status != CLOSED)
+        return frozenset(s.leader.lower() for s in self._live())
 
     def coins(self) -> frozenset[str]:
-        return frozenset(s.coin for s in self._book.states() if s.status != CLOSED)
+        return frozenset(s.coin for s in self._live())
 
     def coins_open_between(self, start_ms: int, end_ms: int) -> frozenset[str]:  # noqa: ARG002 - the port's window
         return self.coins()
@@ -214,3 +223,44 @@ class LedgerScores:
                 "eligible": [s.address for s in result.scores if s.eligible],
             },
         )
+
+
+class PacedInputs:
+    """``selection.InputsProvider`` that keeps the scoring inputs fresh in small paced slices instead of one blocking
+    burst per cycle. The cycle's own ``refresh`` calls do nothing; ``work()`` (the loop calls it every
+    ``SELECTION_WORK_INTERVAL_S``) fetches the next wallet that was never fetched and, once the first backfill is
+    complete, refreshes the candidates in turn. The REST client behind it never sleeps (a request that does not fit the
+    rate budget fails at once and is tried again later), so one ``work()`` blocks for network latency only."""
+
+    def __init__(self, backfiller: Backfiller) -> None:
+        self._backfiller = backfiller
+        self._candidates: list[str] = []
+        self._turn = 0
+
+    @property
+    def complete(self) -> bool:
+        return self._backfiller.complete
+
+    def set_candidates(self, wallets: Sequence[str]) -> None:
+        self._candidates = list(dict.fromkeys(wallet.lower() for wallet in wallets))
+        self._turn = 0
+        self._backfiller.set_candidates(self._candidates)
+
+    def refresh(self, wallet: str) -> None:
+        """The cycle's per-wallet refresh: nothing to do, ``work`` keeps the data fresh."""
+
+    def inputs(self, wallet: str, t_ms: int) -> WalletInputs | None:
+        return self._backfiller.inputs(wallet, t_ms)
+
+    def work(self) -> None:
+        """One slice: the next unfetched candidate, else the next candidate in turn. Never raises for a failed fetch."""
+        if self._backfiller.step():
+            return
+        if not self._candidates:
+            return
+        wallet = self._candidates[self._turn % len(self._candidates)]
+        self._turn += 1
+        try:
+            self._backfiller.refresh(wallet)
+        except (HlError, OSError):
+            return

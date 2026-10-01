@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from copytrade.core.errors import CopytradeError
 from copytrade.core.events import Alert, AlertSink
 from copytrade.ledger.records import LedgerRecord
 from copytrade.ledger.store import Ledger
@@ -161,7 +162,7 @@ class ReloadParts:
     fetch_rules: Callable[[], Mapping[str, CoinMeta]]
 
 
-class ReloadError(Exception):
+class ReloadError(CopytradeError):
     """The reload cannot continue safely (the start is refused, nothing is traded)."""
 
 
