@@ -104,3 +104,63 @@ The new tests are slow to FAIL (about 80 s in total) because the ones that wait 
 - `tests/runner/world.py`: `World.step` real sleep 2 ms -> 12 ms. A fake WebSocket frame takes 5-11 ms, so books lagged ~3 steps and paper exits/entries were rejected `no_book` / `exit_unfilled`. Condition-based fix for every test using `step`/`run_until`.
 - `tests/runner/test_reload.py`: AC5 replay now replays tid 1 (the fill the test opened), not the fixture fill tid 8000000; AC6 resume test keeps an ETH book pumped until the ETH fill; AC6 "position without a share" waits on the position (`run_until`) instead of 3 fixed steps. Assertions unchanged.
 - `tests/runner/test_disk.py`: 61 s fake-clock jumps replaced by 7 x 10 s steps per 70 s (below `feed.stale_after_s` 30), so the feed is not dropped as silent; the entry refusal waits on a `signal_skip` with `ms=0` (no fake time, the fill stays fresh). Intent and assertions unchanged.
+
+## Fix-round addendum (R0 review round 1; architect ruling `reviews/R0-architect-r1.md`, F11 Amendment 13)
+
+Designer step. New and changed tests fail on the code as it stands (a `TypeError` for the new `TimeBase` keywords or an
+assertion for the behaviour); the rest of `tests/runner` and `tests/paper` passes. Tests that guard behaviour that already
+works are labelled **guard**.
+
+### Replaced and edited tests (nothing weakened)
+- DELETED and REPLACED: `test_R0_AC4_a_sustained_jump_is_accepted_once_local_time_has_caught_up_with_it` (it modelled an exchange
+  clock that does not follow local time) by `test_R0_AC4_offset_step_is_rebased_after_two_fresh_estimates_and_broker_time_never_goes_back`.
+- EDITED because Amendment 13 supersedes their premise (a refused sample used to return `(None, reason)` and freeze broker
+  time): `test_R0_AC4_jump_guard_boundary_at_two_offset_uncertainties` (same boundary 199/200/201, now "in doubt, target = the
+  projection"), `test_R0_AC4_a_one_hour_clock_jump_is_not_followed_alerts_once_and_is_not_advanced` -> `..._sample_is_not_followed_alerts_once_and_broker_time_keeps_moving`.
+- REMOVED as covered by stronger tests: `..._one_plus_hour_sample_is_not_accepted_and_the_next_normal_sample_is` (now
+  `positive_offset_step_not_applied_until_two_fresh_estimates` a), `..._a_target_behind_the_last_one_is_never_returned` and the old
+  property test (now `projection_is_forward_only`, `property_no_unconfirmed_sample_moves_broker_time`).
+- Kept as they were (guards): first target, unsynced with no baseline at all, normal step, every-iteration advance, leader open while
+  unsynced opens nothing, stop booked at the iteration's time, zero bad_timestamp alerts, stall heartbeat.
+
+### Contract the developer must implement (pinned by the tests)
+- `TimeBase(exchange_time=, clock=, max_offset_uncertainty_ms=, monotonic_ms: Callable[[], int] = real monotonic (time.monotonic_ns() // 1_000_000), resample: Callable[[], bool] = lambda: False)`.
+  `resample()` forces a fresh offset estimate and returns True if it got one (wire it to a new `ClockSync.resample() -> bool`; no config key).
+  `seed_unverified(ms: int)` (the reload calls it with the replayed ledger time when the clock is unsynced and positions were restored);
+  `rebase_count: int`. Constants `DOUBT_RESAMPLE_S = 30`, `REBASE_FRESH_ESTIMATES = 2`, `DOUBT_REALERT_S = 300`, `MARKS_STALE_ALERT_N = 5`.
+- `next_target_ms() -> (target, reason)`: `target` is the broker-time projection `base + (mono_now - base_mono)`, forward-only, `None`
+  only when no baseline exists at all (unsynced, never seeded); `reason` is `None` when the clock is trusted, else `SKIP_CLOCK_UNSYNCED` /
+  `SKIP_CLOCK_JUMP` (entries refused, exits go on). In doubt = the exchange clock raises, OR |candidate - projection| > 2 x
+  `clock.max_offset_uncertainty_ms` (symmetric; exactly the allowance is NOT doubt), OR the baseline is unverified with no synced sample yet.
+  The first synced candidate after `seed_unverified` is accepted without the jump guard (target = max(projection, candidate)).
+- Timing the tests rely on (1 s ticks, injected monotonic clock): the doubt is first seen on tick 1; the first forced resample is 30 s later (tick 31), then
+  every 30 s; no forced resample while not in doubt; a single fresh estimate that is back inside the allowance clears the doubt at once;
+  the rebase happens in the same `next_target_ms` call as the second consecutive fresh estimate (tick 61) whose implied offsets are within the
+  allowance of each other: then base = max(projection, candidate), `rebase_count += 1`. A stale estimate (`resample()` False) never rebases.
+  A backward rebase holds broker time flat (entries stay refused) until the exchange estimate is within the allowance of the held time.
+- `RunnerDeps.monotonic_ms: Callable[[], int] | None = None` (None = real monotonic). `tests/runner/world.py` injects `World.mono_ms`
+  (= fake clock minus `wall_skew_ms`) only if the field exists: REMOVE that `dataclasses.fields` guard (and the `inspect.signature` guard in `test_timebase.make`) once it does.
+- `StepReport`: `advanced_to_ms` = the projection on EVERY iteration (None only with no baseline); `skipped` = the doubt reason or None.
+- Alerts (Telegram, matched by substring): entering doubt `clock_unsynced` / `clock_jump` once; while in doubt AND positions are open, every 300 s a
+  message containing `managed from projection` and `N open positions` (`1 open position` is asserted); none without positions; `clock_rebased` once per
+  rebase and the alert state resets (a new episode alerts again); `marks_stalled` at the 5th consecutive iteration with positions open and stale mids,
+  repeated every 300 s, reset by a good mark (a new episode alerts at its 5th iteration); `flatten_incomplete` once at the existing re-run limit (12), then every 300 s while unfinished,
+  none after it finishes; `runner_crashed` (names the open positions, e.g. `SOL`) enqueued before `stop()` when `run()` dies on a ledger/money-path failure;
+  `runner_section_failed` (existing) throttled for a non-money exception in a non-money section.
+- Flatten: `FlattenSupervisor` is unfinished while `broker.positions()`, pending exits or in_flight/still_open are non-empty (tested at runner level via `runner.flatten_runs`; no
+  unit-level constructor change is pinned); a raise in `manager.flatten` is caught and the re-run still happens (the test injects the raise by wrapping `manager.flatten`: the one fault seam that is our own code, because no OS/port fault reaches it).
+- How a test forces a resample: it does not; `TimeBase` does it (unit: counted through the injected `resample`; runner: `l2Book` requests at the fake exchange). `world.sample_bias_ms` biases only the l2Book REST sample (a wrong sample, not a wrong clock); `world.offset_ms` moves the true exchange clock; `world.step_wall(ms)` steps only the local wall clock.
+
+### Fix-round tests (new unless marked guard)
+| Requirement | Tests |
+|---|---|
+| TimeBase (unit) | `test_timebase.py`: `timebase_exits_advance_while_unsynced_entries_refused`, `positive_offset_step_not_applied_until_two_fresh_estimates`, `offset_step_is_rebased_after_two_fresh_estimates_and_broker_time_never_goes_back`, `negative_offset_step_holds_broker_time_flat_and_entries_refused_until_caught_up`, `backward_wall_step_does_not_freeze_broker_time`, `forward_wall_step_does_not_move_broker_time`, `stale_offset_after_wall_step_is_not_rebased_without_fresh_estimate`, `forces_resample_every_30s_in_doubt`, `restart_unverified_baseline_projects_replayed_time_and_first_sync_catches_up`, `an_unverified_baseline_is_in_doubt..`, `projection_is_forward_only` (Hypothesis), `property_no_unconfirmed_sample_moves_broker_time` (Hypothesis), `a_candidate_behind_the_projection_by_more_than_the_allowance_is_also_in_doubt` |
+| Runner, clock in doubt | `test_clock_doubt.py`: `stop_triggers_while_clock_unsynced`, `stop_triggers_during_jump_doubt`, `trailing_stop_moves_while_in_doubt[x2]`, `a_gap_far_below_the_stop_closes..[x2]` (liquidation/gap), `delisting_closes_the_position_while_in_doubt[x2]`, `entry_refused_while_in_doubt_exit_filled[x2]`, `clock_alerts_names_cadence_and_rebased`, `a_persistent_offset_step_sends_clock_jump_once_then_clock_rebased_once_and_resets`, `no_realert_without_positions` (passes today: guard) |
+| Flatten / marks | `test_flatten_marks.py`: `flatten_in_doubt_closes_positions`, `flatten_unfinished_while_positions_or_pending_exits_remain`, `flatten_incomplete_alert_repeats`, `flatten_raises_still_reruns`, `marks_stalled_alert_after_5_and_repeats`, `no_marks_stalled_alert_without_positions` (guard) |
+| Restart / fail-safe | `test_failsafe_restart.py`: `torn_restore_ledger_truncated_after_cancel_still_has_live_sl` (every kill point of a restart), `two_consecutive_restarts_no_duplicate_or_resurrected_stops` (guard today, kills br_stop_cancel), `reload_flags_or_replaces_missing_sl`, `fsync_failure_enqueues_runner_crashed_alert_naming_positions` (fault at `os.fsync`), `non_money_exception_does_not_kill_loop` (ValueError at the disk-probe port), `hub_polled_independently_of_recorder_fault` (OSError) and `..._non_os_error` (ValueError) |
+| Mutation pins (`test_mutation_pins.py`, all guards) | see below |
+| Harness | per-test timeout `RUNNER_TEST_TIMEOUT_S = 150` in `tests/runner/conftest.py` (stdlib: timer thread raising `RunnerTestTimeout` in the main thread + `faulthandler` exit as the last resort); `World.telegram_ready` now waits for the run's second `getUpdates` (count above the pre-build count) |
+
+Note for the developer: `World.step` keeps its 12 ms sleep; stepping with `ms=70_000` is how a test makes the recorder probe the disk (every 60 s).
+Finding while writing the pins (not a test failure): a kill -9 after the take-profit fill and before the stop-loss resize restores the stop-loss at the OLD
+quantity (1.00) for a position of 0.50; `torn_restore...` counts a stop of at least the position's quantity as protected, so it does not fail on it. Worth the architect's eye with RISK-61.

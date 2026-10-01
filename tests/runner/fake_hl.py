@@ -76,6 +76,7 @@ class FakeHl:
     candle_range: tuple[str, str] = ("100.375", "99.625")  # high, low of every flat bar: true range 0.75
     funding_rate: str = "0.0000125"
     book_time_bias_ms: int = 0  # added to the ``time`` of l2Book REST answers only (a wrong clock SAMPLE, not a wrong clock)
+    garbage_types: dict[str, Any] = field(default_factory=dict)  # info request types answered 200 with this JSON body
     fail_types: set[str] = field(default_factory=set)  # info request types answered with HTTP 500
     hang_types: set[str] = field(default_factory=set)  # info request types never answered until release()
     leaderboard_status: int = 200
@@ -156,6 +157,9 @@ class FakeHl:
             self._release.wait(30)
         if rtype in self.fail_types:
             self._reply(h, 500, b"{}")
+            return
+        if rtype in self.garbage_types:
+            self._reply(h, 200, json.dumps(self.garbage_types[rtype]).encode())
             return
         self._reply(h, 200, json.dumps(self._answer(rtype, req)).encode())
 
