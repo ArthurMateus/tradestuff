@@ -25,7 +25,7 @@ from copytrade.positions.book import PositionBook
 from copytrade.positions.manager import PositionManager
 from copytrade.recorder.service import Recorder
 from copytrade.risk.gate import STATE_FILENAME, RiskGate
-from copytrade.runner.adapters import MarketHub, RestMarketSource, RestMetaSource
+from copytrade.runner.adapters import HubTap, MarketHub, RestMarketSource, RestMetaSource
 from copytrade.runner.deps import RunnerDeps
 from copytrade.runner.flatten import (
     ALERT_FLATTEN_INCOMPLETE,
@@ -55,6 +55,7 @@ from copytrade.runner.timebase import (
     ALERT_CLOCK_REBASED,
     ALERT_LOOP_STALLED,
     DOUBT_REALERT_S,
+    MARKS_STALE_ALERT_N,
     TimeBase,
 )
 from copytrade.selection.manager import FollowManager
@@ -71,6 +72,7 @@ POSTS_INTERVAL_MS = 1_000  # trade posts are synced on a timer, not only when a 
 THREAD_JOIN_TIMEOUT_S = 8.0
 SECTION_ALERT_INTERVAL_MS = 600_000
 ALERT_SECTION_FAILED = "runner_section_failed"
+ALERT_MARKS_STALLED = "marks_stalled"
 __all__ = [
     "ALERT_FLATTEN_INCOMPLETE",
     "FLATTEN_RERUN_INTERVAL_S",
@@ -124,6 +126,7 @@ class RunnerParts:
     sync: ClockSync
     timebase: TimeBase
     hub: MarketHub
+    hub_tap: HubTap
     meta: RestMetaSource
     market: RestMarketSource
     broker: PaperBroker
@@ -194,6 +197,8 @@ class Runner:
         self._doubt_alerted = False
         self._next_doubt_alert_ms = 0
         self._seen_rebases = 0
+        self._stale_marks = 0
+        self._next_marks_alert_ms = 0
         self._known_followed: frozenset[str] = frozenset()
         self._last_step_ms = self._clock.now_ms()
         self._last_mark_ms: int | None = None
@@ -304,6 +309,7 @@ class Runner:
             raise RuntimeError("step() needs a started, not yet stopped runner")
         self._parts.sync.tick()
         advanced, skipped = self._advance_and_mark()
+        self._section("hub", self._parts.hub_tap.drain)  # mids and books do not depend on the recorder (RISK-65)
         self._section("feed", self.feed.tick)
         self._section("recorder", self.recorder.tick)
         self._selection()
@@ -367,13 +373,37 @@ class Runner:
     def _mark(self, target: int) -> None:
         """Give every held coin its live mid at this iteration's exchange time (stops, liquidations, trailing)."""
         stamped = self.hub.mid_time_ms()
-        if stamped is None or self._clock.now_ms() - stamped > int(self.config["feed.stale_after_s"]) * 1000:
-            return
-        mids = self.hub.mids()
-        for position in self.broker.positions():
+        stale = stamped is None or self._clock.now_ms() - stamped > int(self.config["feed.stale_after_s"]) * 1000
+        mids = {} if stale else self.hub.mids()
+        positions = self.broker.positions()
+        unmarked = False
+        for position in positions:
             mid = mids.get(position.coin)
-            if mid is not None:
-                self.manager.on_mark(MarkUpdate(coin=position.coin, mark=mid, time_ms=target))
+            if mid is None:
+                unmarked = True
+                continue
+            self.manager.on_mark(MarkUpdate(coin=position.coin, mark=mid, time_ms=target))
+        self._marks_alert(unmarked=unmarked)
+
+    def _marks_alert(self, *, unmarked: bool) -> None:
+        """RISK-57: ``marks_stalled`` at the ``MARKS_STALE_ALERT_N``-th consecutive iteration with positions open and no
+        usable mark (stale mids, or a held coin without a mid), repeated every ``DOUBT_REALERT_S``; a good mark
+        resets."""
+        if not unmarked:
+            self._stale_marks = 0
+            return
+        self._stale_marks += 1
+        now = self._clock.now_ms()
+        if self._stale_marks == MARKS_STALE_ALERT_N or (
+            self._stale_marks > MARKS_STALE_ALERT_N and now >= self._next_marks_alert_ms
+        ):
+            self._next_marks_alert_ms = now + DOUBT_REALERT_S * 1000
+            self._parts.relay.send(
+                Alert(
+                    kind=ALERT_MARKS_STALLED,
+                    message=f"No usable mark for {self._stale_marks} iterations with positions open: stops are blind.",
+                )
+            )
 
     def _delistings(self, target: int) -> None:
         now = self._clock.now_ms()

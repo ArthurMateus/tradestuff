@@ -76,6 +76,33 @@ def _positive(value: Price) -> bool:
     return value.is_finite() and value > 0
 
 
+HUB_TAP_MAX_EVENTS = 50_000  # what the recorder has not collected yet; the oldest events go first
+
+
+class HubTap:
+    """The recorder's ``MarketFeed``: the runner drains the ``MarketHub`` itself on every iteration (mids and books must
+    not depend on the recorder, RISK-65) and hands the events over here; ``poll`` returns what ``drain`` collected."""
+
+    def __init__(self, hub: MarketHub) -> None:
+        self._hub = hub
+        self._lock = threading.Lock()
+        self._events: deque[FeedEvent] = deque(maxlen=HUB_TAP_MAX_EVENTS)
+
+    def drain(self) -> None:
+        """Poll the hub (never raises for a lost connection) and keep the events for the recorder."""
+        events = self._hub.poll()
+        with self._lock:
+            self._events.extend(events)
+
+    def subscribe(self, coins: Sequence[str]) -> None:
+        self._hub.subscribe(coins)
+
+    def poll(self) -> Sequence[FeedEvent]:
+        with self._lock:
+            events, self._events = tuple(self._events), deque(maxlen=HUB_TAP_MAX_EVENTS)
+        return events
+
+
 class MarketHub:
     """``recorder.ports.MarketFeed`` over the info WebSocket (``l2Book`` per coin and ``allMids``), and the live-data
     store behind it: it is the ONLY consumer of the socket, the recorder polls it, and it keeps (a) the recent L2

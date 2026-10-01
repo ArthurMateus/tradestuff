@@ -40,6 +40,7 @@ from copytrade.runner.adapters import (
     ConfigCostModel,
     ExchangeOffsetSource,
     HttpLeaderboardSource,
+    HubTap,
     MarketHub,
     RestMarketSource,
     RestMetaSource,
@@ -348,6 +349,7 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         scores=LedgerScores(ledger),
         costs=ConfigCostModel(config),
     )
+    hub_tap = HubTap(ex.hub)
     recorder = Recorder(
         config=config,
         clock=clock,
@@ -357,7 +359,7 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
             recordings_dir=paths.recordings_dir, ledger_dir=paths.ledger_dir, cache_dir=paths.cache_dir
         ),
         ports=RecorderPorts(
-            feed=ex.hub,
+            feed=hub_tap,
             source=ex.market,
             leaderboard=leaderboard,
             universe=FollowedUniverse(
@@ -394,7 +396,12 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         run_id=run_id,
     )
     signals.bind(manager)
-    supervisor = FlattenSupervisor(manager=manager, alerts=relay, now_ms=clock.now_ms)
+    supervisor = FlattenSupervisor(
+        manager=manager,
+        alerts=relay,
+        now_ms=clock.now_ms,
+        held=lambda: bool(broker.positions() or broker.pending_exits() or broker.pending_entries()),
+    )
     bot = TelegramBot(
         config=config,
         api=TelegramApi(deps.endpoints.telegram_base_url, cast(SecretValue, secrets_in.telegram_token)),
@@ -417,6 +424,7 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         sync=ex.sync,
         timebase=ex.timebase,
         hub=ex.hub,
+        hub_tap=hub_tap,
         meta=ex.meta,
         market=ex.market,
         broker=broker,

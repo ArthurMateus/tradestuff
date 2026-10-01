@@ -19,10 +19,15 @@ from copytrade.ledger.store import Ledger
 from copytrade.paper.types import PendingEntry
 from copytrade.risk.types import FlattenReport
 from copytrade.runner.adapters import MarketHub
-from copytrade.runner.flatten import ALERT_FLATTEN_INCOMPLETE, FLATTEN_RERUN_INTERVAL_S, FLATTEN_RERUN_MAX, FlattenSupervisor
+from copytrade.runner.flatten import (
+    ALERT_FLATTEN_INCOMPLETE,
+    FLATTEN_RERUN_INTERVAL_S,
+    FLATTEN_RERUN_MAX,
+    FlattenSupervisor,
+)
 from copytrade.runner.sources import MarkedAccount, PacedInputs, StoredReturns
 from copytrade.runner.tail import LedgerTail
-from copytrade.runner.timebase import GuardedExchangeTime, TimeBase
+from copytrade.runner.timebase import SKIP_CLOCK_JUMP, GuardedExchangeTime, TimeBase
 from tests.hl.support import T0, FakeClock
 from tests.risk.helpers import FakeExchangeTime
 
@@ -54,7 +59,12 @@ class Alerts:
 
 def supervisor(unfinished: int) -> tuple[FlattenSupervisor, FakeManager, FakeClock, Alerts]:
     clock, manager, alerts = FakeClock(T0), FakeManager(unfinished), Alerts()
-    return FlattenSupervisor(manager=manager, alerts=alerts, now_ms=clock.now_ms), manager, clock, alerts  # type: ignore[arg-type]
+    return (
+        FlattenSupervisor(manager=manager, alerts=alerts, now_ms=clock.now_ms, held=lambda: unfinished > 100),
+        manager,
+        clock,
+        alerts,
+    )  # type: ignore[arg-type]
 
 
 def test_every_flatten_call_gets_a_new_run_id_and_a_finished_report_is_not_rerun() -> None:
@@ -105,7 +115,7 @@ def test_in_flight_entries_alone_keep_the_flatten_open() -> None:
             return FlattenReport((), in_flight=(entry,) if self.calls == 1 else (), still_open=(), pause_saved=True)
 
     manager = Manager()
-    sup = FlattenSupervisor(manager=manager, alerts=alerts, now_ms=clock.now_ms)  # type: ignore[arg-type]
+    sup = FlattenSupervisor(manager=manager, alerts=alerts, now_ms=clock.now_ms, held=lambda: False)  # type: ignore[arg-type]
     sup.flatten(run_id="r")
     clock.advance(FLATTEN_RERUN_INTERVAL_S * 1000)
     sup.rerun_if_due()
@@ -138,7 +148,7 @@ def test_a_tail_over_a_missing_ledger_is_empty(tmp_path: Path) -> None:
 
 def test_the_guarded_clock_follows_the_accepted_target_and_goes_dark_on_a_refused_sample() -> None:
     clock, xt = FakeClock(T0), FakeExchangeTime(T0 + 500)
-    base = TimeBase(exchange_time=xt, clock=clock, max_offset_uncertainty_ms=100)
+    base = TimeBase(exchange_time=xt, clock=clock, max_offset_uncertainty_ms=100, monotonic_ms=clock.now_ms)
     guarded = GuardedExchangeTime(base)
     with pytest.raises(ClockUnsyncedError):
         guarded.exchange_now()  # nothing accepted yet
@@ -146,7 +156,7 @@ def test_the_guarded_clock_follows_the_accepted_target_and_goes_dark_on_a_refuse
     clock.advance(250)
     assert guarded.exchange_now().ms == T0 + 750  # projected with local time between iterations
     xt.now += 3_600_000
-    assert base.next_target_ms()[0] is None
+    assert base.next_target_ms()[1] == SKIP_CLOCK_JUMP
     with pytest.raises(ClockUnsyncedError):
         guarded.exchange_now()  # a jump: no raw clock reaches the gate
     xt.now -= 3_600_000
@@ -216,7 +226,11 @@ class Pos:
 
 def account(positions: list[Any], mids: dict[str, Price], stamped: int | None, clock: FakeClock) -> MarkedAccount:
     return MarkedAccount(
-        broker=FakeBroker("300", positions), mids=lambda: mids, mid_time_ms=lambda: stamped, clock=clock, max_age_ms=30_000
+        broker=FakeBroker("300", positions),
+        mids=lambda: mids,
+        mid_time_ms=lambda: stamped,
+        clock=clock,
+        max_age_ms=30_000,
     )  # type: ignore[arg-type]
 
 
