@@ -205,7 +205,18 @@ class PaperBroker:
 
     def stops(self) -> tuple[StopView, ...]:
         """Every registered stop that has not triggered, in registration order (a snapshot). Read-only (R0)."""
-        raise NotImplementedError
+        return tuple(
+            StopView(
+                client_order_id=stop.client_order_id,
+                coin=stop.coin,
+                kind=stop.kind,
+                side=stop.side,
+                qty=Qty(stop.qty),
+                trigger_px=Price(stop.trigger_px),
+                share_id=stop.share_id,
+            )
+            for stop in self._stops.values()
+        )
 
     def cash_usd(self) -> Decimal:
         """Wallet cash (a ``Decimal``): ``paper.wallet_usd`` plus realised P&L, minus fees, plus funding."""

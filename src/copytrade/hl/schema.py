@@ -17,7 +17,19 @@ from copytrade.core.clock import Clock
 from copytrade.core.events import Alert, AlertSink
 from copytrade.core.money import Notional, Pnl, Price, Qty
 from copytrade.hl.errors import HlSchemaError
-from copytrade.hl.models import BookLevel, Candle, ClearinghouseState, Fill, L2Book, LeaderPosition, PortfolioWindow
+from copytrade.hl.models import (
+    AssetCtxRow,
+    BookLevel,
+    Candle,
+    ClearinghouseState,
+    CoinSpec,
+    Fill,
+    FundingRow,
+    L2Book,
+    LeaderPosition,
+    MetaAndCtxs,
+    PortfolioWindow,
+)
 
 SCHEMA_FAILURE_ALERT = "schema_failure"
 WS_FILLS_ENDPOINT = "ws:userFills"
@@ -187,6 +199,60 @@ class _Reader:
         raw = self.obj(payload, "")
         return {coin: self.price(value, _key("", coin)) for coin, value in raw.items()}
 
+    def coin_spec(self, value: Any, path: str) -> CoinSpec:
+        raw = self.obj(value, path)
+        delisted = raw.get("isDelisted", False)
+        return CoinSpec(
+            name=self.text_field(raw, "name", path),
+            sz_decimals=self.uint_field(raw, "szDecimals", path),
+            max_leverage=self.uint_field(raw, "maxLeverage", path),
+            is_delisted=self.flag(delisted, _key(path, "isDelisted")),
+        )
+
+    def universe(self, value: Any, path: str) -> tuple[CoinSpec, ...]:
+        raw = self.obj(value, path)
+        rows = self.arr(self.member(raw, "universe", path), _key(path, "universe"))
+        return tuple(self.coin_spec(row, _idx(_key(path, "universe"), i)) for i, row in enumerate(rows))
+
+    def meta(self, payload: Any) -> tuple[CoinSpec, ...]:
+        return self.universe(payload, "")
+
+    def asset_ctx(self, value: Any, coin: str, path: str) -> AssetCtxRow:
+        raw = self.obj(value, path)
+        return AssetCtxRow(
+            coin=coin,
+            mark_px=self.price_field(raw, "markPx", path),
+            oracle_px=self.price_field(raw, "oraclePx", path),
+            funding=self.decimal(self.member(raw, "funding", path), _key(path, "funding"), Decimal),
+            open_interest=self.qty_field(raw, "openInterest", path, non_negative=True),
+        )
+
+    def meta_and_ctxs(self, payload: Any) -> MetaAndCtxs:
+        pair = self.arr(payload, "")
+        if len(pair) != 2:
+            self.fail("", "a [meta, assetCtxs] pair")
+        coins = self.universe(pair[0], "[0]")
+        rows = self.arr(pair[1], "[1]")
+        if len(rows) != len(coins):
+            self.fail("[1]", "one context per universe entry")
+        contexts = tuple(self.asset_ctx(row, coins[i].name, _idx("[1]", i)) for i, row in enumerate(rows))
+        return MetaAndCtxs(coins=coins, contexts=contexts)
+
+    def funding_history(self, payload: Any) -> tuple[FundingRow, ...]:
+        out: list[FundingRow] = []
+        for i, item in enumerate(self.arr(payload, "")):
+            path = _idx("", i)
+            raw = self.obj(item, path)
+            out.append(
+                FundingRow(
+                    coin=self.text_field(raw, "coin", path),
+                    time_ms=self.uint_field(raw, "time", path),
+                    rate=self.decimal(self.member(raw, "fundingRate", path), _key(path, "fundingRate"), Decimal),
+                    premium=self.decimal(self.member(raw, "premium", path), _key(path, "premium"), Decimal),
+                )
+            )
+        return tuple(out)
+
     def candles(self, payload: Any) -> tuple[Candle, ...]:
         out: list[Candle] = []
         for i, item in enumerate(self.arr(payload, "")):
@@ -256,6 +322,9 @@ _PARSERS: dict[str, Callable[[_Reader, Any], Any]] = {
     "candleSnapshot": _Reader.candles,
     "userRole": _Reader.user_role,
     "portfolio": _Reader.portfolio,
+    "meta": _Reader.meta,
+    "metaAndAssetCtxs": _Reader.meta_and_ctxs,
+    "fundingHistory": _Reader.funding_history,
 }
 
 
@@ -264,7 +333,8 @@ def parse_response(request_type: str, payload: Any) -> Any:
 
     Returns: ``allMids`` -> ``dict[str, Price]``; ``l2Book`` -> ``L2Book``; ``clearinghouseState`` ->
     ``ClearinghouseState``; ``userFills`` / ``userFillsByTime`` -> ``tuple[Fill, ...]``; ``candleSnapshot`` ->
-    ``tuple[Candle, ...]``; ``userRole`` -> ``str``; ``portfolio`` -> ``dict[str, PortfolioWindow]``.
+    ``tuple[Candle, ...]``; ``meta`` -> ``tuple[CoinSpec, ...]``; ``metaAndAssetCtxs`` -> ``MetaAndCtxs``;
+    ``fundingHistory`` -> ``tuple[FundingRow, ...]``; ``userRole`` -> ``str``; ``portfolio`` -> ``dict[str, PortfolioWindow]``.
 
     Raises:
         HlSchemaError: any missing field, wrong type (numbers must be JSON strings, ids and times JSON ints,

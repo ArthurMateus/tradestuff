@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from decimal import Decimal
+
 from copytrade.core.money import Notional, Pnl, Price, Qty
 
 
@@ -77,3 +79,43 @@ class PortfolioWindow:
     account_value_history: tuple[tuple[int, Notional], ...]
     pnl_history: tuple[tuple[int, Qty], ...]
     volume: Qty
+
+
+@dataclass(frozen=True)
+class CoinSpec:
+    """One ``meta`` universe row: lot size decimals, maximum leverage (integer x) and the delisting flag."""
+
+    name: str
+    sz_decimals: int
+    max_leverage: int
+    is_delisted: bool
+
+
+@dataclass(frozen=True)
+class AssetCtxRow:
+    """One ``metaAndAssetCtxs`` context row (same index as the universe row): mark and oracle price, hourly funding
+    rate (fraction) and open interest."""
+
+    coin: str
+    mark_px: Price
+    oracle_px: Price
+    funding: Decimal
+    open_interest: Qty
+
+
+@dataclass(frozen=True)
+class MetaAndCtxs:
+    """``metaAndAssetCtxs``: the universe and one context row per coin."""
+
+    coins: tuple[CoinSpec, ...]
+    contexts: tuple[AssetCtxRow, ...]
+
+
+@dataclass(frozen=True)
+class FundingRow:
+    """One ``fundingHistory`` point: hourly funding rate and premium at ``time_ms``."""
+
+    coin: str
+    time_ms: int
+    rate: Decimal
+    premium: Decimal

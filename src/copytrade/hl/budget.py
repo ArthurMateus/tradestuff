@@ -23,6 +23,9 @@ INFO_REQUEST_TYPES: frozenset[str] = frozenset(
         "candleSnapshot",
         "userRole",
         "portfolio",
+        "meta",
+        "metaAndAssetCtxs",
+        "fundingHistory",
     }
 )
 

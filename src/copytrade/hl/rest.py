@@ -31,7 +31,16 @@ from copytrade.hl.errors import (
     HlSchemaError,
     HlTimeoutError,
 )
-from copytrade.hl.models import Candle, ClearinghouseState, Fill, L2Book, PortfolioWindow
+from copytrade.hl.models import (
+    Candle,
+    ClearinghouseState,
+    CoinSpec,
+    Fill,
+    FundingRow,
+    L2Book,
+    MetaAndCtxs,
+    PortfolioWindow,
+)
 from copytrade.hl.schema import SchemaFailureMonitor, parse_response
 from copytrade.hl.wallet import normalize_wallet
 
@@ -250,6 +259,21 @@ class HlRestClient:
             "endTime": end_ms,
         }
         result: tuple[Candle, ...] = self.info("candleSnapshot", {"req": request}, priority=priority)
+        return result
+
+    def meta(self, *, priority: Priority) -> tuple[CoinSpec, ...]:
+        result: tuple[CoinSpec, ...] = self.info("meta", {}, priority=priority)
+        return result
+
+    def meta_and_asset_ctxs(self, *, priority: Priority) -> MetaAndCtxs:
+        result: MetaAndCtxs = self.info("metaAndAssetCtxs", {}, priority=priority)
+        return result
+
+    def funding_history(self, coin: str, start_ms: int, *, priority: Priority) -> tuple[FundingRow, ...]:
+        _check_time_range(start_ms, None)
+        result: tuple[FundingRow, ...] = self.info(
+            "fundingHistory", {"coin": _name(coin, "coin"), "startTime": start_ms}, priority=priority
+        )
         return result
 
     def user_role(self, user: str, *, priority: Priority) -> str:

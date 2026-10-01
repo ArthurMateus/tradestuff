@@ -1,0 +1,16 @@
+[select]
+join_rank = 8
+drop_rank = 15
+join_confirm_cycles = 2
+drop_confirm_cycles = 2
+min_follow_hours = 24
+min_followed = 5
+max_followed = 9
+backfill_max_hours = 24
+swap_margin = 0.10
+max_swaps_per_cycle = 1
+max_cycle_duration_min = 45
+
+[leader_pause]
+max_copy_dd = 0.10
+max_consec_losses = 5
