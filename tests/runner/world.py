@@ -8,6 +8,7 @@ market frames and calls ``Runner.step`` on the test (trading) thread.
 
 from __future__ import annotations
 
+import dataclasses
 import shutil
 import time
 from collections.abc import Callable, Iterator
@@ -58,6 +59,8 @@ class World:
     disk: FakeDisk
     tree: ConfigTree
     offset_ms: int = 0
+    wall_skew_ms: int = 0  # how far the LOCAL WALL clock was stepped away from the monotonic one (see ``step_wall``)
+    _poll_base: int = 0
     runners: list[Runner] = field(default_factory=list)
     root: Path | None = None
     env: dict[str, str] = field(default_factory=dict)
@@ -65,7 +68,26 @@ class World:
 
     # ------------------------------------------------------------------------------------------ configuration
     def exchange_ms(self) -> int:
-        return self.clock.now + self.offset_ms
+        """The true exchange time: the monotonic timeline plus ``offset_ms`` (a wall-clock step does not move it)."""
+        return self.mono_ms() + self.offset_ms
+
+    def mono_ms(self) -> int:
+        """The injected monotonic clock: follows ``clock`` except for the steps made with ``step_wall``."""
+        return self.clock.now - self.wall_skew_ms
+
+    def step_wall(self, ms: int) -> None:
+        """Windows steps the local WALL clock by ``ms`` (negative: back) while the monotonic clock and the exchange
+        carry on: every offset estimate taken before the step is now wrong by ``ms``."""
+        self.clock.advance(ms)
+        self.wall_skew_ms += ms
+
+    @property
+    def sample_bias_ms(self) -> int:
+        return self.hl.book_time_bias_ms
+
+    @sample_bias_ms.setter
+    def sample_bias_ms(self, value: int) -> None:
+        self.hl.book_time_bias_ms = value
 
     def configure(self, **overrides: Any) -> None:
         """Set config keys (dots written as ``__``) before the root is written (or call ``write_config`` after)."""
@@ -111,12 +133,15 @@ class World:
             "thread_pause_s": 0.01,
             "gate_key": None,
         }
+        if "monotonic_ms" in {f.name for f in dataclasses.fields(RunnerDeps)}:  # R0 fix round: always inject (drop the guard)
+            values["monotonic_ms"] = self.mono_ms
         values.update(over)
         return RunnerDeps(**values)
 
     # ------------------------------------------------------------------------------------------ building
     def build(self, *, env: dict[str, str] | None = None, **deps_over: Any) -> Runner:
         root = self.root or self.write_config()
+        self._poll_base = len(self.tg.calls("getUpdates"))
         runner = build_runner(root, self.env if env is None else env, self.deps(**deps_over))
         self.runners.append(runner)
         return runner
@@ -155,8 +180,10 @@ class World:
         wait_for(lambda: any(needle in t for t in self.tg.sent(chat)), what=f"a Telegram message containing {needle!r}")
 
     def telegram_ready(self) -> None:
-        """The poll thread has done its first (backlog-draining) poll."""
-        wait_for(lambda: self.tg.calls("getUpdates"), what="the first Telegram poll")
+        """The CURRENT runner's poll thread has completed its first (backlog-draining) poll: a second getUpdates request
+        of this run has arrived (counted above the number received before the runner was built, so an earlier run's
+        polls do not count)."""
+        wait_for(lambda: len(self.tg.calls("getUpdates")) >= self._poll_base + 2, what="the first Telegram poll of this run")
 
     # ------------------------------------------------------------------------------------------ the ledger
     def seed_ledger(self, records: list[tuple[Any, ...]]) -> None:

@@ -75,6 +75,7 @@ class FakeHl:
     leader_fills: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     candle_range: tuple[str, str] = ("100.375", "99.625")  # high, low of every flat bar: true range 0.75
     funding_rate: str = "0.0000125"
+    book_time_bias_ms: int = 0  # added to the ``time`` of l2Book REST answers only (a wrong clock SAMPLE, not a wrong clock)
     fail_types: set[str] = field(default_factory=set)  # info request types answered with HTTP 500
     hang_types: set[str] = field(default_factory=set)  # info request types never answered until release()
     leaderboard_status: int = 200
@@ -183,7 +184,7 @@ class FakeHl:
         if rtype == "allMids":
             return self.mids
         if rtype == "l2Book":
-            return {"coin": req["coin"], "time": self.exchange_ms(), "levels": self.book_levels(req["coin"])}
+            return {"coin": req["coin"], "time": self.exchange_ms() + self.book_time_bias_ms, "levels": self.book_levels(req["coin"])}
         if rtype == "meta":
             return {"universe": self.universe}
         if rtype == "metaAndAssetCtxs":
