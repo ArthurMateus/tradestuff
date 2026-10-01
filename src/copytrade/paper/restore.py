@@ -259,10 +259,10 @@ class _Book:
         cid = record.client_order_id
         if kind == KIND_PAPER_ORDER and cid is not None:
             self.order(cid, p)
-        elif kind == KIND_FILL and cid is not None:
+        elif kind == KIND_FILL:  # a fill record carries its order id in the payload, not in the envelope
             if p["exit_reason"] == "delisted_force_settle":
                 self.delisted.add(p["coin"])
-            self.fill(cid, p)
+            self.fill(p["client_order_id"], p)
         elif kind == KIND_PAPER_STOP and cid is not None:
             self.stop(cid, p)
         elif kind == KIND_PAPER_CANCEL:

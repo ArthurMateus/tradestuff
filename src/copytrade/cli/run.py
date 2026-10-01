@@ -20,9 +20,7 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    parser = subparsers.add_parser(
-        "run", help="run the copy-trading bot in paper mode (the only mode; there is no mode option)"
-    )
+    parser = subparsers.add_parser("run", help="run the copy-trading bot in paper mode (there is no mode option)")
     parser.add_argument(
         "--root", type=Path, default=_CODE_ROOT, help="repository root (default: the repository of this checkout)"
     )

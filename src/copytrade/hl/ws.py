@@ -181,6 +181,16 @@ class HlWsFeed:
             raise WsUserLimitError(f"already {self._max_users} distinct users subscribed")
         self._wallets[key] = _WalletState()
 
+    def open_gap(self, wallet: str, since_ms: int) -> None:
+        """The wallet's fills were not watched since ``since_ms`` (a restart, R0): its first connection resyncs from
+        there over REST before anything is acted on (B3), and until then the wallet counts as stale. Unknown wallets
+        and wallets already in a gap are left alone."""
+        state = self._wallets.get(wallet.lower())
+        if state is not None and state.gap_start_ms is None:
+            state.gap_start_ms = since_ms
+            state.retry_at_ms = 0
+            state.failures = 0
+
     def unsubscribe_user(self, wallet: str) -> None:
         """Forget a wallet (its unsubscribe message goes out on the next tick). Unknown wallets are ignored."""
         self._wallets.pop(wallet.lower(), None)

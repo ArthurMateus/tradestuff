@@ -405,6 +405,7 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         timebase=ex.timebase,
         hub=ex.hub,
         meta=ex.meta,
+        market=ex.market,
         broker=broker,
         gate=gate,
         book=book,

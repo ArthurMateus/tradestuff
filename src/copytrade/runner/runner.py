@@ -25,7 +25,7 @@ from copytrade.positions.book import PositionBook
 from copytrade.positions.manager import PositionManager
 from copytrade.recorder.service import Recorder
 from copytrade.risk.gate import STATE_FILENAME, RiskGate
-from copytrade.runner.adapters import MarketHub, RestMetaSource
+from copytrade.runner.adapters import MarketHub, RestMarketSource, RestMetaSource
 from copytrade.runner.deps import RunnerDeps
 from copytrade.runner.flatten import (
     ALERT_FLATTEN_INCOMPLETE,
@@ -118,6 +118,7 @@ class RunnerParts:
     timebase: TimeBase
     hub: MarketHub
     meta: RestMetaSource
+    market: RestMarketSource
     broker: PaperBroker
     gate: RiskGate
     book: PositionBook
@@ -223,12 +224,14 @@ class Runner:
             self._started = True
         parts = self._parts
         parts.sync.tick()
-        prune_recordings(
-            self.config, recordings_dir=self.paths.recordings_dir, ledger=self.ledger, now_ms=self._clock.now_ms()
-        )
         with self.gate_lock:
             result = self._reload()
             self._known_followed = self.follow.followed
+        self._section("feed", self.feed.tick)  # connect and resync the restored wallets (B3) before anything else
+        self._section("mids", lambda: self.hub.seed_mids(parts.market.all_mids()))  # marks before the first frame
+        prune_recordings(
+            self.config, recordings_dir=self.paths.recordings_dir, ledger=self.ledger, now_ms=self._clock.now_ms()
+        )
         parts.recorder.start()
         with self.gate_lock:
             self.ledger.append(
@@ -265,6 +268,7 @@ class Runner:
             state_file=self.paths.state_dir / STATE_FILENAME,
             send_alert=parts.relay,
             fetch_rules=parts.meta.fetch,
+            watch_gap=self.feed.open_gap,
         )
         now_ms = self._exchange_now_ms()
         scan = scan_ledger(self.ledger, self._paper, now_ms=self._clock.now_ms())
@@ -452,22 +456,29 @@ class Runner:
     def _start_threads(self) -> None:
         bot = self.bot
         self.threads = (
-            self._thread("r0-telegram-poll", self._poll_work, None),
-            self._thread("r0-telegram-flush", bot.flush, bot.flush),
-            self._thread("r0-watchdog", self._watch, None),
+            threading.Thread(target=self._loop("telegram-poll", self._poll_work), name="r0-telegram-poll", daemon=True),
+            threading.Thread(
+                target=self._loop("telegram-flush", bot.flush, final=bot.flush), name="r0-telegram-flush", daemon=True
+            ),
+            threading.Thread(target=self._loop("watchdog", self._watch), name="r0-watchdog", daemon=True),
         )
         for thread in self.threads:
             thread.start()
 
-    def _thread(self, name: str, work: Callable[[], Any], final: Callable[[], Any] | None) -> threading.Thread:
-        def loop() -> None:
+    def _loop(
+        self, role: str, work: Callable[[], Any], *, final: Callable[[], Any] | None = None
+    ) -> Callable[[], None]:
+        """The body of a side thread: ``work`` every ``thread_pause_s`` until the stop, then ``final`` once. A step that
+        raises is logged and the thread goes on (a dead poll or flush thread would silence the bot)."""
+
+        def run() -> None:
             while not self._threads_stop.is_set():
-                self._guarded_thread_call(name, work)
+                self._guarded_thread_call(role, work)
                 self._threads_stop.wait(self._deps.thread_pause_s)
             if final is not None:
-                self._guarded_thread_call(name, final)
+                self._guarded_thread_call(role, final)
 
-        return threading.Thread(target=loop, name=name, daemon=True)
+        return run
 
     @staticmethod
     def _guarded_thread_call(name: str, work: Callable[[], Any]) -> None:

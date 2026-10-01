@@ -47,6 +47,7 @@ KIND_RUNNER_START = "runner_start"
 KIND_RUNNER_STOP = "runner_stop"
 
 TID_WINDOW_MS = 72 * 3_600_000  # leader fills older than this are never re-read by a reconciliation or audit
+DOWNTIME_MARGIN_MS = 60_000  # the resync of a restart starts this long before the last record of the old run
 ORDER_WINDOW_MS = 120_000  # recent paper orders handed to the gate (its window is one minute)
 _ORDER_TIMES_KEPT = 1_000
 _STATE_KINDS = BROKER_STATE_KINDS | {"share_state"}
@@ -85,10 +86,12 @@ class LedgerScan:
     order_times: deque[int] = field(default_factory=lambda: deque(maxlen=_ORDER_TIMES_KEPT))
     signal_tids: dict[str, set[int]] = field(default_factory=lambda: defaultdict(set))
     last_seq: int = 0
+    last_ts_ms: int = 0
 
     def observe(self, record: LedgerRecord, *, tid_floor_ms: int) -> None:
         kind, payload = record.kind, record.payload
         self.last_seq = record.seq
+        self.last_ts_ms = record.ts.ms
         if kind == KIND_CHECKPOINT:
             self.checkpoint, self.tail_state_records = payload, 0
         elif kind in _STATE_KINDS:
@@ -160,6 +163,7 @@ class ReloadParts:
     state_file: Path
     send_alert: AlertSink
     fetch_rules: Callable[[], Mapping[str, CoinMeta]]
+    watch_gap: Callable[[str, int], None]
 
 
 class ReloadError(CopytradeError):
@@ -215,7 +219,11 @@ def _restore_follow(parts: ReloadParts, scan: LedgerScan) -> None:
         if wallet in scan.follow_started and wallet not in scan.paused
     }
     held = {s.leader.lower() for s in parts.book.states() if s.status != CLOSED}
-    parts.follow.restore(followed, subscribed=set(followed) | held, paused=scan.paused)
+    subscribed = set(followed) | held
+    parts.follow.restore(followed, subscribed=subscribed, paused=scan.paused)
+    since_ms = max(0, scan.last_ts_ms - DOWNTIME_MARGIN_MS)
+    for wallet in sorted(subscribed):
+        parts.watch_gap(wallet, since_ms)  # the leaders traded while we were down: resync before acting (B3)
 
 
 def _uncertainties(

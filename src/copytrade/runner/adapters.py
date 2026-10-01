@@ -147,6 +147,13 @@ class MarketHub:
         with self._lock:
             return self._mid_time_ms
 
+    def seed_mids(self, mids: Mapping[str, Price]) -> None:
+        """Start from a REST ``allMids`` snapshot so marks exist before the first WebSocket frame arrives. Only
+        positive finite prices are taken; later frames overwrite them."""
+        with self._lock:
+            self._mids.update({coin: px for coin, px in mids.items() if _positive(px)})
+            self._mid_time_ms = self._clock.now_ms()
+
     def close(self) -> None:
         with self._lock:
             self._closed = True
@@ -283,6 +290,10 @@ class RestMarketSource:
             )
             for row in snapshot.contexts
         )
+
+    def all_mids(self) -> Mapping[str, Price]:
+        """The mid of every coin (``allMids`` over REST, CRITICAL priority)."""
+        return self._rest.all_mids(priority=Priority.CRITICAL)
 
     def funding_history(self, coin: str, start_ms: int) -> Sequence[FundingPoint]:
         rows = self._rest.funding_history(coin, start_ms, priority=Priority.CRITICAL)
