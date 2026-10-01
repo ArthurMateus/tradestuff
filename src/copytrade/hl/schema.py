@@ -334,7 +334,8 @@ def parse_response(request_type: str, payload: Any) -> Any:
     Returns: ``allMids`` -> ``dict[str, Price]``; ``l2Book`` -> ``L2Book``; ``clearinghouseState`` ->
     ``ClearinghouseState``; ``userFills`` / ``userFillsByTime`` -> ``tuple[Fill, ...]``; ``candleSnapshot`` ->
     ``tuple[Candle, ...]``; ``meta`` -> ``tuple[CoinSpec, ...]``; ``metaAndAssetCtxs`` -> ``MetaAndCtxs``;
-    ``fundingHistory`` -> ``tuple[FundingRow, ...]``; ``userRole`` -> ``str``; ``portfolio`` -> ``dict[str, PortfolioWindow]``.
+    ``fundingHistory`` -> ``tuple[FundingRow, ...]``; ``userRole`` -> ``str``;
+    ``portfolio`` -> ``dict[str, PortfolioWindow]``.
 
     Raises:
         HlSchemaError: any missing field, wrong type (numbers must be JSON strings, ids and times JSON ints,
