@@ -1,3 +1,26 @@
+# >>> CURRENT STATE (updated 2026-10-01, SUPERSEDES the "where are we" check and Steps A-B below) <<<
+Branch `feat/copytrade-v1/R0-runner`, head `e7b1fd1` or newer. The CODE IS DONE (4 slices pushed). Steps A and B below are COMPLETE: do not redo them. What remains, in order, with exact instructions:
+
+## R1. Fix 7 test defects (TEST role: edit only files under tests/; never touch src/)
+Rule: NEVER weaken, skip, xfail or delete a test or an assertion to get green. If you cannot fix it without weakening, stop and write the question into STATE.md.
+1. `tests/runner/test_clock_doubt.py` (4 tests): `test_R0_AC4_a_gap_far_below_the_stop_closes_the_position_while_in_doubt[unsynced]` and `[jump]`: the position DOES close, but the last assertion looks for ledger kinds `paper_stop_trigger` / `paper_liquidation` / `liquidation`. A liquidation really writes records of kind `fill` (with reason "liquidated"), `trade`, `paper_cancel`, `share_state`. Change the assertion to look for a `fill` record with reason "liquidated" (or `share_state` "liquidated"). `test_R0_AC4_delisting_closes_the_position_while_in_doubt[unsynced]` and `[jump]`: `assert world.hl.universe[0]["name"] == "SOL"` fails because the fixture has BTC at index 0: select the SOL entry by name instead of index.
+2. `tests/runner/test_flatten_marks.py::test_R0_AC13_marks_stalled_alert_after_5_and_repeats`: the first part (alert at the 5th iteration, repeat 300 s later) passes. The last part ("a good mark resets, then a new episode alerts at its 5th iteration", about lines 88-93) cannot work because the fake server's price frames arrive 5-11 ms AFTER the step that pushes them. Make the reset step deterministic: do a pumped step followed by a `ms=0` no-pump step, or wait (bounded) until `hub.mid_time_ms()` is fresh, before the next counted iteration. Keep every assertion.
+3. `tests/paper/test_r3_bad_timestamps.py` (2 ERRORS, "RISK17 bogus mark" and "bogus delisting"): a missing fixture (likely `caplog` or a fixture name). It fails the same on the epic branch, so it is not caused by R0. Find the missing fixture, add it in the right conftest, do not edit the assertions.
+4. `tests/runner/test_stop.py::test_R0_AC10_a_system_failure_stops_the_runner_cleanly_...`: failed once in ~15 runs under load (a 45 s run). Make it robust (bounded condition-based wait instead of a fixed number of steps); do not weaken what it asserts.
+Then run: `uv run pytest -q tests/runner tests/paper` (about 12 minutes). Expected: ALL pass (apart from known load flakes: rerun those alone). Run `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy`. Commit and push: `git push origin feat/copytrade-v1/R0-runner`.
+
+## R2. Verification (honest checklist; do each, write the results into STATE.md)
+a. Whole suite once: `uv run pytest -q` (about 10-15 minutes). Record counts. Known flaky-under-load tests (rerun alone before calling a regression): `tests/signals/test_ac6_latency.py`, `tests/hl/test_w0_connector.py`.
+b. Mutation check, target >= 70% caught of the original 42 (senior-dev's list is in `docs/sdlc/copytrade-v1/reviews/R0-r1-batch.md` section C; the pinned ones live in `tests/runner/test_mutation_pins.py`). For at least the 11 pinned mutants: copy the file, break the named guard, run `uv run pytest -q -x tests/runner tests/paper tests/positions`, confirm a test FAILS, restore with `git checkout -- <file>`. Also do these 8 new guards: (1) while the clock is in doubt, entries are NOT refused (remove the refusal) ; (2) forced resample every 30 s removed; (3) rebase after ONE fresh estimate instead of two; (4) broker time allowed to go backwards; (5) in the paper broker restore, cancel written BEFORE the new stop; (6) the reload check "SL quantity equals share quantity" removed; (7) `runner_crashed` alert queued AFTER stop(); (8) flatten "unfinished" condition ignores positions held at the broker. A mutant that is not caught = add a test (TEST role) or write it into STATE.md.
+c. Safety re-read of `src/copytrade/runner/timebase.py`, `runner.py`, `flatten.py`, `reload.py`, `src/copytrade/paper/broker.py` (restore), `src/copytrade/positions/manager.py` (`verify_protection`) against `.claude/knowledge/trading-invariants.md`. Confirm each of: exits, stops, liquidations, delistings and /flatten keep running while the clock is in doubt; ONLY entries are refused; a restart never leaves a position without a correct stop; every order goes through the risk gate; no live-trading path exists; no secret is logged.
+d. If a blocking problem is found: write it into STATE.md and tell the PO; do not merge.
+
+## R3. Merge (only if R1 and R2 are clean)
+See "STEP D" below. After merging: do "STEP E" (finalise LOCAL-TEST.md), then tell the PO to start the smoke test (LOCAL-TEST.md section B).
+PO checkpoint: the PO personally runs the 30-minute smoke test and `hl_sample.py` (see LOCAL-TEST.md). The assistant must NOT start the bot itself.
+
+# >>> end of CURRENT STATE; the original guide follows (Steps A-B are done) <<<
+
 # HANDOFF: finishing v0 of the copytrade bot with another AI assistant (Gemini / Antigravity)
 Written 2026-10-01 for the PO. Self-contained: the assistant needs nothing from the Claude session. Repo: https://github.com/ArthurMateus/tradestuff
 
