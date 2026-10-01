@@ -79,6 +79,7 @@ REASON_CLOSE_REMAINDER = "close_remainder"
 _OUR_EXITS = frozenset({"stop_loss", "take_profit", "liquidated", "delisted_force_settle"})
 _ORPHAN_LEADER = "orphan"
 _RETRY_TID = 0  # appended to the tids of a retried close: real tids are positive, synthetic ones negative
+_RETRIED_REFUSALS = frozenset({"share_closed", "exceeds_position"})  # a fill got in first: the close is re-sized
 _MIN_WINDOW_MS = 3_600_000
 
 
@@ -531,8 +532,10 @@ class PositionManager:
         their way (a triggered stop, an earlier reduce): the broker refuses an exit larger than that. A close covers
         exactly that rest. ``True`` when the exit is on its way (accepted, or nothing is left to send).
 
-        An oversized exit anyway (``exceeds_position``: the book was behind a fill) resyncs the share from the broker,
-        alerts, and a close is retried once under a new deterministic id."""
+        A close refused because a fill got in first (``share_closed``: the gate netted the fills of its own advance;
+        ``exceeds_position``: the book was behind a fill, so the share is resynced from the broker first) is retried
+        once, on the quantity the share holds by then, under a new deterministic id. A refused close is never left
+        forgotten."""
         outcome = self._submit_exit(
             share_id, qty=qty, close=close, reason=reason, tids=tids, signal_id=signal_id, px=px
         )
@@ -542,15 +545,16 @@ class PositionManager:
         if result is not None and result.accepted:
             return True
         refused = outcome.decision.reason if result is None else result.reason
+        resync_ok = True
         if result is not None and refused == "exceeds_position":
-            broker_qty = self._resync_from_broker(share_id)
-            if close and broker_qty is not None and _RETRY_TID not in tids:
-                retry = self._submit_exit(
-                    share_id, qty=qty, close=True, reason=reason, tids=(*tids, _RETRY_TID), signal_id=signal_id, px=px
-                )
-                if retry is None or (retry.result is not None and retry.result.accepted):
-                    return True
-                refused = retry.decision.reason if retry.result is None else retry.result.reason
+            resync_ok = self._resync_from_broker(share_id) is not None
+        if close and resync_ok and refused in _RETRIED_REFUSALS and _RETRY_TID not in tids:
+            retry = self._submit_exit(
+                share_id, qty=qty, close=True, reason=reason, tids=(*tids, _RETRY_TID), signal_id=signal_id, px=px
+            )
+            if retry is None or (retry.result is not None and retry.result.accepted):
+                return True
+            refused = retry.decision.reason if retry.result is None else retry.result.reason
         if refused != "duplicate_order":
             self._alert("exit_refused", f"{self._share(share_id).coin}: an exit of {share_id} was refused ({refused})")
         return False
@@ -567,6 +571,7 @@ class PositionManager:
         px: Price,
     ) -> Outcome | None:
         """One gate submit; ``None`` when no exit needs sending because the exits on their way cover the share."""
+        self._sync()  # the broker's own fills (a take-profit, a stop) are booked before the free quantity is computed
         share = self._share(share_id)
         free = MONEY_CONTEXT.subtract(share.qty, self._pending_exit_qty(share))
         send = free if close else min(qty, free)
