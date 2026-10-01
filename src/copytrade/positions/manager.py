@@ -181,7 +181,8 @@ class PositionManager:
         self._handled: dict[tuple[str, int], int] = {}  # (leader, tid) -> exchange ms our mirror/skip was recorded
         self._leader_pos: dict[tuple[str, str], Decimal] = {}  # the leader's signed size as the signals say
         self._ours_won: set[tuple[str, str]] = set()  # our SL/TP closed the share; ignore the leader until flat
-        self._flip_wait: dict[tuple[str, str], Signal] = {}  # the open leg of a flip, waiting for the close fill
+        # the open leg of a flip and the share whose close fill it waits for
+        self._flip_wait: dict[tuple[str, str], tuple[Signal, str]] = {}
         self._dropped: set[str] = set()
         self._orphans_closing: set[str] = set()
         self._missed_logged: set[tuple[str, int, str]] = set()
@@ -222,6 +223,7 @@ class PositionManager:
         self._seen_signals.add(sig.signal_id)
         self._tids_done.setdefault(sig.wallet, set()).add(sig.tid)
         key = (sig.wallet, sig.coin)
+        self._flip_wait.pop(key, None)  # any later signal of the leader on the coin outdates a waiting flip open leg
         if sig.outcome is not None or sig.action is None or sig.is_long is None or sig.post_position is None:
             self._leader_pos.pop(key, None)  # nothing is inferred for these: the leader's size is unknown
             return
@@ -274,7 +276,7 @@ class PositionManager:
             return
         active = self._book.active(*key)
         if active is not None and sig.from_flip and sig.leg == 1:
-            self._flip_wait[key] = sig  # the close leg is still working: the open waits for its fill
+            self._flip_wait[key] = (sig, active.share_id)  # the close leg is still working: the open waits for its fill
             return
         if active is not None:
             self._skip(sig, "invalid_signal")
@@ -282,7 +284,21 @@ class PositionManager:
             return
         self._open_share(sig)
 
+    def _is_stale(self, sig: Signal) -> bool:
+        """An entry decided on a signal older than ``filter.max_signal_age_ms`` (exchange time) is never sent."""
+        return self._now_or_last() - sig.exchange_ts.ms > self._settings.max_signal_age_ms
+
+    def _clear_flip_leg(self, share: ShareState) -> None:
+        """The share a flip's open leg waits for will never close by a fill of ours: the leg dies with it."""
+        key = (share.leader, share.coin)
+        waiting = self._flip_wait.get(key)
+        if waiting is not None and waiting[1] == share.share_id:
+            del self._flip_wait[key]
+
     def _open_share(self, sig: Signal) -> None:
+        if self._is_stale(sig):
+            self._skip(sig, "stale_signal")
+            return
         try:
             mult = self._policy.vol_mult(sig)
         except Exception:
@@ -324,8 +340,8 @@ class PositionManager:
             leader_av_time_ms=leader.time_ms,
         )
         outcome = self._submit_through_gate(request)
-        self._book_events(outcome.broker_events)
         if outcome.result is None or not outcome.result.accepted:
+            self._book_events(outcome.broker_events)
             return  # refused: the gate (or the broker) has logged it; there is no share
         zero = Decimal(0)
         self._book.add(
@@ -354,11 +370,20 @@ class PositionManager:
         if outcome.decision.client_order_id is not None:
             self._entry_orders[outcome.decision.client_order_id] = share_id
         self._audit_leaders.add(sig.wallet)
+        self._book_events(outcome.broker_events)  # only now: the share is registered before any event can name it
 
     def _handle_add(self, share: ShareState, sig: Signal) -> None:
         refusal = sig.refusal_reason()
         if refusal is not None:
             self._skip(sig, refusal, share)
+            return
+        if self._wrong_direction(share, sig):
+            return
+        if self._tracks[share.share_id].closing:
+            self._skip(sig, "invalid_signal", share)  # a close of ours is on its way: nothing is added to the share
+            return
+        if self._is_stale(sig):
+            self._skip(sig, "stale_signal", share)
             return
         pre = sig.pre_position
         if pre is None or pre <= 0 or sig.size <= 0:
@@ -399,7 +424,31 @@ class PositionManager:
 
     # ----------------------------------------------------------------------------------------------- exits
 
+    def _wrong_direction(self, share: ShareState, sig: Signal) -> bool:
+        """An add or reduce on the other side than our share (the leader flipped and we missed or still work on it):
+        it is skipped, alerted with what the leader holds, and a reconciliation is scheduled for the next loop."""
+        if sig.is_long == share.is_long:
+            return False
+        self._skip(sig, "invalid_signal", share)
+        try:
+            held = next(
+                (p.szi for p in self._leader_state.clearinghouse_state(share.leader).positions if p.coin == share.coin),
+                "none",
+            )
+        except Exception:
+            _log.warning("the leader's state is unavailable", extra={"event": "positions_leader_state"}, exc_info=True)
+            held = "unknown"
+        self._alert(
+            "bad_signal",
+            f"{sig.coin}: the leader's {sig.action} is on the other side than our share {share.share_id} "
+            f"({sig.signal_id}; it holds {held}); reconciling",
+        )
+        self._next_reconcile_ms = self._now_or_last()
+        return True
+
     def _handle_reduce(self, share: ShareState, sig: Signal) -> None:
+        if self._wrong_direction(share, sig):
+            return
         fraction = sig.reduce_fraction
         if fraction is None or not fraction.is_finite() or fraction <= 0 or fraction > 1:
             self._skip(sig, "invalid_signal", share)
@@ -621,6 +670,7 @@ class PositionManager:
             self._book.update(share_id, status=CLOSED)
             track.close_ms = event.time_ms
             track.deferred.clear()
+            self._clear_flip_leg(share)
         self._append_share("entry_rejected", self._share(share_id), reason=event.reason)
 
     def _entry_filled(self, share: ShareState, fill: FillRecord) -> None:
@@ -680,9 +730,10 @@ class PositionManager:
             key = (share.leader, share.coin)
             if reason in _OUR_EXITS:
                 self._ours_won.add(key)
-            waiting = self._flip_wait.pop(key, None)
-            if waiting is not None:
-                self._actions.append(partial(self._open_share, waiting))
+            waiting = self._flip_wait.get(key)
+            if waiting is not None and waiting[1] == share.share_id:
+                del self._flip_wait[key]
+                self._actions.append(partial(self._open_share, waiting[0]))
             return
         take_profit = reason == "take_profit"
         updated = self._book.update(share.share_id, qty=Qty(remaining), tp_done=share.tp_done or take_profit)
@@ -953,6 +1004,7 @@ class PositionManager:
         track = self._tracks[share.share_id]
         track.close_ms = self._now_or_last()
         track.deferred.clear()
+        self._clear_flip_leg(share)
         self._append_share("ghost_share_dropped", self._share(share.share_id), reason=why)
 
     def _correct_quantity(self, share: ShareState, broker_qty: Decimal) -> None:

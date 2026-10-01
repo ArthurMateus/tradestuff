@@ -37,6 +37,7 @@ class PositionSettings:
     fill_audit_interval_ms: int
     audit_retry_interval_ms: int
     audit_retry_max_ms: int
+    max_signal_age_ms: int
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> PositionSettings:
@@ -70,6 +71,7 @@ class PositionSettings:
             fill_audit_interval_ms=_whole(config, "eval.fill_audit_interval_h") * MS_PER_HOUR,
             audit_retry_interval_ms=_whole(config, "storage.retry_interval_min") * MS_PER_MINUTE,
             audit_retry_max_ms=_whole(config, "eval.missing_data_retry_max_h") * MS_PER_HOUR,
+            max_signal_age_ms=_whole(config, "filter.max_signal_age_ms"),
         )
 
 
