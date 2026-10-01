@@ -223,8 +223,21 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
     sync = ClockSync.from_config(
         config, clock=clock, source=ExchangeOffsetSource(rest=rest, clock=clock, probe_coin=_PROBE_COIN), alerts=relay
     )
-    timebase = TimeBase(
-        exchange_time=SyncedExchangeTime(sync), clock=clock, max_offset_uncertainty_ms=sync.max_offset_uncertainty_ms
+    timebase = (
+        TimeBase(
+            exchange_time=SyncedExchangeTime(sync),
+            clock=clock,
+            max_offset_uncertainty_ms=sync.max_offset_uncertainty_ms,
+            resample=sync.resample,
+        )
+        if deps.monotonic_ms is None
+        else TimeBase(
+            exchange_time=SyncedExchangeTime(sync),
+            clock=clock,
+            max_offset_uncertainty_ms=sync.max_offset_uncertainty_ms,
+            monotonic_ms=deps.monotonic_ms,
+            resample=sync.resample,
+        )
     )
     connector = WebsocketsConnector(
         deps.endpoints.ws_url,

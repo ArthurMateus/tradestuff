@@ -50,7 +50,13 @@ from copytrade.runner.reload import (
 from copytrade.runner.retention import prune_recordings
 from copytrade.runner.sources import BookShares, MarkedAccount, PacedInputs
 from copytrade.runner.tail import LedgerTail
-from copytrade.runner.timebase import ALERT_CLOCK_JUMP, ALERT_LOOP_STALLED, SKIP_CLOCK_JUMP, TimeBase
+from copytrade.runner.timebase import (
+    ALERT_CLOCK_IN_DOUBT,
+    ALERT_CLOCK_REBASED,
+    ALERT_LOOP_STALLED,
+    DOUBT_REALERT_S,
+    TimeBase,
+)
 from copytrade.selection.manager import FollowManager
 from copytrade.signals.detector import SignalDetector
 from copytrade.telegram.bot import TelegramBot
@@ -99,8 +105,9 @@ class StartReport:
 
 @dataclass(frozen=True)
 class StepReport:
-    """``advanced_to_ms``: the exchange ms handed to ``advance_to`` in this iteration (``None`` when it was skipped);
-    ``skipped``: ``timebase.SKIP_*`` or ``None``."""
+    """``advanced_to_ms``: the broker-time projection handed to ``advance_to`` in this iteration (``None`` only with no
+    baseline);
+    ``skipped``: the clock-doubt reason (``timebase.SKIP_*``: entries refused) or ``None``."""
 
     advanced_to_ms: int | None
     skipped: str | None
@@ -184,7 +191,9 @@ class Runner:
         self._started = False
         self._stopped = False
         self._tail: LedgerTail | None = None
-        self._jump_alerted = False
+        self._doubt_alerted = False
+        self._next_doubt_alert_ms = 0
+        self._seen_rebases = 0
         self._known_followed: frozenset[str] = frozenset()
         self._last_step_ms = self._clock.now_ms()
         self._last_mark_ms: int | None = None
@@ -226,6 +235,8 @@ class Runner:
         parts.sync.tick()
         with self.gate_lock:
             result = self._reload()
+            if result.restored_positions and self._exchange_now_ms() == 0:
+                self._timebase.seed_unverified(result.restore_ms)  # unsynced restart: project the replayed time
             self._known_followed = self.follow.followed
         self._section("feed", self.feed.tick)  # connect and resync the restored wallets (B3) before anything else
         self._section("mids", lambda: self.hub.seed_mids(parts.market.all_mids()))  # marks before the first frame
@@ -284,7 +295,8 @@ class Runner:
     # ------------------------------------------------------------------------------------------------ the loop
     def step(self) -> StepReport:
         """ONE loop iteration, called by the trading thread. Order (every gate or manager call under ``gate_lock``):
-        ``ClockSync.tick``; time-base target (skip while unsynced or on a jump); ``manager.advance_to(target)``;
+        ``ClockSync.tick``; time-base target (always advanced; a clock in doubt refuses entries only);
+        ``manager.advance_to(target)``;
         marks and delistings; ``gate.mark_equity(target)`` every ``eval.mark_interval_s``; ``feed.tick``;
         recorder tick; follow cycle when due; backfill step; flatten re-runs; periodic retention and checkpoint.
         Raises ``RuntimeError`` before ``start()`` (nothing is wired to the broker before the reload)."""
@@ -304,19 +316,13 @@ class Runner:
         return StepReport(advanced_to_ms=advanced, skipped=skipped)
 
     def _advance_and_mark(self) -> tuple[int | None, str | None]:
+        """Broker time is the time base's monotonic projection and is advanced on EVERY iteration (Amendment 13); a
+        clock in doubt (the returned reason) refuses entries only, exits, stops, marks and delistings go on."""
         with self.gate_lock:
             target, reason = self._timebase.next_target_ms()
+            self._clock_alerts(reason)
             if target is None:
-                if reason == SKIP_CLOCK_JUMP and not self._jump_alerted:
-                    self._jump_alerted = True
-                    self._parts.relay.send(
-                        Alert(
-                            kind=ALERT_CLOCK_JUMP,
-                            message="The exchange clock estimate jumped: broker time is not advanced until it settles.",
-                        )
-                    )
-                return None, reason
-            self._jump_alerted = False
+                return None, reason  # no baseline at all: nothing is held yet (an unsynced start without positions)
             self.manager.advance_to(target)
             self.last_advanced_ms = target
             self._mark(target)
@@ -325,7 +331,38 @@ class Runner:
             if self._last_mark_ms is None or target - self._last_mark_ms >= self._mark_interval_ms:
                 self._last_mark_ms = target
                 self.gate.mark_equity(target)
-        return target, None
+        return target, reason
+
+    def _clock_alerts(self, reason: str | None) -> None:
+        """One alert on entering the doubt (``clock_unsynced`` / ``clock_jump``), a reminder every ``DOUBT_REALERT_S``
+        while positions are open, one ``clock_rebased`` per rebase; the state resets when the clock is trusted again."""
+        timebase, relay = self._timebase, self._parts.relay
+        if timebase.rebase_count != self._seen_rebases:
+            self._seen_rebases = timebase.rebase_count
+            relay.send(
+                Alert(kind=ALERT_CLOCK_REBASED, message="The exchange clock was rebased: broker time follows it.")
+            )
+        if reason is None:
+            self._doubt_alerted = False
+            return
+        now = timebase.monotonic_ms()
+        if not self._doubt_alerted:
+            self._doubt_alerted = True
+            self._next_doubt_alert_ms = now + DOUBT_REALERT_S * 1000
+            relay.send(
+                Alert(kind=reason, message="The exchange clock is in doubt: new entries are refused, exits go on.")
+            )
+        elif now >= self._next_doubt_alert_ms:
+            self._next_doubt_alert_ms = now + DOUBT_REALERT_S * 1000
+            held = len(self.broker.positions())
+            if held:
+                relay.send(
+                    Alert(
+                        kind=ALERT_CLOCK_IN_DOUBT,
+                        message=f"clock in doubt, entries refused, {held} open position{'s' if held != 1 else ''}"
+                        " managed from projection",
+                    )
+                )
 
     def _mark(self, target: int) -> None:
         """Give every held coin its live mid at this iteration's exchange time (stops, liquidations, trailing)."""

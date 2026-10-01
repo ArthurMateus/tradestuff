@@ -149,6 +149,7 @@ class ReloadResult:
     restored_stops: int
     requeued_exits: tuple[Requeued, ...]
     uncertain: tuple[Uncertainty, ...]
+    restore_ms: int  # the broker time the restore set: the replayed ledger time or the synced exchange time, the later
 
 
 @dataclass(frozen=True)
@@ -207,6 +208,7 @@ def reload_state(parts: ReloadParts, scan: LedgerScan, *, now_ms: int) -> Reload
         restored_stops=len(result.stops),
         requeued_exits=tuple(Requeued(r.old_client_order_id, r.new_client_order_id, r.share_id) for r in result.exits),
         uncertain=uncertain,
+        restore_ms=restore_ms,
     )
 
 
