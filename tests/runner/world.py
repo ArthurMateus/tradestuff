@@ -138,7 +138,7 @@ class World:
             if pump:
                 self.pump_market()
             report = runner.step()
-            time.sleep(0.002)  # real sockets deliver asynchronously
+            time.sleep(0.012)  # real sockets deliver asynchronously: a fake WebSocket frame takes 5-11 ms (books lag ~3 steps at 2 ms)
         return report
 
     def run_until(self, runner: Runner, cond: Callable[[], Any], *, max_steps: int = 400, ms: int = 200) -> Any:

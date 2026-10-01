@@ -128,10 +128,10 @@ def test_R0_AC8_at_the_floor_recording_stops_entries_are_refused_and_exits_still
     world.seed_follow()
     runner, _ = world.start()
     world.leader_open(runner)
-    world.step(runner, 3, ms=61_000)
+    world.step(runner, 3 * 7, ms=10_000)  # 3 x 70 s in steps below feed.stale_after_s (30), so the feed is not dropped as silent
     assert runner.recorder.recording
     world.disk.set(None, "7")  # below recording.disk_floor_free_gb (8)
-    world.step(runner, 2, ms=61_000)
+    world.step(runner, 2 * 7, ms=10_000)
     assert not runner.recorder.recording
     wait_for(lambda: any("disk_floor_stopped" in t for t in world.tg.sent()), what="the floor alert")
     files_before = sorted(p.name for p in world.recordings_dir.rglob("*") if p.is_file())
@@ -141,7 +141,8 @@ def test_R0_AC8_at_the_floor_recording_stops_entries_are_refused_and_exits_still
         LEADER,
         [fill_json(70, coin="ETH", side="B", sz="1.0", px="3400.0", direction="Open Long", time_ms=world.exchange_ms() - 100)],
     )
-    world.step(runner, 20, ms=200)
+    world.pump_market(("SOL", "ETH"))
+    world.run_until(runner, lambda: world.records("signal_skip"), max_steps=2000, ms=0)  # no fake time passes: the fill stays fresh
     assert runner.broker.position("ETH") is None
     assert "policy_veto" in [r.payload["reason"] for r in world.records("signal_skip")]
     # ... but the exit of the position we hold is NOT blocked
@@ -168,7 +169,7 @@ def test_R0_AC8_an_unreadable_disk_while_running_stops_recording_and_blocks_no_e
     runner, _ = world.start(disk=probe)
     world.leader_open(runner)
     probe.broken = True
-    world.step(runner, 2, ms=61_000)
+    world.step(runner, 2 * 7, ms=10_000)
     assert not runner.recorder.recording  # unknown free space counts as none (A2)
     world.leader_close()
     world.run_until(runner, lambda: runner.broker.position("SOL") is None)

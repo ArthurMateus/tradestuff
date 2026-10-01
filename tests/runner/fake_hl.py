@@ -229,7 +229,7 @@ class FakeHl:
         return {}
 
     def _clearinghouse(self, wallet: str) -> dict[str, Any]:
-        value = self.leader_av.get(wallet, "100000.0")
+        value = self.leader_av.get(wallet, "1000.0")
         positions = [
             {
                 "type": "oneWay",

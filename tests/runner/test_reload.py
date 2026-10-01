@@ -145,7 +145,7 @@ def test_R0_AC5_a_replayed_leader_fill_after_a_restart_creates_no_second_signal_
     run1.stop()
     run2, _ = world.start()
     world.subscribe_ready(run2)
-    replay = world.hl.leader_fills[LEADER][0]  # the very same fill (same tid) comes again, e.g. in a resync snapshot
+    replay = next(f for f in world.hl.leader_fills[LEADER.lower()] if f["tid"] == 1)  # the very same fill (tid 1, the one run 1 opened with) comes again, e.g. in a resync snapshot
     world.hl.push_user_fills(LEADER, [replay], snapshot=True)
     world.step(run2, 15, ms=200)
     assert len(world.records("signal")) == signals_before
@@ -345,8 +345,12 @@ def test_R0_AC6_new_entries_are_refused_while_unacknowledged_and_work_again_afte
         LEADER,
         [fill_json(61, coin="ETH", side="B", sz="1.0", px="3400.0", direction="Open Long", time_ms=world.exchange_ms() - 100)],
     )
-    world.pump_market(("SOL", "ETH"))
-    world.run_until(run2, lambda: run2.broker.position("ETH") is not None, max_steps=200)
+
+    def eth_filled() -> bool:
+        world.pump_market(("ETH",))  # world.step pumps SOL only: keep an ETH book available at the fill
+        return run2.broker.position("ETH") is not None
+
+    world.run_until(run2, eth_filled, max_steps=400)
 
 
 def test_R0_AC6_exits_and_stops_of_restored_positions_keep_working_while_entries_are_refused(new_world: Any) -> None:
@@ -403,8 +407,7 @@ def test_R0_AC6_a_position_without_a_share_is_flagged_and_left_open(new_world: A
         exit_reason=None,
     )
     assert run1.broker.submit(intent, GateAuthority(OLD_KEY).issue(intent)).accepted  # a position the manager never booked
-    world.step(run1, 3, ms=1000)
-    assert run1.broker.position("SOL") is not None
+    world.run_until(run1, lambda: run1.broker.position("SOL") is not None, ms=1000)
     world.hard_kill(run1)
     run2, report = world.start()
     assert rl.POSITION_WITHOUT_SHARE in [u.code for u in report.uncertain] and report.entries_blocked
