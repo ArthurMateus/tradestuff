@@ -1074,6 +1074,52 @@ class RiskGate:
             self._sent_ms.popleft()
         self._sent_ms.append(at_ms)
 
+    # ------------------------------------------------------------------------------------ restart (R0 checkpoint)
+
+    def export_entries(self) -> list[dict[str, Any]]:
+        """The entries the gate sent that the share book may not carry yet (A5 and the open-risk accounting), as a
+        ledger-encodable list for the runner's checkpoint. Call under the gate lock."""
+        return [
+            {
+                "client_order_id": cid,
+                "coin": sent.coin,
+                "share_id": sent.share_id,
+                "trade_id": sent.trade_id,
+                "leader": sent.leader,
+                "is_long": sent.is_long,
+                "risk_usd": sent.risk_usd,
+                "stop_px": sent.stop_px,
+                "is_add": sent.is_add,
+            }
+            for cid, sent in self._sent_entries.items()
+        ]
+
+    def restore(
+        self, *, entries: Iterable[Mapping[str, Any]], order_times_ms: Iterable[int], last_exchange_ms: int
+    ) -> None:
+        """Load what ``export_entries`` wrote, the decision times of the orders sent in the last minute (rebuilt by the
+        runner from the ledger's ``paper_order`` records: the order-rate window survives a restart) and the last
+        exchange time seen, into a FRESH gate. The pause and drawdown state come from the state file as always.
+
+        Raises:
+            ValueError: the gate has already sent orders.
+        """
+        if self._sent_entries or self._sent_ms:
+            raise ValueError("restore needs a fresh gate")
+        for entry in entries:
+            self._sent_entries[entry["client_order_id"]] = _Sent(
+                coin=entry["coin"],
+                share_id=entry["share_id"],
+                trade_id=entry["trade_id"],
+                leader=entry["leader"],
+                is_long=entry["is_long"],
+                risk_usd=Decimal(entry["risk_usd"]),
+                stop_px=Price(entry["stop_px"]),
+                is_add=entry["is_add"],
+            )
+        self._sent_ms.extend(sorted(order_times_ms))
+        self._last_exchange_ms = max(self._last_exchange_ms, last_exchange_ms)
+
     # ------------------------------------------------------------------------------- state and kill switch
 
     @property

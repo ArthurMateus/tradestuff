@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -42,6 +42,7 @@ from copytrade.selection.models import (
     STATUS_OVERRUN,
     CycleReport,
     Decision,
+    Follow,
     FollowRegistry,
     InputsProvider,
     OpenShareSource,
@@ -140,6 +141,28 @@ class FollowManager:
     def due(self) -> bool:
         """True before the first cycle, then once the clock reaches ``next_due_ms``."""
         return self._next_due_ms is None or self._clock.now_ms() >= self._next_due_ms
+
+    def restore(self, followed: Mapping[str, Follow], *, subscribed: Iterable[str], paused: Iterable[str]) -> None:
+        """Load what an earlier run left (R0 startup reload, from the ledger) into a FRESH manager: the followed set,
+        the wallets whose fills stay subscribed (followed ones plus dropped ones held for an open share) and the
+        wallets the copy-result rule paused (never followed again, in this or any later process). The detector
+        rebuilds its own follow state from the ledger, so it is not told again. The next cycle is due at once.
+
+        Raises:
+            ValueError: the manager is not fresh.
+            WsUserLimitError: more wallets than ``hl.ws_max_unique_users`` (the limit was lowered since).
+        """
+        if self._state.followed or self._subscribed or self._next_due_ms is not None:
+            raise ValueError("restore needs a fresh follow manager")
+        for wallet in paused:
+            self._pause.restore_paused(wallet)
+            self._safety_dropped.add(wallet.lower())
+        self._state = SelectionState(
+            followed={w: f for w, f in followed.items() if not self._pause.is_paused(w)}, join_streaks={}
+        )
+        for wallet in sorted(set(subscribed)):
+            self._feed.subscribe_user(normalize_wallet(wallet))
+            self._subscribed.add(wallet)
 
     # --- cycles ----------------------------------------------------------------------------------------------
 
