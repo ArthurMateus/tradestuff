@@ -46,7 +46,8 @@ class StepReport:
 class Runner:
     """The real components, wired. Read-only attributes (for diagnostics and tests): ``config``, ``paths``,
     ``run_id``, ``ledger``, ``sync`` (ClockSync), ``broker``, ``gate``, ``book``, ``manager``, ``bot``,
-    ``recorder``, ``follow`` (FollowManager), ``detector``, ``feed`` (HlWsFeed), ``hub`` (MarketHub), ``gate_lock``
+    ``recorder``, ``follow`` (FollowManager), ``detector``, ``feed`` (HlWsFeed), ``hub`` (MarketHub), ``policy`` (RunnerEntryPolicy), ``flatten_runs`` (the run ids of every
+    ``flatten`` call so far: the bot's first, then the supervisor's re-runs), ``gate_lock``
     (the ONE ``threading.RLock`` shared by the loop, the sinks and the bot), ``threads``, ``last_advanced_ms``,
     ``entries_blocked``, ``stopping``.
 
@@ -67,6 +68,8 @@ class Runner:
     detector: Any
     feed: Any
     hub: Any
+    policy: Any
+    flatten_runs: tuple[str, ...]
     gate_lock: Any
     threads: tuple[threading.Thread, ...]
     last_advanced_ms: int | None
@@ -82,7 +85,8 @@ class Runner:
         """ONE loop iteration, called by the trading thread. Order (every gate or manager call under ``gate_lock``):
         ``ClockSync.tick``; time-base target (skip while unsynced or on a jump); ``manager.advance_to(target)``;
         marks and delistings; ``gate.mark_equity(target)`` every ``eval.mark_interval_s``; ``feed.tick``;
-        recorder tick; follow cycle when due; backfill step; flatten re-runs; periodic retention and checkpoint."""
+        recorder tick; follow cycle when due; backfill step; flatten re-runs; periodic retention and checkpoint.
+        Raises ``RuntimeError`` before ``start()`` (nothing is wired to the broker before the reload)."""
         raise NotImplementedError
 
     def request_stop(self, reason: str) -> None:
@@ -96,5 +100,7 @@ class Runner:
         raise NotImplementedError
 
     def run(self, stop: threading.Event) -> int:
-        """``start()``, ``step()`` until ``stop`` is set or ``request_stop`` was called, then ``stop()``."""
+        """``start()``, ``step()`` until ``stop`` is set or ``request_stop`` was called, then ``stop()``; sleeps
+        ``thread_pause_s`` (real time) between iterations. A ``CopytradeError`` or ``OSError`` from the loop is
+        re-raised AFTER a best-effort ``stop()`` (threads joined, files closed); ``run_app`` turns it into exit 1."""
         raise NotImplementedError
