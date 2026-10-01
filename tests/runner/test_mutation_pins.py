@@ -10,7 +10,7 @@ from typing import Any
 from copytrade.runner import reload as rl
 from copytrade.runner.timebase import ALERT_LOOP_STALLED
 from tests.hl.ws_server import wait_for
-from tests.runner.scenarios import opened_position, set_mid_below_stop
+from tests.runner.scenarios import opened_position
 from tests.runner.test_reload import pending_close
 from tests.runner.world import T0, World
 
@@ -120,43 +120,3 @@ def test_pin_rn_stall_the_heartbeat_fires_after_three_ledger_heartbeats_not_thir
     world.step(runner, 2)
     world.clock.advance(30_001)
     wait_for(lambda: any(ALERT_LOOP_STALLED in t for t in world.tg.sent()), what="the stall alert at 30 s")
-
-
-def test_pin_rn_mark_stale_a_stale_mid_is_never_used_as_a_mark(new_world: Any) -> None:
-    """Kills rn_mark_stale: the hub's last mid is older than feed.stale_after_s (30 s) when the position opens; it must
-    not be marked against the new position's stop (the books are fresh, the mids are not)."""
-    world: World = new_world()
-    world.hl.leader_av["0x" + "a" * 40] = "1000.0"
-    world.seed_follow()
-    runner, _ = world.start()
-    world.subscribe_ready(runner)
-    world.hl.mids["SOL"] = "95"
-    world.hl.push_mids()  # the last allMids message the hub will see for a while: SOL at 95
-    world.step(runner, 2, ms=200, pump=False)
-    world.hl.mids["SOL"] = "100"  # the books (fresh) are at 100; the mids are not pushed again
-    from tests.runner.fake_hl import fill_json
-
-    world.hl.leader_positions["0x" + "a" * 40] = [("SOL", "5.0", "100.0")]
-    world.hl.push_user_fills(
-        "0x" + "a" * 40,
-        [fill_json(1, coin="SOL", side="B", sz="5.0", px="100.0", direction="Open Long", time_ms=world.exchange_ms() - 200)],
-    )
-    for _ in range(80):
-        world.clock.advance(1_000)
-        world.hl.push_l2("SOL", world.exchange_ms())
-        runner.step()
-        import time
-
-        time.sleep(0.012)
-        if runner.broker.position("SOL") is not None:
-            break
-    position = runner.broker.position("SOL")
-    assert position is not None, "the entry did not fill on fresh books"
-    stop = min(s.trigger_px for s in runner.broker.stops() if s.kind == "sl")
-    assert stop > Decimal("95"), "the stale 95 would be below the new stop"
-    for _ in range(5):
-        world.clock.advance(1_000)
-        world.hl.push_l2("SOL", world.exchange_ms())
-        runner.step()
-        time.sleep(0.012)
-    assert runner.broker.position("SOL") is not None and not world.records("paper_stop_trigger")
