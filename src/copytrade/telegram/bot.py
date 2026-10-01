@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any, ContextManager
+from contextlib import AbstractContextManager
+from typing import Any
 
 from copytrade.core.clock import Clock
 from copytrade.core.config import Config
@@ -47,7 +48,7 @@ class TelegramBot:
         book: PositionBook,
         ledger: Ledger,
         clock: Clock,
-        gate_lock: ContextManager[Any],
+        gate_lock: AbstractContextManager[Any],
         pin_hash: SecretValue | None,
         pin_salt: SecretValue | None,
         run_id: str,
