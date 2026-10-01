@@ -13,7 +13,11 @@
       "Bash(git commit -qm 'docs\\(sdlc\\): v0 resume point *)",
       "Bash(git commit -qm 'docs\\(sdlc\\): F10 tests final \\(7427170\\) *)",
       "Bash(git commit -qm 'docs\\(sdlc\\): F6 approved and merged; follow-ups logged *)",
-      "Bash(git commit -qm 'docs\\(sdlc\\): F10 built \\(240b186\\); review next; decisions and F12 contract *)"
+      "Bash(git commit -qm 'docs\\(sdlc\\): F10 built \\(240b186\\); review next; decisions and F12 contract *)",
+      "Bash(python3 -)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m 'docs\\(sdlc\\): F10 round 2 done, architect ruling pending; resume point *)",
+      "Bash(git commit -q -m 'docs\\(sdlc\\): F10 architect ruling \\(return to developer\\), awaiting PO go *)"
     ]
   }
 }
