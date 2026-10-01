@@ -42,6 +42,7 @@ from copytrade.paper.types import (
     MarkUpdate,
     OrderIntent,
     PendingEntry,
+    PendingExit,
     PositionView,
     StopIntent,
     SubmitResult,
@@ -185,6 +186,20 @@ class PaperBroker:
             )
             for order in self._pending.values()
             if order.is_entry
+        )
+
+    def pending_exits(self) -> tuple[PendingExit, ...]:
+        """Every accepted exit (and every stop that has triggered into an order) not yet filled or cancelled, in the
+        order they were accepted (a snapshot). Entries and refused orders are never listed. Read-only."""
+        return tuple(
+            PendingExit(
+                client_order_id=order.client_order_id,
+                coin=order.coin,
+                share_id=order.share_id,
+                qty=Qty(order.remaining),
+            )
+            for order in self._pending.values()
+            if not order.is_entry
         )
 
     def cash_usd(self) -> Decimal:

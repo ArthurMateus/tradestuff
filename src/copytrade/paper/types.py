@@ -165,3 +165,15 @@ class PendingEntry:
     share_id: str
     trade_id: str
     decided_at_ms: int
+
+
+@dataclass(frozen=True)
+class PendingExit:
+    """An accepted exit (REDUCE or CLOSE, or a stop that has triggered) that has not filled yet (a read-only view for
+    the position manager). ``qty`` is the quantity still to fill. The broker refuses an exit larger than what its
+    share holds beyond these."""
+
+    client_order_id: str
+    coin: str
+    share_id: str
+    qty: Qty
