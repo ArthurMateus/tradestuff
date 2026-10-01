@@ -374,17 +374,14 @@ class PositionManager:
         self._book_events(outcome.broker_events)  # only now: the share is registered before any event can name it
 
     def _handle_add(self, share: ShareState, sig: Signal) -> None:
-        refusal = sig.refusal_reason()
-        if refusal is not None:
-            self._skip(sig, refusal, share)
-            return
         if self._wrong_direction(share, sig):
             return
         if self._tracks[share.share_id].closing:
-            self._skip(sig, "invalid_signal", share)  # a close of ours is on its way: nothing is added to the share
-            return
-        if self._is_stale(sig):
-            self._skip(sig, "stale_signal", share)
+            refusal: str | None = "invalid_signal"  # a close of ours is on its way: nothing is added to the share
+        else:
+            refusal = sig.refusal_reason() or ("stale_signal" if self._is_stale(sig) else None)
+        if refusal is not None:
+            self._skip(sig, refusal, share)
             return
         pre = sig.pre_position
         if pre is None or pre <= 0 or sig.size <= 0:
@@ -681,7 +678,7 @@ class PositionManager:
     def _entry_filled(self, share: ShareState, fill: FillRecord) -> None:
         self._entry_orders.pop(fill.client_order_id, None)
         if share.status == PENDING_ENTRY:
-            self._opened(share, fill)
+            self._opened(share, fill.qty, Price(fill.price))
             return
         total = MONEY_CONTEXT.add(share.qty, fill.qty)
         entry = MONEY_CONTEXT.divide(
@@ -694,18 +691,17 @@ class PositionManager:
         self._append_share("added", updated)
         self._actions.append(partial(self._replace_stop, share.share_id))
 
-    def _opened(self, share: ShareState, fill: FillRecord) -> None:
-        entry = Price(fill.price)
+    def _opened(self, share: ShareState, qty: Decimal, entry: Price) -> None:
         stop = rules.initial_stop(
             is_long=share.is_long, entry_px=entry, atr=share.atr, stop_atr_mult=self._settings.stop_atr_mult
         )
         usable = stop > 0
         stop_px = Price(stop if usable else 0)
-        risk = rules.open_risk_usd(is_long=share.is_long, qty=fill.qty, entry_px=entry, stop_px=stop_px)
+        risk = rules.open_risk_usd(is_long=share.is_long, qty=qty, entry_px=entry, stop_px=stop_px)
         updated = self._book.update(
             share.share_id,
             status=OPEN,
-            qty=Qty(fill.qty),
+            qty=Qty(qty),
             entry_px=entry,
             initial_stop_px=stop_px,
             current_stop_px=stop_px,
@@ -946,7 +942,7 @@ class PositionManager:
         now = self._sync()
         self._next_reconcile_ms = now + self._settings.reconcile_interval_ms
         self._reconcile_broker()
-        leaders = sorted({s.leader for s in self._book.states() if s.status == OPEN})
+        leaders = sorted({s.leader for s in self._book.states() if s.status in (OPEN, PENDING_ENTRY)})
         for leader in leaders:
             self._reconcile_leader(leader, now)
 
@@ -963,18 +959,28 @@ class PositionManager:
                 self._close_orphan(coin, share_id, view.qty > 0, qty, view.avg_entry_px)
         self._orphans_closing &= {share_id for _coin, share_id in held}
         for share in self._book.states():
-            if (
-                share.status == PENDING_ENTRY
-                and share.share_id not in pending_ids
-                and (share.coin, share.share_id) not in held
-            ):
-                self._drop_ghost(share, "the entry is neither pending nor held at the broker")
+            if share.status == PENDING_ENTRY and share.share_id not in pending_ids:
+                if (share.coin, share.share_id) in held:
+                    view, qty = held[(share.coin, share.share_id)]
+                    self._heal_entry(share, Decimal(qty), view.avg_entry_px)
+                else:
+                    self._drop_ghost(share, "the entry is neither pending nor held at the broker")
             elif share.status == OPEN:
                 broker = held.get((share.coin, share.share_id))
                 if broker is None:
                     self._drop_ghost(share, "the broker holds no such share")
                 elif Decimal(broker[1]) != share.qty:
                     self._correct_quantity(share, Decimal(broker[1]))
+
+    def _heal_entry(self, share: ShareState, qty: Decimal, entry_px: Price) -> None:
+        """The broker holds a share the book still has as pending (the entry's fill event never reached us): book it as
+        open from the broker's quantity and entry price, protect it, replay what arrived meanwhile (A7)."""
+        self._alert(
+            "position_mismatch", f"{share.coin}: {share.share_id} is held at the broker ({qty}) but pending in the book"
+        )
+        self._entry_orders = {cid: sid for cid, sid in self._entry_orders.items() if sid != share.share_id}
+        self._opened(share, qty, entry_px)
+        self._book_events(())
 
     def _close_orphan(self, coin: str, share_id: str, is_long: bool, qty: Decimal, avg_px: Price) -> None:
         """The broker holds a share the book does not know: alert and close it, never leave an orphaned copy."""
