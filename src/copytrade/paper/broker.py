@@ -454,10 +454,9 @@ class PaperBroker:
         share = position.shares[order.share_id]
         new_id = self._new_client_order_id(order.client_order_id)
         action = ActionKind.CLOSE if order.qty >= abs(share.qty) else ActionKind.REDUCE
-        if any(
-            p.share_id == order.share_id and p.side == order.side and p.remaining == order.qty
-            for p in self._pending.values()
-        ):  # a kill -9 between the new record and the cancel left this exit twice: never send it twice
+        base = _RESTART_SUFFIX.sub("", order.client_order_id)
+        if any(_RESTART_SUFFIX.sub("", p.client_order_id) == base for p in self._pending.values()):
+            # a kill -9 between the new record and the cancel left this exit twice (an id and its renewal): send it once
             self._append_cancel(order.client_order_id, "order", "restart")
             return None
         self._ledger.append(

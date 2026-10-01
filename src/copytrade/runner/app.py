@@ -62,6 +62,11 @@ def run_app(  # noqa: PLR0913 - the pinned R0 signature
     except (CopytradeError, OSError) as error:
         print(f"copytrade: {error}", file=err, flush=True)
         return 1
+    except Exception as error:  # a bug or a ledger failure: one line (the type only, never a traceback or a secret)
+        print(
+            f"copytrade: the runner stopped on an unexpected {type(error).__name__}; see the log", file=err, flush=True
+        )
+        return 1
     finally:
         if restore is not None:
             restore()

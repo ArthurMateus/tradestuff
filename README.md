@@ -63,7 +63,11 @@ The bot needs at least 10 GB free on that disk to start, warns you below 20 GB (
 uv run copytrade run
 ```
 
-The window prints `copytrade: running in paper mode`. Warnings and errors (the log) appear in this window as plain text; the ledger is the permanent record. **Stop it with Ctrl+C**: it refuses new entries, leaves open positions and their stops as they are, writes a final checkpoint, flushes the ledger, the recordings and the Telegram queue, and exits with code 0. The next start picks up the same positions, stops and followed leaders from the ledger. Closing the window or killing the process also works (the ledger survives), but the next start will tell you if anything could not be proven.
+The window prints `copytrade: running in paper mode`. Warnings and errors (the log) appear in this window as plain text; the ledger is the permanent record. **Stop it with Ctrl+C**: it refuses new entries, leaves open positions and their stops as they are, writes a final checkpoint, flushes the ledger, the recordings and the Telegram queue, and exits with code 0. The next start picks up the same positions, stops and followed leaders from the ledger. **Never close the console window** (and never kill the process) to stop it: that is a crash, not a stop, and the next start will tell you what it could not prove. Closing the window is the one way to lose the final checkpoint.
+
+**Logging, the truth:** the bot configures no log file. Only warnings and errors reach this console window, as plain text; nothing else is kept. The ledger is the permanent record and Telegram carries the alerts, so watch both. If the window is closed or the machine restarts, the console text is gone.
+
+**Restart it automatically (recommended).** If the bot dies (it sends `runner_crashed` and exits with code 1), nothing manages the open positions until it runs again. Use Windows Task Scheduler: create a task that runs `uv run copytrade run` (set "Start in" to the repository folder and add the three `COPYTRADE_*` user variables), trigger "At log on", and on the Settings tab tick "If the task fails, restart every 1 minute" with "Attempt to restart up to 999 times". Stop it only with Ctrl+C in its window, or "End" in Task Scheduler after sending `/pause`; on a restart it reloads the positions and stops from the ledger and re-checks that each open position still has its stop-loss.
 
 ### 6. What to watch in Telegram
 
@@ -71,10 +75,12 @@ The window prints `copytrade: running in paper mode`. Warnings and errors (the l
 - Commands (only your user id, only in the control chat): `/status`, `/positions`, `/pause` (refuse new entries, persists across restarts), `/resume` (allow them again), `/flatten <PIN>` (pause and close everything; it repeats every few seconds until nothing is open).
 - Alerts in the alerts chat:
   - `startup_uncertain`: the start could not prove something (a position without a share, an unknown coin, a missing risk file, ...). New entries are paused until you send `/resume`; open positions and their stops keep working. Read the alert text, then `/resume`.
-  - `clock_unsynced` and `clock_jump`: the exchange clock cannot be trusted; entries are refused (exits keep working) until it settles.
+  - `clock_unsynced` and `clock_jump`: the exchange clock cannot be trusted; new entries are refused while it is in doubt. Exits, stops, liquidations, delistings and `/flatten` keep running from a monotonic projection of the last good exchange time. While positions are open you get `clock_in_doubt` every 5 minutes, and `clock_rebased` once when two fresh estimates agree again.
+  - `marks_stalled`: positions are open but there has been no usable price for 5 iterations; stops are blind until it ends.
+  - `runner_crashed`: the loop died; it names the open positions. Restart it (see section 5).
   - `loop_stalled`: the trading loop has not finished an iteration for about 30 seconds.
   - `disk_free_low` and `disk_floor_stopped`: free disk space, see above.
-  - `flatten_incomplete`: `/flatten` could not close everything after 12 tries: check the positions by hand.
+  - `flatten_incomplete`: `/flatten` has not closed everything after 12 tries (repeated every 5 minutes while positions or exits remain): check the positions by hand.
   - `exit_unfilled`: an exit has not filled for a while; it keeps retrying.
   - `feed_stale`, `data_gap`, `access_degraded`, `schema_failure`, `leaderboard_outage`, `no_eligible_leaders`: data problems; the bot refuses new entries while they last and says so.
   - `runner_section_failed`: a non-critical part (feed, recorder, selection) failed; trading goes on.

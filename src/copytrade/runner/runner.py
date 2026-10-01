@@ -17,6 +17,7 @@ from copytrade.core.events import Alert, AlertSink
 from copytrade.hl.errors import HlError
 from copytrade.hl.ws import HlWsFeed
 from copytrade.ledger.codec import dumps, encode_value
+from copytrade.ledger.errors import LedgerError
 from copytrade.ledger.store import Ledger
 from copytrade.paper.broker import PaperBroker
 from copytrade.paper.settings import PaperSettings
@@ -73,6 +74,7 @@ THREAD_JOIN_TIMEOUT_S = 8.0
 SECTION_ALERT_INTERVAL_MS = 600_000
 ALERT_SECTION_FAILED = "runner_section_failed"
 ALERT_MARKS_STALLED = "marks_stalled"
+ALERT_RUNNER_CRASHED = "runner_crashed"
 __all__ = [
     "ALERT_FLATTEN_INCOMPLETE",
     "FLATTEN_RERUN_INTERVAL_S",
@@ -243,8 +245,12 @@ class Runner:
             if result.restored_positions and self._exchange_now_ms() == 0:
                 self._timebase.seed_unverified(result.restore_ms)  # unsynced restart: project the replayed time
             self._known_followed = self.follow.followed
-        self._section("feed", self.feed.tick)  # connect and resync the restored wallets (B3) before anything else
-        self._section("mids", lambda: self.hub.seed_mids(parts.market.all_mids()))  # marks before the first frame
+        self._section(
+            "feed", self.feed.tick, strict=True
+        )  # connect and resync the restored wallets (B3) before anything else
+        self._section(
+            "mids", lambda: self.hub.seed_mids(parts.market.all_mids()), strict=True
+        )  # marks before the first frame
         prune_recordings(
             self.config, recordings_dir=self.paths.recordings_dir, ledger=self.ledger, now_ms=self._clock.now_ms()
         )
@@ -308,15 +314,17 @@ class Runner:
         if not self._started or self._stopped:
             raise RuntimeError("step() needs a started, not yet stopped runner")
         self._parts.sync.tick()
+        self._section("hub", self._parts.hub_tap.drain)  # mids and books first, independent of the recorder (RISK-65)
         advanced, skipped = self._advance_and_mark()
-        self._section("hub", self._parts.hub_tap.drain)  # mids and books do not depend on the recorder (RISK-65)
-        self._section("feed", self.feed.tick)
+        self._section(
+            "feed", self.feed.tick, strict=True
+        )  # its signals reach the manager: a failure there is not benign
         self._section("recorder", self.recorder.tick)
         self._selection()
         with self.gate_lock:
-            self._parts.supervisor.rerun_if_due()
-            self._book_copy_results()
-            self._write_checkpoint()
+            self._section("flatten_rerun", self._parts.supervisor.rerun_if_due)
+            self._section("copy_results", self._book_copy_results)
+            self._section("checkpoint", self._write_checkpoint)
         self._hourly()
         self._last_step_ms = self._clock.now_ms()
         return StepReport(advanced_to_ms=advanced, skipped=skipped)
@@ -425,14 +433,30 @@ class Runner:
                 else:
                     self._alert_section(f"delist:{position.coin}", "no price to settle a delisted coin")
 
-    def _section(self, name: str, work: Callable[[], object]) -> None:
-        """Run a part of the loop that must not take the loop down: a network or disk failure in it is logged and
-        alerted (at most once per ``SECTION_ALERT_INTERVAL_MS``); exits and stops do not depend on any of them."""
+    def _section(self, name: str, work: Callable[[], object], *, strict: bool = False) -> None:
+        """Run a part of the loop that must not take the loop down: a failure in it is logged (no secrets: the type
+        only) and alerted (at most once per ``SECTION_ALERT_INTERVAL_MS``); exits and stops do not depend on any of
+        them.
+        ``strict`` sections (the WebSocket feed, whose signals reach the position manager) catch network failures only.
+        A ledger failure is never benign: it propagates and ``run`` announces ``runner_crashed``."""
         try:
             work()
+        except LedgerError:
+            raise
         except (OSError, HlError) as exc:
-            _log.warning("loop section failed", extra={"event": "section_failed", "section": name}, exc_info=True)
-            self._alert_section(name, f"{type(exc).__name__}")
+            self._section_failed(name, exc)
+        except Exception as exc:
+            if strict:
+                raise
+            self._section_failed(name, exc)
+
+    def _section_failed(self, name: str, exc: Exception) -> None:
+        _log.warning(
+            "loop section failed",
+            extra={"event": "section_failed", "section": name, "error_type": type(exc).__name__},
+            exc_info=True,
+        )
+        self._alert_section(name, f"{type(exc).__name__}")
 
     def _alert_section(self, name: str, detail: str) -> None:
         now = self._clock.now_ms()
@@ -450,8 +474,8 @@ class Runner:
             self._section("scoring_inputs", self._parts.inputs.work)
         if self.follow.due():
             self._section("follow_cycle", lambda: self.follow.run_cycle(p95_latency_s=None))
-        self.follow.tick()
-        self._tell_dropped_leaders()
+        self._section("follow_tick", self.follow.tick)
+        self._section("dropped_leaders", self._tell_dropped_leaders)
 
     def _tell_dropped_leaders(self) -> None:
         followed = self.follow.followed
@@ -617,14 +641,32 @@ class Runner:
 
     def run(self, stop: threading.Event) -> int:
         """``start()``, ``step()`` until ``stop`` is set or ``request_stop`` was called, then ``stop()``; sleeps
-        ``thread_pause_s`` (real time) between iterations. A ``CopytradeError`` or ``OSError`` from the loop is
-        re-raised AFTER a best-effort ``stop()`` (threads joined, files closed); ``run_app`` turns it into exit 1."""
+        ``thread_pause_s`` (real time) between iterations. An ``Exception`` from the loop queues ``runner_crashed``
+        and is re-raised AFTER a best-effort ``stop()`` (threads joined, files closed); ``run_app`` turns it into
+        exit 1."""
         try:
             self.start()
             while not stop.is_set() and not self._stop_requested.is_set():
                 self.step()
                 self._stop_requested.wait(self._deps.thread_pause_s)
-        except BaseException:
+        except BaseException as exc:
+            if isinstance(exc, Exception):
+                self._announce_crash(exc)
             self.stop()
             raise
         return self.stop()
+
+    def _announce_crash(self, exc: Exception) -> None:
+        """Queue the critical ``runner_crashed`` alert BEFORE ``stop()`` so the final flush sends it. It names the open
+        positions, which are left with their stops but no manager; it reads the broker's memory and queues in memory, so
+        it does not depend on the ledger that may have failed."""
+        try:
+            held = ", ".join(position.coin for position in self.broker.positions()) or "none"
+        except Exception:
+            held = "unknown"
+        self._parts.relay.send(
+            Alert(
+                kind=ALERT_RUNNER_CRASHED,
+                message=f"The trading loop died ({type(exc).__name__}). Open positions: {held}. Restart and check.",
+            )
+        )
