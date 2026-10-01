@@ -112,6 +112,7 @@ def test_R1_3_status_positions_and_flatten_read_the_book_under_the_gate_lock(new
     env.rig.open_share()
     spy = DepthSpy(env.rig.book, env.lock, ("open_shares", "states", "state"))
     env.bot = _rebuild(env, book=spy)
+    env.bot.poll_once()  # start-up poll (backlog drain) on an empty server: later commands are not drained
     env.command("/status")
     env.command("/positions")
     env.command(f"/flatten {PIN}")

@@ -64,3 +64,12 @@ New files: `tests/telegram/test_r1_stale.py` (item 1), `test_r1_failures.py` (it
 
 ### Not covered here
 Concurrent book mutation under a real lock (lock depth observed instead); Telegram's real redelivery semantics beyond the fake (QA/simulation); advisory items 7-13.
+
+## Round 1 test fixes
+
+Four tests contradicted the approved r1 contracts (backlog drain on the first poll; book reads under gate_lock). Intent and strictness kept; no assertion weakened.
+- `test_r1_stale.py::test_R1_1_a_stale_flatten_with_the_right_pin_closes_nothing`: `open_share` writes an 'open' paper_order, so compare order counts before/after instead of `== []`.
+- `test_auth.py::test_F14_AC5_unconfigured_pin_fails_closed`: the rebuilt bot is primed with one start-up poll (its first command was swallowed by the drain).
+- `test_r1_failures.py::test_R1_3_status_positions_and_flatten_read_the_book_under_the_gate_lock`: the rebuilt bot is primed likewise (/status was drained).
+- `test_commands.py::test_F14_AC4_pause_and_resume_drive_the_real_gate_under_the_lock`: `lock.entered == 1/2` replaced by an observer on the real gate: pause and resume each run exactly once at lock depth 1 (stricter on placement), plus `entered >= 1`; the lock is also taken for sync_posts book reads.
+Result: tests/telegram 100/100; full suite 4899 passed.

@@ -189,6 +189,7 @@ def test_F14_AC5_unconfigured_pin_fails_closed(new_bot) -> None:  # type: ignore
 
     env = new_bot()
     env.bot = make_bot(env.rig, env.base_url, env.clock, env.lock, pin_hash=None, pin_salt=None)
+    env.bot.poll_once()  # the start-up poll (backlog drain) on an empty server, as bot_env does
     env.rig.open_share()
     env.command(f"/flatten {PIN}")
     assert not env.rig.gate.paused

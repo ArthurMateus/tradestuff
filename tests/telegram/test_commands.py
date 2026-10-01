@@ -45,13 +45,24 @@ def test_F14_AC4_status_shows_paused_after_pause(new_bot) -> None:  # type: igno
 
 def test_F14_AC4_pause_and_resume_drive_the_real_gate_under_the_lock(new_bot) -> None:  # type: ignore[no-untyped-def]
     env = new_bot()
+    gate, lock = env.rig.gate, env.lock
+    depths: dict[str, list[int]] = {"pause": [], "resume": []}
+    for name in depths:
+        real = getattr(gate, name)
+
+        def observed(*a, _real=real, _name=name, **kw):  # type: ignore[no-untyped-def]
+            depths[_name].append(lock.depth)  # the lock depth at the moment the real gate is driven
+            return _real(*a, **kw)
+
+        setattr(gate, name, observed)
     env.command("/pause")
     assert env.rig.gate.paused
-    assert env.lock.entered == 1
+    assert depths["pause"] == [1], "the real gate pause must run exactly once, inside the shared gate_lock"
+    assert lock.entered >= 1
     assert "paused" in _last_reply(env).lower()
     env.command("/resume")
     assert not env.rig.gate.paused
-    assert env.lock.entered == 2
+    assert depths["resume"] == [1], "the real gate resume must run exactly once, inside the shared gate_lock"
     assert "resumed" in _last_reply(env).lower()
     assert [a["result"] for a in env.audits()] == ["ok", "ok"]
     assert [a["command"] for a in env.audits()] == ["/pause", "/resume"]

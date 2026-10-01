@@ -159,8 +159,9 @@ def test_R1_1_a_command_that_waited_in_telegram_past_the_limit_is_refused(new_bo
 def test_R1_1_a_stale_flatten_with_the_right_pin_closes_nothing(new_bot) -> None:  # type: ignore[no-untyped-def]
     env = new_bot()
     env.rig.open_share()
+    orders_before = len(env.rig.orders())  # open_share itself writes an 'open' paper_order
     env.server.push_text(f"/flatten {PIN}", date=_now_s(env) - 3600)
     env.pump()
-    assert env.rig.orders() == []
+    assert len(env.rig.orders()) == orders_before
     assert not env.rig.gate.paused
     assert _results(env, "/flatten") == [STALE_COMMAND]
