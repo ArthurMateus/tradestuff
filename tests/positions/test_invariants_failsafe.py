@@ -59,7 +59,7 @@ def test_F12_A8_entry_rejected_at_fill_time_leaves_no_share_and_no_stop(new_rig:
     rig = new_rig()
     now = rig.xtime.now
     rig.feed(make_signal(1, ActionKind.OPEN, size="5", ts=now - 100))  # no book at all: rejected at the fill
-    rig.step(now + 1000)
+    rig.step(now + 6001)
     assert rig.book.open_shares() == ()
     assert rig.share_of(WALLET_A, "SOL") is None
     assert rig.records("paper_stop") == []
