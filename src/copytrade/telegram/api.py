@@ -55,6 +55,7 @@ class Update:
     chat_id: int
     message_id: int
     text: str | None
+    date: int  # seconds since the epoch, as Telegram stamped the message
 
 
 class TelegramApi:
@@ -165,7 +166,7 @@ def _parse_update(raw: Any) -> Update | None:
     if not isinstance(message, dict):
         return None
     sender, chat = message.get("from"), message.get("chat")
-    update_id, message_id = raw.get("update_id"), message.get("message_id")
+    update_id, message_id, date = raw.get("update_id"), message.get("message_id"), message.get("date")
     user_id = sender.get("id") if isinstance(sender, dict) else None
     chat_id = chat.get("id") if isinstance(chat, dict) else None
     if not (
@@ -173,7 +174,9 @@ def _parse_update(raw: Any) -> Update | None:
         and isinstance(user_id, int)
         and isinstance(chat_id, int)
         and isinstance(message_id, int)
+        and isinstance(date, int)
+        and not isinstance(date, bool)
     ):
         return None
     text = message.get("text")
-    return Update(update_id, user_id, chat_id, message_id, text if isinstance(text, str) else None)
+    return Update(update_id, user_id, chat_id, message_id, text if isinstance(text, str) else None, date)

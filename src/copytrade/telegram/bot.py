@@ -31,6 +31,7 @@ _log = logging.getLogger(__name__)
 
 MAX_TEXT_CHARS = 4096
 _COMMAND_NAME_CAP = 64
+MAX_COMMAND_AGE_S = 60  # a command older than this is never obeyed (replay and backlog guard)
 _AUDIT_KIND = "telegram_audit"
 _REDACTED = "<redacted>"
 
@@ -83,6 +84,7 @@ class TelegramBot:
         self._secrets = [s.reveal() for s in (pin_hash, pin_salt) if s is not None]
         self._poll_backoff = Backoff()
         self._offset = 0
+        self._backlog_drained = False
         self._last_unauth_alert_ms: int | None = None
         self._facts = LedgerFacts(ledger)
         self._posts: dict[str, Post] = {}
@@ -129,6 +131,10 @@ class TelegramBot:
             _log.warning("telegram poll failed", extra={"event": "telegram_poll_failed", "reason": str(exc)})
             return 0
         self._poll_backoff.succeeded()
+        if not self._backlog_drained:
+            self._backlog_drained = True
+            self._drop_backlog(updates)
+            return len(updates)
         if updates:
             self.sync_posts()  # a post for what is already open goes out before any reply that describes it
         handled = 0
@@ -136,15 +142,49 @@ class TelegramBot:
             if update.update_id < self._offset:
                 continue
             self._offset = update.update_id + 1  # at most once: advance before acting, so a crash never replays
-            self._handle(update)
+            self._handle_safely(update)
             handled += 1
         return handled
+
+    def _drop_backlog(self, updates: list[Update]) -> None:
+        """Whatever waited while the bot was down (or was already handled before a restart) is confirmed, not obeyed."""
+        for update in updates:
+            self._offset = max(self._offset, update.update_id + 1)
+            parsed = _parse_command(update.text)
+            if parsed is not None:
+                self._audit_safely(update, parsed[0], "stale_dropped")
+
+    def _handle_safely(self, update: Update) -> None:
+        parsed = _parse_command(update.text)
+        name = parsed[0] if parsed is not None else ""
+        try:
+            self._handle(update)
+        except Exception:
+            # No argument, token or PIN material in the log: only the command name and the exception type.
+            _log.exception("a command failed", extra={"event": "telegram_command_failed", "command": name})
+            self._audit_safely(update, name, "error")
+            self._reply_safely("command failed")
+
+    def _audit_safely(self, update: Update, name: str, result: str) -> None:
+        try:
+            self._audit(update, name, result)
+        except Exception:
+            _log.exception("a telegram audit record could not be written", extra={"event": "telegram_audit_failed"})
+
+    def _reply_safely(self, text: str) -> None:
+        try:
+            self._reply(text)
+        except Exception:
+            _log.exception("a telegram reply could not be queued", extra={"event": "telegram_reply_failed"})
 
     def _handle(self, update: Update) -> None:
         parsed = _parse_command(update.text)
         if parsed is None:
             return
         name, args = parsed
+        if self._clock.now_ms() // 1000 - update.date > MAX_COMMAND_AGE_S:
+            self._audit(update, name, "stale_command")
+            return
         if update.user_id != self._user_id or update.chat_id != self._control_chat:
             self._refuse_stranger(update, name)
             return
@@ -187,12 +227,14 @@ class TelegramBot:
     def _cmd_status(self, _args: list[str], _update: Update) -> tuple[str, str]:
         with self._gate_lock:
             paused = self._gate.paused
-        positions = len({s.coin for s in self._book.open_shares()})
+            shares = self._book.open_shares()
+        positions = len({s.coin for s in shares})
         text = f"mode: {self._config['mode']}\nstate: {'paused' if paused else 'running'}\nopen positions: {positions}"
         return "ok", text
 
     def _cmd_positions(self, _args: list[str], _update: Update) -> tuple[str, str]:
-        shares = self._book.open_shares()
+        with self._gate_lock:
+            shares = self._book.open_shares()
         if not shares:
             return "ok", "no open positions"
         lines = [
@@ -234,7 +276,7 @@ class TelegramBot:
             return result, "flatten refused: wrong PIN"
         with self._gate_lock:
             report = self._manager.flatten(run_id=self._run_id)
-        still_open = len(self._book.open_shares())
+            still_open = len(self._book.open_shares())
         text = (
             f"flatten: entries paused, {len(report)} close order(s) sent, {still_open} share(s) still open, "
             f"{len(report.in_flight)} entry(ies) in flight"
@@ -248,9 +290,18 @@ class TelegramBot:
     # ------------------------------------------------------------------------------------------------ posts
 
     def sync_posts(self) -> None:
-        """Diff the share book into trade posts: a new post per new coin position, coalesced edits, a final edit."""
+        """Diff the share book into trade posts: a new post per new coin position, coalesced edits, a final edit.
+        Never raises: a ledger or book failure is logged and the next call tries again."""
+        try:
+            self._sync_posts()
+        except Exception:
+            _log.exception("trade posts could not be synced", extra={"event": "telegram_sync_failed"})
+
+    def _sync_posts(self) -> None:
         now = self._clock.now_ms()
-        live = live_views(self._book.states(), self._facts)
+        with self._gate_lock:
+            states = self._book.states()
+        live = live_views(states, self._facts)
         for coin, (view, share_ids) in live.items():
             post = self._posts.get(coin)
             text = self._clean(render(view))
