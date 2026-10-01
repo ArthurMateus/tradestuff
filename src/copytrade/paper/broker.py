@@ -375,7 +375,7 @@ class PaperBroker:
         for exit_order in snapshot.unproven_exits:
             self._append_cancel(exit_order.client_order_id, "order", "restart_unproven")
         stops = [self._restore_stop(stop) for stop in snapshot.stops if stop.coin in self._positions]
-        exits = [self._restore_exit(order, views[order.coin], now_ms) for order in snapshot.exits]
+        exits = [r for r in (self._restore_exit(o, views[o.coin], now_ms) for o in snapshot.exits) if r is not None]
         if self._positions:
             known_ms = max(snapshot.last_time_ms, snapshot.last_funding_hour_ms or 0)
             self._next_boundary_ms = self._boundary_after(known_ms)
@@ -411,8 +411,12 @@ class PaperBroker:
     def _restore_stop(self, stop: StopSnap) -> RestoredOrder | None:
         position = self._positions[stop.coin]
         share = position.shares.get(stop.share_id)
-        self._append_cancel(stop.client_order_id, "stop", "restart")
-        if share is None:
+        key = (stop.coin, stop.kind, stop.side, stop.qty, stop.trigger_px, stop.share_id)
+        if share is None or any(
+            (s.coin, s.kind, s.side, s.qty, s.trigger_px, s.share_id) == key for s in self._stops.values()
+        ):
+            # no such share, or a kill -9 between the new record and the cancel left this stop twice in the ledger
+            self._append_cancel(stop.client_order_id, "stop", "restart")
             return None
         new_id = self._new_client_order_id(stop.client_order_id)
         self._ledger.append(
@@ -440,14 +444,22 @@ class PaperBroker:
             sz_decimals=position.sz_decimals,
             max_leverage=position.max_leverage,
         )
+        self._append_cancel(
+            stop.client_order_id, "stop", "restart"
+        )  # AFTER the new record: never a window with no stop
         return RestoredOrder(stop.client_order_id, new_id, stop.share_id)
 
-    def _restore_exit(self, order: ExitSnap, view: PositionView, now_ms: int) -> RestoredOrder:
+    def _restore_exit(self, order: ExitSnap, view: PositionView, now_ms: int) -> RestoredOrder | None:
         position = self._positions[order.coin]
         share = position.shares[order.share_id]
         new_id = self._new_client_order_id(order.client_order_id)
         action = ActionKind.CLOSE if order.qty >= abs(share.qty) else ActionKind.REDUCE
-        self._append_cancel(order.client_order_id, "order", "restart")
+        if any(
+            p.share_id == order.share_id and p.side == order.side and p.remaining == order.qty
+            for p in self._pending.values()
+        ):  # a kill -9 between the new record and the cancel left this exit twice: never send it twice
+            self._append_cancel(order.client_order_id, "order", "restart")
+            return None
         self._ledger.append(
             "paper_order",
             {
@@ -485,6 +497,7 @@ class PaperBroker:
             alert_due_ms=now_ms + self._settings.alert_after_ms,
             decision_px=view.avg_entry_px,
         )
+        self._append_cancel(order.client_order_id, "order", "restart")  # AFTER the new record
         return RestoredOrder(order.client_order_id, new_id, order.share_id)
 
     # ---------------------------------------------------------------------------------- time and marks

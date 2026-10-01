@@ -1012,6 +1012,44 @@ class PositionManager:
         self._stretches = {leader: _Stretch(*values) for leader, values in volatile["stretches"].items()}
         self._audit_leaders = {s.leader for s in self._book.states() if s.status != CLOSED}
 
+    def verify_protection(self) -> tuple[str, ...]:
+        """After ``restore_state``: every open share held by the broker must have ONE live stop-loss on the opposite
+        side for EXACTLY its quantity (a stop is lost when a kill -9 tears a restore, or is larger than the position
+        after a kill -9 between a take-profit fill and the stop resize). The share's ``sl_cid`` is taken from the
+        broker's stops by share id, not from the checkpoint. A missing or wrong stop is re-placed through the gate (the
+        wrong one is cancelled after); when none can be placed the share is closed. Returns the share ids that needed
+        repair."""
+        repaired: list[str] = []
+        for share in self._book.states():
+            if share.status != OPEN:
+                continue
+            view = self._broker.position(share.coin)
+            if view is None or share.share_id not in view.share_ids:
+                continue
+            track = self._tracks[share.share_id]
+            side = "sell" if share.is_long else "buy"
+            mine = [
+                s for s in self._broker.stops() if s.share_id == share.share_id and s.kind == "sl" and s.side == side
+            ]
+            exact = [s for s in mine if s.qty == share.qty]
+            if exact:
+                track.sl_cid, track.sl_qty = exact[0].client_order_id, Decimal(share.qty)
+                continue
+            repaired.append(share.share_id)
+            cid = self._place_stop(share, "sl", share.qty, share.current_stop_px)
+            if cid is None:
+                track.sl_cid = None
+                self._alert("stop_failed", f"{share.coin}: no stop for {share.share_id} after the restart; closing it")
+                self._close_for_cause(share.share_id, REASON_STOP_FAILED)
+                continue
+            for stale in mine:
+                self._broker.cancel_stop(stale.client_order_id)
+            track.sl_cid, track.sl_qty = cid, Decimal(share.qty)
+            self._alert(
+                "stop_replaced", f"{share.coin}: the stop of {share.share_id} was missing or wrong after the restart"
+            )
+        return tuple(repaired)
+
     # ======================================================================================== reconciliation
 
     def on_resync(self) -> None:

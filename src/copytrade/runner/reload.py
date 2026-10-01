@@ -201,6 +201,7 @@ def reload_state(parts: ReloadParts, scan: LedgerScan, *, now_ms: int) -> Reload
     cid_map = {r.old_client_order_id: r.new_client_order_id for r in (*result.stops, *result.exits)}
     if checkpoint:
         parts.manager.restore_state(checkpoint["manager"], cid_map=cid_map, tids_done=scan.signal_tids)
+        parts.manager.verify_protection()
     _restore_follow(parts, scan)
     uncertain = _uncertainties(parts, scan, result_unknown=result.unknown_coins, dropped=result.dropped_exits)
     return ReloadResult(
