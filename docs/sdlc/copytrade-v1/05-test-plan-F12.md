@@ -186,3 +186,18 @@ D. The P3 race needs a ticking clock; the fix may use any mechanism (sync before
    or both); the test only fixes the outcome.
 E. The A8 test step (now + 6001) could not be edited in this run: the tool permission was denied for an edit of an
    existing test, so A8 still fails exactly as before. The edit is the one-line step change described in the batch.
+
+## Round 2 addendum (final mini-round; tests in tests/positions/test_r2_blocking.py)
+7 tests: 5 RED on purpose, 2 GUARD (pass today). Real gate, PaperBroker and ledger; reads the private `_ours_won` once (contract below).
+
+| Finding | Test | Kind | Pins / kills |
+|---|---|---|---|
+| RISK-43 | `..RISK43_flip_leg_fired_by_our_own_sl_opens_the_short_and_clears_ours_won` | RED | after our SL fires the leg, the short opens and `(leader, coin)` is not in `mgr._ours_won` (kills: no discard in `_exit_filled`) |
+| RISK-43 | `..RISK43_leader_close_of_the_flipped_short_is_mirrored_within_one_ack` | RED | leader's later close: no `first_exit_won` skip, share closed and broker flat one ack later |
+| RISK-43 | `..RISK43_GUARD_no_flip_our_sl_closes_...first_exit_won` | GUARD | no flip: our exit still wins, the leader's later close is skipped `first_exit_won`, no extra order (kills: discarding `ours_won` unconditionally) |
+| RISK-44 | `..RISK44_heal_with_another_leaders_share_uses_the_shares_own_entry` | RED | B at 100, A lost fill at 110: entry 110 (not 105), stop 108.5, `initial_risk_usd` = qty x 1.5, live SL at 108.5 |
+| RISK-44 | `..RISK44_heal_when_the_other_share_entered_above_ours_...` | RED | B at 120, A at 100, mark 100: no long SL above the mark; share entry 100 / stop 98.5 (or closed `invalid_stop`) |
+| RISK-44 | `..RISK44_heal_closes_for_cause_when_the_stop_on_the_own_entry_is_already_through_the_mark` | RED | mark 98 below own stop 98.5: no live SL at or above the mark and a close order with `exit_reason == "invalid_stop"` (kills: no stop-side check in `_heal_entry`) |
+| RISK-44 | `..RISK44_GUARD_single_share_on_the_coin_still_heals_with_the_brokers_average_entry` | GUARD | one share: entry = broker average (fill 100.2 vs decision 100), stop 1.5 below |
+
+Pinned contracts: `_ours_won` is discarded when the flip leg fires; with more than one share on the coin the heal uses `share.entry_px`; an invalid-side heal stop closes the share with exit reason `invalid_stop` (observable as a paper_order `exit_reason`). Not covered: RISK-45..49 (logged advisories), the 300 s reconcile cadence, mutation testing.
