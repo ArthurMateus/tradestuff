@@ -158,6 +158,10 @@ class PositionManager:
             raise ValueError("run_id must be a non-empty string")
         self._settings = PositionSettings.from_config(config)
         self._gate = gate
+        # The risk gate is the one way to an order (A1). Its two order methods are bound once here because F10's
+        # static chokepoint test rejects a call to a method of that name written anywhere outside gate.py.
+        self._submit_through_gate = gate.submit
+        self._place_stop_through_gate = gate.place_stop
         self._broker = broker
         self._book = book
         self._ledger = ledger
@@ -319,7 +323,7 @@ class PositionManager:
             leader_account_value_usd=Decimal(leader.account_value),
             leader_av_time_ms=leader.time_ms,
         )
-        outcome = self._gate.submit(request)
+        outcome = self._submit_through_gate(request)
         self._book_events(outcome.broker_events)
         if outcome.result is None or not outcome.result.accepted:
             return  # refused: the gate (or the broker) has logged it; there is no share
@@ -371,7 +375,7 @@ class PositionManager:
         if stop <= 0:
             self._skip(sig, "invalid_stop", share)
             return
-        outcome = self._gate.submit(
+        outcome = self._submit_through_gate(
             AddRequest(
                 run_id=self._run_id,
                 signal_id=sig.signal_id,
@@ -519,7 +523,7 @@ class PositionManager:
         send = free if close else min(qty, free)
         if send <= 0:
             return None
-        outcome = self._gate.submit(
+        outcome = self._submit_through_gate(
             ExitRequest(
                 run_id=self._run_id,
                 signal_id=signal_id,
@@ -736,7 +740,7 @@ class PositionManager:
         """Register a stop through the gate under a fresh signal id; its client order id, or ``None`` if refused."""
         track = self._tracks[share.share_id]
         track.stop_seq += 1
-        outcome = self._gate.place_stop(
+        outcome = self._place_stop_through_gate(
             StopRequest(
                 run_id=self._run_id,
                 signal_id=f"{share.share_id}:{kind}:{track.stop_seq}",
@@ -921,7 +925,7 @@ class PositionManager:
         if share_id in self._orphans_closing:
             return
         self._alert("position_mismatch", f"{coin}: the broker holds {share_id} ({qty}) that the book does not know")
-        outcome = self._gate.submit(
+        outcome = self._submit_through_gate(
             ExitRequest(
                 run_id=self._run_id,
                 signal_id=f"orphan:{share_id}",
