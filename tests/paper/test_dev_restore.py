@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -28,7 +29,7 @@ def thirds_book(env: Env, t: int, coin: str = "SOL") -> None:
     env.book(coin, t, [("99.9", "100")], [("100.1", "0.30"), ("100.3", "0.30"), ("100.7", "0.40")])
 
 
-def test_replay_matches_a_broker_that_opened_scaled_in_and_partly_closed(tmp_path) -> None:
+def test_replay_matches_a_broker_that_opened_scaled_in_and_partly_closed(tmp_path: Path) -> None:
     env = build_env(tmp_path)
     thirds_book(env, D0 + 1000)
     env.advance(D0)
@@ -57,7 +58,7 @@ def test_replay_matches_a_broker_that_opened_scaled_in_and_partly_closed(tmp_pat
     assert [r.old_client_order_id for r in result.stops] == ["s1"]
 
 
-def test_replay_of_a_closed_trade_leaves_no_position_and_the_realised_cash(tmp_path) -> None:
+def test_replay_of_a_closed_trade_leaves_no_position_and_the_realised_cash(tmp_path: Path) -> None:
     env = build_env(tmp_path)
     env.open_position("buy", "1.0", px="100")
     env.flat_book("SOL", D0 + 4000, "110")
@@ -71,7 +72,7 @@ def test_replay_of_a_closed_trade_leaves_no_position_and_the_realised_cash(tmp_p
     assert ("S1", "SOL") in snap.retired
 
 
-def test_a_pending_exit_is_requeued_under_a_new_id_and_a_second_restart_does_not_grow_the_suffix(tmp_path) -> None:
+def test_a_pending_exit_is_requeued_under_a_new_id_and_a_second_restart_does_not_grow_the_suffix(tmp_path: Path) -> None:
     env = build_env(tmp_path)
     env.open_position("buy", "1.0", px="100")
     env.advance(D0 + 2000)
@@ -93,7 +94,7 @@ def test_a_pending_exit_is_requeued_under_a_new_id_and_a_second_restart_does_not
     assert len([r for r in second.records("fill") if r.payload["exit_reason"] == "leader_close"]) == 1
 
 
-def test_pending_entries_are_dropped_and_unprovable_exits_cancelled_with_a_reason(tmp_path) -> None:
+def test_pending_entries_are_dropped_and_unprovable_exits_cancelled_with_a_reason(tmp_path: Path) -> None:
     env = build_env(tmp_path)
     env.advance(D0)
     assert env.submit(env.order("buy", "1.0", coid="e1", decided=D0)).accepted  # never filled: no book
@@ -119,7 +120,7 @@ def test_pending_entries_are_dropped_and_unprovable_exits_cancelled_with_a_reaso
     assert snapshot_of(fresh).entries == () and snapshot_of(fresh).unproven_exits == ()  # a second restart is quiet
 
 
-def test_a_triggered_stop_becomes_a_pending_exit_with_its_stop_reason(tmp_path) -> None:
+def test_a_triggered_stop_becomes_a_pending_exit_with_its_stop_reason(tmp_path: Path) -> None:
     env = build_env(tmp_path)
     env.open_position("buy", "1.0", px="100")
     assert env.stop("sl", "sell", "1.0", "98", coid="sl1").accepted
@@ -129,7 +130,7 @@ def test_a_triggered_stop_becomes_a_pending_exit_with_its_stop_reason(tmp_path) 
     assert snap.stops == () and [(e.client_order_id, e.exit_reason) for e in snap.exits] == [("sl1", "stop_loss")]
 
 
-def test_a_liquidation_and_a_funding_payment_are_replayed(tmp_path) -> None:
+def test_a_liquidation_and_a_funding_payment_are_replayed(tmp_path: Path) -> None:
     env = build_env(tmp_path)
     env.open_position("buy", "1.0", px="100", leverage=20)
     env.funding.set("SOL", (D0 // HOUR_MS + 1) * HOUR_MS, "0.0001", "100")
@@ -145,7 +146,7 @@ def test_a_liquidation_and_a_funding_payment_are_replayed(tmp_path) -> None:
     assert liquidated.positions == () and liquidated.cash == env.broker.cash_usd()
 
 
-def test_restore_needs_a_fresh_broker_and_unknown_coins_get_conservative_rules(tmp_path) -> None:
+def test_restore_needs_a_fresh_broker_and_unknown_coins_get_conservative_rules(tmp_path: Path) -> None:
     env = build_env(tmp_path)
     env.open_position("buy", "1.0", px="100", leverage=3)
     snap = snapshot_of(env)
@@ -158,7 +159,7 @@ def test_restore_needs_a_fresh_broker_and_unknown_coins_get_conservative_rules(t
     assert fresh.broker.position("SOL").leverage == 3  # type: ignore[union-attr]
 
 
-def test_the_restored_broker_has_its_time_set_and_rejects_old_gate_tokens(tmp_path) -> None:
+def test_the_restored_broker_has_its_time_set_and_rejects_old_gate_tokens(tmp_path: Path) -> None:
     env = build_env(tmp_path)
     env.open_position("buy", "1.0", px="100")
     snap = snapshot_of(env)
