@@ -127,6 +127,7 @@ def test_F6_AC4_completion_needs_every_candidate_and_a_failed_wallet_is_retried_
     assert bf.inputs(bad, fr.clock.now_ms()) is None
     assert bf.inputs(w(1), fr.clock.now_ms()) is not None and bf.inputs(w(3), fr.clock.now_ms()) is not None
     failing["on"] = False
+    fr.clock.advance(61_000)  # past the per-wallet error cooldown (hl.backoff_max_s) before the retry
     for _ in range(5):
         bf.step()
     assert bf.complete is True

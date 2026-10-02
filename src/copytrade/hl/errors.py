@@ -28,7 +28,13 @@ class HlHttpError(HlError):
 
 
 class HlRateLimitedError(HlError):
-    """HTTP 429 persisted after ``hl.retry_max`` retries."""
+    """HTTP 429 persisted after ``hl.retry_max`` retries.
+
+    Attributes:
+        status: always 429 (so a log line can carry the status of any HTTP failure the same way).
+    """
+
+    status: int = 429
 
 
 class HlTimeoutError(HlError):
