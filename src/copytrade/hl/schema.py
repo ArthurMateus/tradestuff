@@ -50,6 +50,11 @@ def _idx(path: str, index: int) -> str:
     return f"{path}[{index}]"
 
 
+def _carries_liquidation(value: Any) -> bool:
+    """The optional ``liquidation`` field: an object (or ``true``) marks a liquidation fill; absent or null does not."""
+    return value is True or isinstance(value, dict)
+
+
 class _Reader:
     """Typed accessors over decoded JSON that raise ``HlSchemaError`` for the first violation found."""
 
@@ -142,6 +147,7 @@ class _Reader:
             oid=self.uint_field(raw, "oid", path),
             tid=self.uint_field(raw, "tid", path),
             hash=self.text_field(raw, "hash", path),
+            liquidation=_carries_liquidation(raw.get("liquidation")),
         )
 
     def fills(self, value: Any, path: str) -> tuple[Fill, ...]:

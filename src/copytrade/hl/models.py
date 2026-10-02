@@ -25,6 +25,7 @@ class Fill:
     oid: int
     tid: int
     hash: str
+    liquidation: bool = False  # the fill carries the exchange's ``liquidation`` object (whatever ``dir`` says)
 
 
 @dataclass(frozen=True)

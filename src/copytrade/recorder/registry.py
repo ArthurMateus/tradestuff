@@ -7,6 +7,8 @@ import os
 import re
 import sys
 from collections.abc import Iterable
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 REGISTRY_FILENAME = "wallets.txt"
@@ -78,8 +80,27 @@ class WalletRegistry:
         return frozenset(self._wallets)
 
 
-def wallets_in_leaderboard(body: bytes) -> tuple[str, ...]:
-    """The ``ethAddress`` of every row of ``leaderboardRows`` in a leaderboard JSON body, lower-cased, in order.
+@dataclass(frozen=True)
+class LeaderboardRow:
+    """What a leaderboard row offers a prefilter: the lower-cased address and the self-reported ``accountValue``
+    (``None`` when missing or unreadable). The value only saves a fetch; it never scores or admits a wallet."""
+
+    address: str
+    account_value: Decimal | None
+
+
+def _account_value(raw: object) -> Decimal | None:
+    if not isinstance(raw, str):
+        return None
+    try:
+        value = Decimal(raw)
+    except InvalidOperation:
+        return None
+    return value if value.is_finite() else None
+
+
+def rows_in_leaderboard(body: bytes) -> tuple[LeaderboardRow, ...]:
+    """Every row of ``leaderboardRows`` that has an ``ethAddress``, in order.
 
     Raises:
         ValueError: ``body`` is not JSON or has no ``leaderboardRows`` list.
@@ -92,5 +113,16 @@ def wallets_in_leaderboard(body: bytes) -> tuple[str, ...]:
     if not isinstance(rows, list):
         raise ValueError("the leaderboard body has no leaderboardRows list")  # noqa: TRY004 - ValueError is the contract
     return tuple(
-        row["ethAddress"].lower() for row in rows if isinstance(row, dict) and isinstance(row.get("ethAddress"), str)
+        LeaderboardRow(row["ethAddress"].lower(), _account_value(row.get("accountValue")))
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("ethAddress"), str)
     )
+
+
+def wallets_in_leaderboard(body: bytes) -> tuple[str, ...]:
+    """The ``ethAddress`` of every row of ``leaderboardRows`` in a leaderboard JSON body, lower-cased, in order.
+
+    Raises:
+        ValueError: ``body`` is not JSON or has no ``leaderboardRows`` list.
+    """
+    return tuple(row.address for row in rows_in_leaderboard(body))
