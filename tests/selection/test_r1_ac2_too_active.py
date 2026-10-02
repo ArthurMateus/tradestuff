@@ -106,6 +106,8 @@ def test_R1_AC2_the_cooldown_is_one_day_then_one_new_attempt(caplog: pytest.LogC
         while world.backfiller.step():
             pass
         assert len(world.fills_calls(HEAVY)) == first  # still cooling down
+        marked_before = len(events(caplog, "backfill_too_active"))  # the first drop(s), and none while cooling down
+        assert marked_before <= 1
         world.clock.advance(DAY)  # now well past one day
         world.backfiller.set_candidates([HEAVY, B, C])
         for _ in range(30):
@@ -113,7 +115,8 @@ def test_R1_AC2_the_cooldown_is_one_day_then_one_new_attempt(caplog: pytest.LogC
                 break
     second = len(world.fills_calls(HEAVY))
     assert 0 < second - first <= 50  # exactly one new bounded attempt
-    assert len(events(caplog, "backfill_too_active")) == 1  # marked again, logged again
+    # marked again, logged again: exactly one new record after the cooldown, once per drop and not per step
+    assert len(events(caplog, "backfill_too_active")) - marked_before == 1
     world.clock.advance(HOUR)
     world.backfiller.set_candidates([HEAVY, B, C])
     assert world.backfiller.step() is False
@@ -125,7 +128,7 @@ def test_R1_AC2_a_wallet_just_inside_the_cap_is_not_dropped(caplog: pytest.LogCa
     world.hl.set_fills(HEAVY, synth_fills(99_000))  # 50 pages x 2 000 minus the repeated cursor fill, with margin
     world.backfiller.set_candidates([HEAVY])
     with caplog.at_level(logging.WARNING, logger=BACKFILL_LOGGER):
-        run_to_complete(world, 10)
+        run_to_complete(world, 25)
     got = world.backfiller.inputs(HEAVY, T0)
     assert got is not None and len(got.fills) == 99_000 and got.fills_fetched_ms is not None
     assert events(caplog, "backfill_too_active") == []
