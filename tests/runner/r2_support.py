@@ -12,8 +12,8 @@ from tests.runner.test_dev_e2e import small_leader
 from tests.runner.world import LEADER, World
 
 __all__ = [
-    "INTERESTING", "add_to_position", "cuts_after", "keep_first", "ledger_lines", "live_sls", "open_copy", "restart_on_cut",
-    "wait_real",
+    "INTERESTING", "Beat", "SleepLog", "WalkLog", "add_to_position", "cuts_after", "drive", "fill_ledger", "keep_first",
+    "ledger_lines", "live_sls", "open_copy", "opened_with", "rate_limit", "restart_on_cut", "wait_real",
 ]
 
 # the records a kill -9 can fall between (recording bookkeeping records are never interesting)
@@ -137,3 +137,66 @@ def fill_ledger(world: World, megabytes: int = 50) -> None:
             ledger.append("synthetic_filler", {"i": i, "blob": blob})
     finally:
         ledger.close()
+
+
+# ---------------------------------------------------------------------------------------- RISK-66 / RISK-67 (AC1, AC2)
+from tests.hl.support import FakeClock, FakeSleeper  # noqa: E402
+
+
+class SleepLog(FakeSleeper):
+    """The fake sleeper (advances the fake clock) that remembers WHICH THREAD slept and for how long, so a test can tell
+    what blocked the trading thread (the test's own thread) from what a side thread did."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__(clock)
+        self.by_thread: list[tuple[int, float]] = []
+
+    def sleep(self, seconds: float) -> None:
+        self.by_thread.append((threading.get_ident(), seconds))
+        super().sleep(seconds)
+
+    def trading_thread_s(self) -> float:
+        me = threading.get_ident()
+        return sum(s for ident, s in self.by_thread if ident == me)
+
+
+def opened_with(new_world: Any, **deps: Any) -> tuple[World, Any]:
+    """Like ``test_dev_e2e.opened`` but the runner is built with ``deps`` (e.g. a ``SleepLog``)."""
+    world: World = new_world(**deps.pop("config", {}))
+    small_leader(world)
+    world.seed_follow()
+    runner, _ = world.start(**deps)
+    world.leader_open(runner)
+    world.run_until(runner, lambda: runner.broker.position("SOL") is not None and runner.broker.stops(), max_steps=40)
+    world.step(runner, 3, ms=500)
+    return world, runner
+
+
+def rate_limit(world: World, *types: str) -> None:
+    """The fake Hyperliquid answers these info request types with HTTP 429 (what it does when the budget is gone)."""
+    world.hl.fail_types.update(types)
+    original = world.hl._reply
+
+    def reply(handler: Any, status: int, body: bytes) -> None:
+        original(handler, 429 if status == 500 else status, body)
+
+    world.hl._reply = reply  # type: ignore[method-assign,assignment]
+
+
+@dataclass
+class Beat:
+    real_s: float  # wall time of one ``Runner.step`` on the calling (trading) thread
+    slept_s: float  # fake-clock time that ``step`` spent in sleeps on this thread (retry back-off, budget waits)
+    report: Any
+
+
+def drive(world: World, runner: Any, ms: int, log: SleepLog) -> Beat:
+    """One loop iteration as ``World.step`` does it, measured: the loop's time is what ``step`` blocks for."""
+    world.clock.advance(ms)
+    world.pump_market()
+    before = log.trading_thread_s()
+    started = time.perf_counter()
+    report = runner.step()
+    real = time.perf_counter() - started
+    time.sleep(0.012)
+    return Beat(real_s=real, slept_s=log.trading_thread_s() - before, report=report)
