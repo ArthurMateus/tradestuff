@@ -11,15 +11,17 @@ import logging
 
 import pytest
 
+from copytrade.hl.errors import HlError
+
 from tests.hl.support import T0, status
 from tests.selection.helpers import w
 from tests.selection.r1_logs import BACKFILL_LOGGER, events
-from tests.selection.r1_world import HL_FILLS_LIMIT, make_world, synth_fills
+from tests.selection.r1_world import HL_FILLS_LIMIT, World, make_world, synth_fills
 
 BAD = w(1)
 
 
-def _step(world, caplog: pytest.LogCaptureFixture, *, n: int = 1) -> None:
+def _step(world: World, caplog: pytest.LogCaptureFixture, *, n: int = 1) -> None:
     world.backfiller.set_candidates([BAD])
     with caplog.at_level(logging.INFO, logger=BACKFILL_LOGGER):
         for _ in range(n):
@@ -68,7 +70,12 @@ def test_R1b_AC1_backfill_refresh_skipped_message_names_wallet_reason_and_until(
 ) -> None:
     world = make_world()
     world.hl.rules[(BAD, "userFillsByTime")] = lambda call: status(500)
-    _step(world, caplog, n=2)
+    _step(world, caplog)  # the failure puts the wallet in cooldown
+    with caplog.at_level(logging.INFO, logger=BACKFILL_LOGGER):
+        try:
+            world.backfiller.refresh(BAD)  # skipped: the wallet is cooling down
+        except HlError:
+            pass
     (rec,) = events(caplog, "backfill_refresh_skipped")
     message = rec.getMessage()
     assert _has_wallet(message, BAD)

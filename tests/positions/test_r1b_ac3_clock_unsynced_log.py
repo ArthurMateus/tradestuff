@@ -102,4 +102,6 @@ def test_R1b_AC3_any_other_clock_failure_keeps_its_traceback(new_rig: NewRig, ca
     with caplog.at_level(logging.INFO, logger=MANAGER_LOGGER):
         rig.mgr.reconcile()
     failures = [r for r in caplog.records if r.name == MANAGER_LOGGER and r.exc_info]
-    assert failures and failures[0].exc_info[0] is RuntimeError
+    assert failures
+    exc_info = failures[0].exc_info
+    assert exc_info is not None and exc_info[0] is RuntimeError
