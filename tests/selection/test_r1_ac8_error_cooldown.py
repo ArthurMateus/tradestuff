@@ -75,6 +75,26 @@ def test_R1_AC8_a_failing_wallet_is_asked_again_only_after_the_cooldown_and_logg
         assert len(events(caplog, "backfill_failed")) == 2
 
 
+def test_R1_AC8_the_cooldown_doubles_from_backoff_base_and_is_capped_at_backoff_max() -> None:
+    world = build(lambda call: status(500))
+    base, cap = base_ms(world), int(world.cfg["hl.backoff_max_s"] * 1000)
+    world.backfiller.step()  # first failure of BAD (B and C complete on later steps)
+    for _ in range(3):
+        world.backfiller.step()
+    expected = base
+    for _ in range(12):  # long enough to hit the cap
+        seen = len(world.fills_calls(BAD))
+        world.clock.advance(expected - 1)
+        for _ in range(3):
+            world.backfiller.step()
+        assert len(world.fills_calls(BAD)) == seen  # inside the cooldown: no request for the wallet
+        world.clock.advance(1)
+        world.backfiller.step()
+        assert len(world.fills_calls(BAD)) > seen  # cooldown over: asked again, and it failed again
+        expected = min(expected * 2, cap)
+    assert expected == cap and cap > base
+
+
 @pytest.mark.parametrize("rule", [r for _, r in FAILURES], ids=[n for n, _ in FAILURES])
 def test_R1_AC8_the_other_wallets_progress_while_one_keeps_failing(rule: Rule) -> None:
     world = build(rule)

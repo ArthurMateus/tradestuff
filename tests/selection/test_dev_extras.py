@@ -70,12 +70,14 @@ def test_F6_backfill_refuses_a_state_with_an_unknown_unrealized_pnl_and_leaves_t
     bf.set_candidates([w(1)])
     assert bf.step() is True
     assert bf.complete is False and bf.inputs(w(1), T0) is None
+    fr.clock.advance(61_000)  # past the per-wallet error cooldown (hl.backoff_max_s): the refresh really asks again
     try:
         bf.refresh(w(1))
     except HlSchemaError:
         pass
     else:
         raise AssertionError("a state without unrealizedPnl must be refused, not guessed")
+    assert bf.complete is False
 
 
 def test_F6_backfill_pages_userFillsByTime_until_the_present() -> None:
