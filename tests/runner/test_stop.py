@@ -82,7 +82,12 @@ def test_R0_AC10_after_request_stop_new_entries_are_refused_but_exits_and_stops_
         LEADER,
         [fill_json(80, coin="ETH", side="B", sz="1.0", px="3400.0", direction="Open Long", time_ms=world.exchange_ms() - 100)],
     )
-    world.step(runner, 15, ms=200)
+    world.run_until(
+        runner,
+        lambda: any(r.payload.get("reason") == "policy_veto" for r in world.records("signal_skip")),
+        max_steps=60,
+        ms=200,
+    )
     assert runner.broker.position("ETH") is None
     assert "policy_veto" in [r.payload["reason"] for r in world.records("signal_skip")]
     assert len(runner.broker.stops()) == stops_before  # the stops are left as they are
@@ -153,6 +158,7 @@ def test_R0_AC10_a_system_failure_stops_the_runner_cleanly_and_is_reraised_for_t
     from copytrade.ledger.errors import LedgerWriteError
 
     world: World = new_world()
+    world.seed_follow()
     runner = world.build()
     errors: list[BaseException] = []
 
@@ -166,6 +172,10 @@ def test_R0_AC10_a_system_failure_stops_the_runner_cleanly_and_is_reraised_for_t
     t.start()
     world.telegram_ready()
     runner.ledger.close()  # the disk "fails": the next ledger append raises
+    world.hl.push_user_fills(
+        LEADER,
+        [fill_json(99, coin="SOL", side="B", sz="1.0", px="100.0", direction="Open Long", time_ms=world.exchange_ms())],
+    )
     t.join(timeout=30)
     assert not t.is_alive()
     assert len(errors) == 1 and isinstance(errors[0], LedgerWriteError)

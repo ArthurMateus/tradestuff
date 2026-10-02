@@ -37,13 +37,13 @@ def protected(runner: Any) -> bool:
     return cover >= position.qty
 
 
-def ledger_lines(world: World) -> list[str]:
-    return (world.ledger_dir / "ledger.jsonl").read_text(encoding="utf-8").splitlines(keepends=True)
+def ledger_lines(world: World) -> list[bytes]:
+    return (world.ledger_dir / "ledger.jsonl").read_bytes().splitlines(keepends=True)
 
 
-def keep_first(world: World, lines: list[str], keep: int) -> None:
+def keep_first(world: World, lines: list[bytes], keep: int) -> None:
     """The ledger exactly as a kill -9 left it after record ``keep`` (a suffix of the append-only file is gone)."""
-    (world.ledger_dir / "ledger.jsonl").write_text("".join(lines[:keep]), encoding="utf-8")
+    (world.ledger_dir / "ledger.jsonl").write_bytes(b"".join(lines[:keep]))
 
 
 def test_R0_AC5_torn_restore_ledger_truncated_after_cancel_still_has_live_sl(new_world: Any) -> None:
@@ -68,7 +68,7 @@ def test_R0_AC5_torn_restore_ledger_truncated_after_cancel_still_has_live_sl(new
 def test_R0_AC5_two_consecutive_restarts_no_duplicate_or_resurrected_stops(new_world: Any) -> None:
     world, run1 = opened_position(new_world)
     world.hl.mids["SOL"] = "110"  # the take-profit fills; the first stop-loss (98.6) is cancelled and replaced
-    world.step(run1, 12, ms=500)
+    world.run_until(run1, lambda: (s := stop_shape(run1)) and all(x[4] > Decimal("100") for x in s), max_steps=30, ms=500)
     shape = stop_shape(run1)
     assert shape and all(s[4] > Decimal("100") for s in shape), shape
     run1.stop()
@@ -181,7 +181,7 @@ def test_R0_AC10_non_money_exception_does_not_kill_loop(new_world: Any) -> None:
     except Exception as exc:  # noqa: BLE001
         pytest.fail(f"a non-money exception killed the loop: {type(exc).__name__}")
     set_mid_below_stop(world, runner)
-    world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=20, ms=70_000)  # exits go on
+    world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=120, ms=1_000)  # exits go on
     wait_for(lambda: count(world, "runner_section_failed") >= 1, what="a throttled alert for the failing section")
     assert count(world, "runner_section_failed") <= 2  # throttled, not one per iteration
 
@@ -195,7 +195,7 @@ def test_R0_AC13_hub_polled_independently_of_recorder_fault(new_world: Any) -> N
     world.step(run2, 3, ms=500)
     flaky.fault = OSError(errno.EIO, "injected: the recorder's disk probe fails on every iteration")
     set_mid_below_stop(world, run2)
-    world.run_until(run2, lambda: run2.broker.position("SOL") is None, max_steps=20, ms=70_000)  # marks still arrive
+    world.run_until(run2, lambda: run2.broker.position("SOL") is None, max_steps=120, ms=1_000)  # marks still arrive
     assert world.records("paper_stop_trigger")
 
 

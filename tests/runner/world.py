@@ -260,7 +260,7 @@ class World:
         stop would add (final checkpoint, runner_stop) survives."""
         snap = self.base / "killed"
         shutil.rmtree(snap, ignore_errors=True)
-        shutil.copytree(self.ledger_dir, snap / "ledger")
+        shutil.copytree(self.ledger_dir, snap / "ledger", ignore=shutil.ignore_patterns("*.lock"))
         if self.state_dir.exists():
             shutil.copytree(self.state_dir, snap / "state")
         runner.stop()

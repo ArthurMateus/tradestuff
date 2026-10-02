@@ -5,9 +5,11 @@ re-run scheduled, it works with the clock in doubt; and stale or unknown marks w
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from copytrade.runner.flatten import FLATTEN_RERUN_INTERVAL_S, FLATTEN_RERUN_MAX
+from tests.hl.ws_server import wait_for
 from tests.runner.scenarios import count, enter_jump, enter_unsynced, flatten_cmd, opened_position
 
 INCOMPLETE = "flatten_incomplete"
@@ -17,10 +19,13 @@ STALE_STEP_MS = 40_000  # feed.stale_after_s = 30
 def test_R0_AC4_flatten_in_doubt_closes_positions(new_world: Any) -> None:
     for how in (enter_unsynced, enter_jump):
         world, runner = opened_position(new_world)
-        how(world, runner)
-        flatten_cmd(world, runner)
-        world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=80, ms=200)
-        assert not runner.broker.pending_exits()
+        try:
+            how(world, runner)
+            flatten_cmd(world, runner)
+            world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=80, ms=200)
+            assert not runner.broker.pending_exits()
+        finally:
+            runner.stop()
 
 
 def test_R0_AC4_flatten_unfinished_while_positions_or_pending_exits_remain(new_world: Any) -> None:
@@ -69,12 +74,25 @@ def test_R0_AC4_flatten_raises_still_reruns(new_world: Any, monkeypatch: Any) ->
 
     monkeypatch.setattr(runner.manager, "flatten", flaky)
     flatten_cmd(world, runner)
-    world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=60, ms=FLATTEN_RERUN_INTERVAL_S * 1000)
+    for _ in range(40):
+        if runner.broker.position("SOL") is None:
+            break
+        world.step(runner, 1, ms=1_000)
+    assert runner.broker.position("SOL") is None
     assert failures[0] == 0  # the loop survived both raises and the supervisor re-ran until it worked
+
+
+def drain_market(world: Any, runner: Any) -> None:
+    for conn in world.hl.connections():
+        while not conn._commands.empty():
+            time.sleep(0.005)
+    time.sleep(0.02)
+    runner.hub.poll()
 
 
 def test_R0_AC13_marks_stalled_alert_after_5_and_repeats(new_world: Any) -> None:
     world, runner = opened_position(new_world)
+    drain_market(world, runner)
     world.step(runner, 4, ms=STALE_STEP_MS, pump=False)  # 4 iterations with a position open and stale mids
     assert count(world, "marks_stalled") == 0
     world.step(runner, 1, ms=STALE_STEP_MS, pump=False)
@@ -83,13 +101,15 @@ def test_R0_AC13_marks_stalled_alert_after_5_and_repeats(new_world: Any) -> None
     world.step(runner, 7, ms=STALE_STEP_MS, pump=False)  # 280 s later
     assert count(world, "marks_stalled") == 1
     world.step(runner, 1, ms=STALE_STEP_MS, pump=False)  # 320 s later
-    world.wait_text("marks_stalled")
+    wait_for(lambda: count(world, "marks_stalled") >= 2, what="the 2nd marks_stalled alert")
     assert count(world, "marks_stalled") == 2
-    world.step(runner, 1, ms=1_000)  # a good mark resets the counter and the throttle
+    world.pump_market()
+    drain_market(world, runner)
+    world.step(runner, 1, ms=1_000, pump=False)  # a good mark resets the counter and the throttle
     world.step(runner, 4, ms=STALE_STEP_MS, pump=False)
     assert count(world, "marks_stalled") == 2
     world.step(runner, 1, ms=STALE_STEP_MS, pump=False)
-    world.wait_text("marks_stalled")
+    wait_for(lambda: count(world, "marks_stalled") >= 3, what="the 3rd marks_stalled alert")
     assert count(world, "marks_stalled") == 3  # a new episode alerts at its 5th iteration, not 300 s after the last one
 
 

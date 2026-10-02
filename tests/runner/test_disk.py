@@ -167,12 +167,15 @@ def test_R0_AC8_an_unreadable_disk_while_running_stops_recording_and_blocks_no_e
     world.seed_follow()
     probe = SwitchDisk("500")
     runner, _ = world.start(disk=probe)
-    world.leader_open(runner)
-    probe.broken = True
-    world.step(runner, 2 * 7, ms=10_000)
-    assert not runner.recorder.recording  # unknown free space counts as none (A2)
-    world.leader_close()
-    world.run_until(runner, lambda: runner.broker.position("SOL") is None)
+    try:
+        world.leader_open(runner)
+        probe.broken = True
+        world.step(runner, 2 * 7, ms=10_000)
+        assert not runner.recorder.recording  # unknown free space counts as none (A2)
+        world.leader_close()
+        world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=500)
+    finally:
+        runner.stop()
 
 
 # ------------------------------------------------------------------------------- committed defaults (config/)

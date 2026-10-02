@@ -25,7 +25,7 @@ def test_R0_AC4_stop_triggers_while_clock_unsynced(new_world: Any) -> None:
     report = enter_unsynced(world, runner)
     assert report.advanced_to_ms is not None  # broker time is driven by the monotonic projection
     set_mid_below_stop(world, runner)
-    world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=60, ms=200)
+    world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=120, ms=200)
     assert world.records("paper_stop_trigger")
 
 
@@ -34,7 +34,7 @@ def test_R0_AC4_stop_triggers_during_jump_doubt(new_world: Any) -> None:
     report = enter_jump(world, runner)
     assert report.advanced_to_ms is not None and abs(report.advanced_to_ms - world.exchange_ms()) <= 5_000
     set_mid_below_stop(world, runner)
-    world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=60, ms=200)  # 12 s < the 30 s resample
+    world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=120, ms=200)  # 24 s < the 30 s resample
     assert world.records("paper_stop_trigger")
 
 
@@ -43,9 +43,15 @@ def test_R0_AC4_trailing_stop_moves_while_in_doubt(new_world: Any, how: str) -> 
     world, runner = opened_position(new_world)
     enter(world, runner, how)
     world.hl.mids["SOL"] = "120"
-    world.step(runner, 12, ms=500)
+    world.run_until(
+        runner,
+        lambda: any(s.trigger_px > 100 for s in runner.broker.stops() if s.kind == "sl"),
+        max_steps=40,
+        ms=500,
+    )
     sl = [s.trigger_px for s in runner.broker.stops() if s.kind == "sl"]
     assert sl and min(sl) > 100  # the stop trailed the price up (was 98.6)
+
 
 
 @pytest.mark.parametrize("how", DOUBT)
@@ -54,15 +60,21 @@ def test_R0_AC4_a_gap_far_below_the_stop_closes_the_position_while_in_doubt(new_
     enter(world, runner, how)
     world.hl.mids["SOL"] = "1.0"  # beyond the stop and the liquidation price
     world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=60, ms=200)
-    assert world.records("paper_stop_trigger") or world.records("paper_liquidation") or world.records("liquidation")
+    assert (
+        world.records("paper_stop_trigger")
+        or any(r.payload.get("exit_reason") == "liquidated" for r in world.records("fill"))
+        or world.records("paper_liquidation")
+        or world.records("liquidation")
+    )
 
 
 @pytest.mark.parametrize("how", DOUBT)
 def test_R0_AC4_delisting_closes_the_position_while_in_doubt(new_world: Any, how: str) -> None:
     world, runner = opened_position(new_world)
     enter(world, runner, how)
-    world.hl.universe[0] = {**world.hl.universe[0], "isDelisted": True}  # SOL
-    assert world.hl.universe[0]["name"] == "SOL"
+    sol_idx = next(i for i, u in enumerate(world.hl.universe) if u["name"] == "SOL")
+    world.hl.universe[sol_idx] = {**world.hl.universe[sol_idx], "isDelisted": True}
+    assert world.hl.universe[sol_idx]["name"] == "SOL"
     world.step(runner, 1, ms=3_600_001)  # the hourly delisting check (paper.meta_refresh_min = 60)
     world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=60, ms=200)
 

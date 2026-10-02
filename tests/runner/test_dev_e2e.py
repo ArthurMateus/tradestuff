@@ -26,7 +26,7 @@ def opened(new_world: Any, **config: Any) -> tuple[World, Any]:
     world.seed_follow()
     runner, _ = world.start()
     world.leader_open(runner)
-    world.step(runner, 3)
+    world.run_until(runner, lambda: runner.broker.position("SOL") is not None and runner.broker.stops(), max_steps=40)
     assert runner.broker.position("SOL") is not None and runner.broker.stops()
     return world, runner
 
@@ -88,11 +88,14 @@ def test_a_losing_copy_pauses_its_leader_and_the_pause_is_ledgered(new_world: An
     world, runner = opened(new_world, leader_pause__max_copy_dd="0.02")
     trigger_px = min(s.trigger_px for s in runner.broker.stops() if s.kind == "sl")
     world.hl.mids["SOL"] = str(trigger_px - 1)
-    world.run_until(runner, lambda: runner.broker.position("SOL") is None)
-    world.step(runner, 3)
-    assert [r.payload["wallet"] for r in world.records("leader_paused")] == [LEADER]
-    assert LEADER not in runner.follow.followed
-    assert T0 > 0
+    try:
+        world.run_until(runner, lambda: runner.broker.position("SOL") is None, max_steps=500)
+        world.run_until(runner, lambda: world.records("leader_paused"), max_steps=100)
+        assert [r.payload["wallet"] for r in world.records("leader_paused")] == [LEADER]
+        assert LEADER not in runner.follow.followed
+        assert T0 > 0
+    finally:
+        runner.stop()
 
 
 def test_every_process_gets_its_own_gate_key_so_a_token_from_a_previous_run_is_refused(new_world: Any) -> None:

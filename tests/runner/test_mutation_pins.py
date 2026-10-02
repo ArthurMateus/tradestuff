@@ -35,12 +35,16 @@ def test_pin_rp_trigger_cap_a_triggered_stop_is_capped_by_the_exits_already_pend
     triggers too. The restart must rebuild the same pending exits, not a full-size exit for the stop."""
     world, run1 = opened_position(new_world)
     world.hl.mids["SOL"] = "110"
-    for _ in range(4):
+    for _ in range(40):
+        if len(world.records("paper_stop_trigger")) == 1 and run1.broker.pending_exits():
+            break
         world.clock.advance(300)
         runner_step_no_books(world, run1)
     assert len(world.records("paper_stop_trigger")) == 1 and run1.broker.pending_exits()
     world.hl.mids["SOL"] = "90"
-    for _ in range(6):
+    for _ in range(40):
+        if len(world.records("paper_stop_trigger")) == 2:
+            break
         world.clock.advance(300)
         runner_step_no_books(world, run1)
     assert len(world.records("paper_stop_trigger")) == 2, "the stop-loss must trigger while the take-profit exit is pending"

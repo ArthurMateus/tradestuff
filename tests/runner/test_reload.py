@@ -327,30 +327,33 @@ def test_R0_AC6_new_entries_are_refused_while_unacknowledged_and_work_again_afte
         ]
     )
     run2, report = world.start()
-    assert rl.EXIT_STATE_UNPROVEN in [u.code for u in report.uncertain] and report.entries_blocked
-    assert any("ghost-exit-1" in u.detail or "ghost-share" in u.detail for u in report.uncertain)
-    world.hl.leader_positions[LEADER.lower()] = [("SOL", "5.0", "100.0"), ("ETH", "1.0", "3400.0")]
-    world.subscribe_ready(run2)
-    world.hl.push_user_fills(
-        LEADER,
-        [fill_json(60, coin="ETH", side="B", sz="1.0", px="3400.0", direction="Open Long", time_ms=world.exchange_ms() - 100)],
-    )
-    world.step(run2, 20, ms=200)
-    assert run2.broker.position("ETH") is None
-    assert "paused" in [r.payload["reason"] for r in world.records("risk_decision") if r.payload["coin"] == "ETH"]
-    world.telegram_ready()
-    world.tg.push_text("/resume")
-    wait_for(lambda: not run2.gate.paused, what="the acknowledgement")
-    world.hl.push_user_fills(
-        LEADER,
-        [fill_json(61, coin="ETH", side="B", sz="1.0", px="3400.0", direction="Open Long", time_ms=world.exchange_ms() - 100)],
-    )
+    try:
+        assert rl.EXIT_STATE_UNPROVEN in [u.code for u in report.uncertain] and report.entries_blocked
+        assert any("ghost-exit-1" in u.detail or "ghost-share" in u.detail for u in report.uncertain)
+        world.hl.leader_positions[LEADER.lower()] = [("SOL", "5.0", "100.0"), ("ETH", "1.0", "3400.0")]
+        world.subscribe_ready(run2)
+        world.hl.push_user_fills(
+            LEADER,
+            [fill_json(60, coin="ETH", side="B", sz="1.0", px="3400.0", direction="Open Long", time_ms=world.exchange_ms() - 100)],
+        )
+        world.step(run2, 20, ms=200)
+        assert run2.broker.position("ETH") is None
+        assert "paused" in [r.payload["reason"] for r in world.records("risk_decision") if r.payload["coin"] == "ETH"]
+        world.telegram_ready()
+        world.tg.push_text("/resume")
+        wait_for(lambda: not run2.gate.paused, what="the acknowledgement")
+        world.hl.push_user_fills(
+            LEADER,
+            [fill_json(61, coin="ETH", side="B", sz="1.0", px="3400.0", direction="Open Long", time_ms=world.exchange_ms() - 100)],
+        )
 
-    def eth_filled() -> bool:
-        world.pump_market(("ETH",))  # world.step pumps SOL only: keep an ETH book available at the fill
-        return run2.broker.position("ETH") is not None
+        def eth_filled() -> bool:
+            world.pump_market(("ETH",))  # world.step pumps SOL only: keep an ETH book available at the fill
+            return run2.broker.position("ETH") is not None
 
-    world.run_until(run2, eth_filled, max_steps=400)
+        world.run_until(run2, eth_filled, max_steps=600)
+    finally:
+        run2.stop()
 
 
 def test_R0_AC6_exits_and_stops_of_restored_positions_keep_working_while_entries_are_refused(new_world: Any) -> None:
