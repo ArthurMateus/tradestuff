@@ -1,8 +1,8 @@
-# Testing the v0 paper bot on your Windows PC (DRAFT: finalised after R0 is merged)
+# Testing the v0 paper bot on your Windows PC
 Paper mode only. The bot never places a real order and never needs a Hyperliquid key. Do not put real keys anywhere near it.
 
 ## A. One-time setup (about 20 minutes)
-1. **Get the code.** Install Git for Windows, then in PowerShell: `git clone https://github.com/arthurmateus/tradestuff C:\tradestuff`, `cd C:\tradestuff`, `git checkout epic/copytrade-v1` (once R0 is merged it is on that branch; until then use `git checkout feat/copytrade-v1/R0-runner`).
+1. **Get the code.** Install Git for Windows, then in PowerShell: `git clone https://github.com/arthurmateus/tradestuff C:\tradestuff`, `cd C:\tradestuff`, `git checkout epic/copytrade-v1`.
 2. **Install uv** (it also installs Python 3.11): `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`, close and reopen PowerShell, `cd C:\tradestuff`, `uv sync`.
 3. **Make a Telegram bot.** In Telegram talk to @BotFather: `/newbot`, copy the token. Open a chat with your new bot and send it any message. Find your numeric user id (talk to @userinfobot). For simplicity use one private chat with the bot for both control and alerts: its chat id equals your user id.
 4. **Edit `config\telegram.toml`:** replace the three `0` values: `allowed_user_id` (your id), `control_chat_id` (same number for a private chat), `alerts_chat_id` (same number). Never put the token or PIN in a file.
