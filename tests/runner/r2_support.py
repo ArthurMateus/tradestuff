@@ -99,3 +99,41 @@ def wait_real(cond: Callable[[], Any], *, seconds: float = 10.0, what: str = "th
             return
         time.sleep(0.02)
     raise AssertionError(f"timed out waiting for {what}")
+
+
+# ---------------------------------------------------------------------------------------------- ledger scans (AC3)
+import threading  # noqa: E402
+from dataclasses import dataclass, field  # noqa: E402
+
+
+@dataclass
+class WalkLog:
+    """Every whole-ledger walk (a hash-verified pass over ``ledger.jsonl``: ``Ledger.records``, ``read_records``,
+    ``verify_ledger`` all go through ``copytrade.ledger.store._walk``) with the thread that started it."""
+
+    threads: list[threading.Thread] = field(default_factory=list)
+
+    def reset(self) -> None:
+        self.threads.clear()
+
+    @property
+    def total(self) -> int:
+        return len(self.threads)
+
+    @property
+    def on_trading_thread(self) -> int:
+        return sum(t is threading.main_thread() for t in self.threads)
+
+
+def fill_ledger(world: World, megabytes: int = 50) -> None:
+    """A big synthetic history (hash-chained through the real ledger): ``megabytes`` MB of filler records that no
+    component reads (an unknown kind), written before the runner is built."""
+    from copytrade.ledger.store import Ledger
+
+    blob = "x" * 200_000
+    ledger = Ledger.open(world.ledger_dir, clock=world.clock)
+    try:
+        for i in range(megabytes * 5):
+            ledger.append("synthetic_filler", {"i": i, "blob": blob})
+    finally:
+        ledger.close()
