@@ -83,7 +83,7 @@ class FakeHl:
         self.rules: dict[tuple[str, str], Callable[[Call], HttpResponse | None]] = {}
 
     def set_fills(self, wallet: str, rows: Sequence[dict[str, Any]]) -> None:
-        ordered = sorted(rows, key=lambda r: (r["time"], r["tid"]))
+        ordered = sorted(rows, key=lambda r: (r["time"], r.get("tid", 0)))
         self._store[wallet] = ([r["time"] for r in ordered], ordered)
 
     def handle(self, call: Call) -> HttpResponse:
