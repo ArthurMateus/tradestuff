@@ -53,6 +53,12 @@ _RETRYABLE = (HlTimeoutError, HlConnectionError, HlRateLimitedError)
 _log = logging.getLogger(__name__)
 
 
+def _status_text(exc: Exception) -> str:
+    """`` status=N`` for an HTTP failure, else empty (the error text never carries the URL or the body)."""
+    status = getattr(exc, "status", None)
+    return f" status={status}" if isinstance(status, int) else ""
+
+
 @dataclass(frozen=True)
 class HttpResponse:
     status: int
@@ -204,19 +210,26 @@ class HlRestClient:
                 return self._attempt(request_type, body, weight, priority)
             except _RETRYABLE as exc:
                 if attempt >= self._retry_max:
+                    _log.warning(
+                        "info request failed, giving up type=%s attempt=%d%s error=%s",
+                        request_type,
+                        attempt + 1,
+                        _status_text(exc),
+                        exc,
+                        extra={"event": "hl_giveup"},
+                    )
                     raise
                 delay_s = backoff_delay_s(
                     attempt, base_s=self._backoff_base_s, max_s=self._backoff_max_s, rng=self._rng
                 )
                 _log.warning(
-                    "info request failed, backing off",
-                    extra={
-                        "event": "hl_retry",
-                        "request_type": request_type,
-                        "attempt": attempt,
-                        "delay_s": delay_s,
-                        "error_type": type(exc).__name__,
-                    },
+                    "info request failed, backing off type=%s attempt=%d delay=%.1fs%s error=%s",
+                    request_type,
+                    attempt + 1,
+                    delay_s,
+                    _status_text(exc),
+                    exc,
+                    extra={"event": "hl_retry"},
                 )
                 self._sleeper.sleep(delay_s)
                 attempt += 1
