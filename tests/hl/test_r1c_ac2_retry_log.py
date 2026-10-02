@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 import re
-import threading
 
 import pytest
 
@@ -61,11 +60,9 @@ def test_R1c_AC2_the_warning_never_carries_the_url_or_the_response_body(caplog: 
 
 def test_R1c_AC2_a_timeout_retry_warning_names_the_failure_without_a_status(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.WARNING, logger=_LOGGER)
-    hold = threading.Event()
-    with loopback((200, "{}"), hold) as (url, _):
-        rig = make_rig(url=url, transport=StdlibHttpTransport(), hl__retry_max=1, hl__rest_timeout_s=0.3)
-        with pytest.raises(HlTimeoutError):
-            _fills(rig)
+    rig = make_rig(handler=raising(TimeoutError("timed out")), hl__retry_max=1)
+    with pytest.raises(HlTimeoutError):
+        _fills(rig)
     (msg,) = _retry_messages(caplog)
     assert "type=userFillsByTime" in msg and "attempt=" in msg and re.search(r"delay=[0-9.]+s", msg)
     assert "status=" not in msg
