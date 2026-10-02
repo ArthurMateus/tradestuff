@@ -51,6 +51,7 @@ from tests.signals.helpers import make_rig as make_detector_rig
 
 DAY = 86_400_000
 PAGE = 2_000
+HL_FILLS_LIMIT = 10_000  # Hyperliquid fact: userFillsByTime only makes the 10 000 most recent fills of a wallet retrievable
 FIXTURES_R1 = Path(__file__).resolve().parent.parent / "fixtures" / "hl"
 EXTRAS_FIXTURE = "userFillsByTime_extras.synthetic-pending-recording.json"  # SYNTHETIC-PENDING-RECORDING
 
@@ -78,7 +79,11 @@ class FakeHl:
     """The info endpoint. ``fills`` per wallet (wire format); ``rules`` may answer a ``(wallet, request type)`` first
     (return ``None`` to fall through to the normal answer); everything but fills is served from the F3 fixtures."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, fills_limit: int | None = None) -> None:
+        """``fills_limit`` (use ``HL_FILLS_LIMIT``) switches on the real API's retention: only the ``fills_limit`` most
+        recent fills of a wallet exist for ``userFillsByTime``; a request that starts earlier gets the OLDEST retrievable
+        fills (earliest first, 2 000 a page), with nothing to tell it that older ones were cut off."""
+        self.fills_limit = fills_limit
         self._store: dict[str, tuple[list[int], list[dict[str, Any]]]] = {}
         self.rules: dict[tuple[str, str], Callable[[Call], HttpResponse | None]] = {}
 
@@ -95,6 +100,8 @@ class FakeHl:
                 return answer
         if rtype == "userFillsByTime":
             times, rows = self._store.get(str(user), ([], []))
+            if self.fills_limit is not None:
+                times, rows = times[-self.fills_limit:], rows[-self.fills_limit:]
             lo = bisect.bisect_left(times, call.body["startTime"])
             hi = len(times) if call.body.get("endTime") is None else bisect.bisect_right(times, call.body["endTime"])
             return ok(rows[lo:hi][:PAGE])
@@ -153,11 +160,11 @@ class World:
         self.clock.advance(seconds * 1000)
 
 
-def make_world(*, fail_fast: bool = False, **overrides: Any) -> World:
+def make_world(*, fail_fast: bool = False, fills_limit: int | None = None, **overrides: Any) -> World:
     cfg = make_config(**overrides)
     clock = FakeClock()
     sleeper: Any = FailFastSleeper() if fail_fast else FakeSleeper(clock)
-    hl = FakeHl()
+    hl = FakeHl(fills_limit=fills_limit)
     http = FakeHttp(clock, hl.handle)
     alerts, ledger = RecordingAlerts(), RecordingLedger()
     budget = RateBudget(
