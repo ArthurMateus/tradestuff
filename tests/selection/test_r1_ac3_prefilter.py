@@ -13,6 +13,7 @@ G11 (exactly the minimum is kept). A prefiltered wallet receives no request of a
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from tests.selection.helpers import w
 from tests.selection.r1_world import board_body, make_manager_world
@@ -21,7 +22,7 @@ EXCLUDED = "0xdfc24b077bc1425ad1dea75bcb6f8158e10df303"
 K = 50  # scoring.candidates_k floor
 
 
-def run(tmp_path: Path, rows: list[tuple[str, str | None]], **overrides: object) -> tuple[set[str], set[str], object]:
+def run(tmp_path: Path, rows: list[tuple[str, str | None]], **overrides: object) -> tuple[set[str], set[str], Any]:
     mw = make_manager_world(tmp_path, fail_fast=False, **overrides)
     mw.board.outcome = board_body(rows)
     mw.manager.run_cycle(p95_latency_s=None)

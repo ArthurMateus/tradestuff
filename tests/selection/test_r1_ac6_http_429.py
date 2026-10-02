@@ -9,15 +9,17 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from tests.hl.support import T0, status
 from tests.selection.helpers import w
 from tests.selection.r1_logs import BACKFILL_LOGGER, attr, events
-from tests.selection.r1_world import make_world, synth_fills
+from tests.selection.r1_world import World, make_world, synth_fills
 
 BAD, B, C = w(1), w(2), w(3)
 
 
-def build():  # type: ignore[no-untyped-def]
+def build() -> tuple[World, dict[str, bool]]:
     world = make_world()
     for wallet, tid0 in ((BAD, 1), (B, 500_000), (C, 600_000)):
         world.hl.set_fills(wallet, synth_fills(5, tid0=tid0))
@@ -27,7 +29,7 @@ def build():  # type: ignore[no-untyped-def]
     return world, state
 
 
-def test_R1_AC6_other_wallets_progress_while_one_is_rate_limited(caplog) -> None:  # type: ignore[no-untyped-def]
+def test_R1_AC6_other_wallets_progress_while_one_is_rate_limited(caplog: pytest.LogCaptureFixture) -> None:
     world, _ = build()
     with caplog.at_level(logging.WARNING, logger=BACKFILL_LOGGER):
         for _ in range(3):
