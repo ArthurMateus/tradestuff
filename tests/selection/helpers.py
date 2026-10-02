@@ -126,7 +126,9 @@ def leaderboard_body(rows: int, first: Sequence[str] = ()) -> bytes:
         addresses.append(w(i))
         i += 1
     template = json.loads((Path(__file__).resolve().parent.parent / "fixtures/exchange/hl/leaderboard.json").read_text())
-    row = template["leaderboardRows"][0]
+    # the recorded row's accountValue (1000.25) is below the G11 prefilter minimum; rows here must pass it, so use the
+    # configured default minimum (not a hardcoded number)
+    row = {**template["leaderboardRows"][0], "accountValue": str(cfg()["gate.min_account_value_usd"])}
     return json.dumps({"leaderboardRows": [{**row, "ethAddress": a} for a in addresses[:rows]]}).encode()
 
 
