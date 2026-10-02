@@ -1,0 +1,71 @@
+# Test plan R2: restart safety (RISK-59, 60, 66, 67, 68, AC6 pin gap, AC7 pacing)
+
+Branch `feat/copytrade-v1/R2-restart-safety`. Money path. Tests only: no stubs were needed (every behaviour change is inside
+existing code), so every new test fails on an assertion, none on an import or `NotImplementedError`. No config key and no
+F11 amendment is required (code constants: bound 5 s of loop time, 2 s per iteration, force interval 600 s).
+
+## Coverage matrix
+
+| AC | Tests |
+|---|---|
+| R2.AC1 | `tests/runner/test_r2_ac1_unsynced_restart.py`: `test_R2_AC1_after_a_long_downtime_and_an_unsynced_restart_a_triggered_stop_fills_within_5_s` (4 params: unsynced / too_uncertain x clean_stop / hard_kill, 120 s downtime, forward-only broker time), `..._broker_time_catches_up_to_live_exchange_time_while_the_clock_is_untrusted` (2), `..._entries_stay_refused_while_broker_time_catches_up`, `..._a_flatten_close_fills_within_5_s_after_an_unsynced_restart`, `..._a_pending_leader_close_requeued_at_the_restart_fills_within_5_s`, `..._restored_positions_and_a_clock_that_drops_between_reload_and_step_1_still_advance_and_mark` |
+| R2.AC2 | `tests/runner/test_r2_ac2_nonblocking_rest.py`: `..._with_l2book_answering_429_every_iteration_is_bounded_and_the_stop_is_processed`, `..._a_resample_that_keeps_answering_429_never_stalls_the_loop_for_an_hour_of_doubt`, `..._with_l2book_hanging_the_iteration_returns_within_2_s`, `..._flatten_does_not_wait_on_the_gate_lock_for_a_hanging_resample`, `..._no_rest_call_sleeps_on_the_trading_thread_for_an_hour_of_429[metaAndAssetCtxs, fundingHistory, candleSnapshot, clearinghouseState, userFillsByTime, allMids, l2Book]` |
+| R2.AC3 | `tests/runner/test_r2_ac3_ledger_growth.py`: `..._an_idle_runner_writes_a_checkpoint_only_after_the_force_interval`, `..._the_seen_signal_ids_are_not_rewritten_in_full_by_every_checkpoint`, `..._idle_growth_in_a_simulated_hour_is_small_and_bounded`, `..._a_restart_after_an_idle_hour_still_knows_every_seen_signal[clean_stop, hard_kill]`, `..._a_changed_state_is_still_checkpointed_promptly`, `..._a_loop_iteration_with_pruning_due_over_a_50_mb_ledger_stays_fast_and_walks_nothing`, `..._the_post_facts_of_an_opened_and_a_closed_position_do_not_scan_the_ledger` |
+| R2.AC4 | `tests/runner/test_r2_ac4_ac5_restore.py`: `test_R2_AC4_a_pending_share_whose_fill_the_broker_holds_is_not_dropped_and_no_position_without_share_is_flagged`, `..._the_reload_reconciles_so_the_share_is_open_and_has_its_stop_at_once`, `..._the_valid_copy_is_not_closed_as_an_orphan_at_the_first_reconcile` |
+| R2.AC5 | same file: `test_R2_AC5_kill_after_an_add_fill_keeps_one_full_size_sl_at_every_kill_point`, `..._an_sl_whose_quantity_equals_the_brokers_share_quantity_is_never_cancelled`, `..._after_a_take_profit_fill_the_sl_is_not_larger_than_the_position_and_no_valid_share_is_closed`, `..._a_stale_checkpoint_stop_never_replaces_a_tighter_broker_stop` |
+| R2.AC6 | `tests/paper/test_r2_restore_dedupe.py`: `..._two_surviving_stops_for_one_share_leave_exactly_one_live_stop`, `..._the_duplicate_is_cancelled_in_the_ledger_so_a_second_restart_does_not_find_it_live`, `..._the_surviving_stop_still_triggers_exactly_once`, `..._a_stop_whose_share_is_gone_is_cancelled_with_a_reason_and_not_registered`, `..._a_stop_that_differs_in_trigger_is_not_a_duplicate` |
+| R2.AC7 | `tests/selection/test_r2_ac7_pacing.py`: `..._the_cooldown_after_a_budget_refusal_is_the_stated_wait_so_no_request_precedes_it`, `..._refused_attempts_over_ten_minutes_are_far_below_one_per_slice`, `..._a_pass_over_50_candidates_completes_in_about_the_minimum_time_the_budget_allows` |
+
+Shared helpers: `tests/runner/r2_support.py` (open copy, add, kill-point enumeration, ledger-walk counter, sleep log, 429 switch,
+measured loop iteration). The existing fake HL is not modified: 429 is produced by wrapping its `_reply` on the instance.
+
+## Run summary (targeted runs only, never the full suite)
+
+44 tests: 32 fail, 12 pass. Failure reasons: 32 assertion failures that name the defect (no import, collection or fixture
+errors). The 12 passing tests are deliberate guards, not defects in the tests:
+
+* AC6 (5): pins of existing behaviour (the gap was surviving mutants). Mutation check done by hand on `PaperBroker._restore_stop`:
+  removing the duplicate guard fails 2 tests, removing the cancel inside the branch fails 2, removing the `share is None`
+  half fails 1.
+* AC7 (1): completion time of a 50-candidate pass (guards against a fix that over-waits). With a prototype fix (cooldown =
+  stated wait) the thresholds were checked: refusals 20 today, 10 with the fix; pass time 730 s both (minimum ~620 s).
+* AC5 (1): `stale_checkpoint_stop_never_replaces_a_tighter_broker_stop` passes today (the restored `best_px` keeps `_trail`
+  from loosening); it guards the fix, which will take the stop from the broker.
+* AC3 (3): restart remembers every seen signal (clean and kill -9), and a changed state is still checkpointed: guards for the
+  delta/force-interval fix.
+* AC1 (1): entries stay refused while the clock is untrusted (guard for the catch-up).
+* AC2 (1): `allMids` over 429: REST `allMids` is called at start only, never in the loop.
+
+Per AC (fail/pass): AC1 9/1, AC2 10/1, AC3 5/3, AC4 3/0, AC5 3/1, AC6 0/5, AC7 2/1.
+
+## Findings the tests surface (for the developer)
+
+* RISK-67 breadth: besides the forced resample, these requests block the trading thread for 48 to 205 s of back-off under 429:
+  the periodic `ClockSync.tick` estimate (`runner.step` first line, outside the lock, every 600 s), `metaAndAssetCtxs` (205 s;
+  hourly delisting check and rules refresh), `fundingHistory` (160 s; hourly funding boundary), `userFillsByTime` (145 s;
+  reconciliation/audit/gap resync), `clearinghouseState` (55 s; leader reconciliation every 300 s, under `gate_lock`),
+  `candleSnapshot` (48 s). `allMids` is start-up only.
+* The PO's "< 200 KB/h idle" cannot hold: `component_heartbeat` (one record per `ledger.heartbeat_interval_s` = 10 s) is 180 KB/h
+  by design (4 MB/day, not RISK-59). The bounds used: checkpoint records <= 8/h and <= 25 KB/h, idle growth without the
+  heartbeat <= 100 KB/h, with it <= 300 KB/h. Today: 355 KB of checkpoints and 572 KB total per idle hour.
+* Reload: `restore_state` books a PENDING_ENTRY share closed even when the broker holds its fill (position_without_share
+  pause, orphan close at the first reconcile 300 s later). `verify_protection` compares stops with the stale checkpoint
+  quantity: after an add it re-places a 1.00 SL and cancels the correct 1.60 one; after a take-profit it keeps a 1.00 SL for 0.50.
+* Selection pacing: the refusal's "would wait X s" is only in the message; the cooldown is the doubling 1 s base, so the second
+  attempt 10 s later is refused again (20 refusals per 10 minutes, 10 with the stated wait).
+
+## What the suites prove, and what they do not
+
+* AC1/AC2: the loop's observable behaviour (fill time, bounded iteration, `/flatten` not blocked) over real sockets and the real
+  components. They do not prove the real-network behaviour of a Brazilian round trip: /qa measures the real `l2Book` round
+  trip and uncertainty; a real 429 storm is simulation territory. Wall-time bounds (2 s, 0.25 s) are generous (a normal iteration
+  is a few ms) to stay stable on slow machines.
+* AC3: a 50 MB synthetic ledger (filler records no component reads) stands in for weeks of data; real growth over 2-4 weeks is
+  checked in /qa-simulation. Start-up cost (the restart still makes about five whole-ledger passes) is NOT pinned: only the
+  loop and the post facts are; read-once-at-startup is advisory.
+* AC4/AC5: every kill point between the event and the next checkpoint (ledger truncated there). Not covered: a kill during the
+  reload itself (R0 torn-restore tests cover it) and funding-boundary interplay.
+* AC6: the unit-level restore only; the runner-level two-restart test already exists (`test_failsafe_restart`).
+* AC7: the real `wiring._FailFastSleeper` is imported (private name): if it is renamed, update the import. It does not cover the
+  real exchange's weight accounting (F3 tests do).
+* Not tested here by design: live orders or keys (none exist), mutation score of the fix (run the senior-dev mutants again at /review).
