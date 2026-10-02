@@ -1,0 +1,15 @@
+[storage]
+cache_dir = "../copytrade-data/cache"
+upload_delay_min = 15
+upload_deadline_h = 6
+local_retention_days = 7
+max_unarchived_days = 2
+cache_max_gb = 20
+read_retry_max_min = 30
+retry_interval_min = 15
+alert_interval_h = 6
+ledger_backup_time_utc = "00:30"
+monthly_budget_usd = 5.0
+budget_alert_fraction = 0.8
+price_usd_per_gb_month = 0.006
+price_usd_per_10k_ops = 0.004

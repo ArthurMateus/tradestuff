@@ -56,6 +56,10 @@ class LeaderPauseTracker:
             return True
         return False
 
+    def restore_paused(self, wallet: str) -> None:
+        """A wallet that an earlier run paused (the ledger's ``leader_paused`` record) stays paused."""
+        self._paused.add(wallet.lower())
+
     def is_paused(self, wallet: str) -> bool:
         return wallet.lower() in self._paused
 

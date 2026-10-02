@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, fields, replace
 from decimal import Decimal
 from functools import partial
+from typing import Any, TypeVar
 
 from copytrade.core.config import Config
 from copytrade.core.domain import ActionKind
@@ -57,6 +58,7 @@ from copytrade.signals.detector import signal_id as detector_signal_id
 from copytrade.signals.models import Signal
 
 _log = logging.getLogger(__name__)
+_K = TypeVar("_K")
 
 # found_by / case values of a missed-exit record
 FOUND_LIVE = "live"
@@ -81,6 +83,9 @@ _ORPHAN_LEADER = "orphan"
 _RETRY_TID = 0  # appended to the tids of a retried close: real tids are positive, synthetic ones negative
 _RETRIED_REFUSALS = frozenset({"share_closed", "exceeds_position"})  # a fill got in first: the close is re-sized
 _MIN_WINDOW_MS = 3_600_000
+SEEN_LIMIT = 20_000  # the oldest remembered signal id / broker event is forgotten beyond this
+CHECKPOINT_SEEN_SIGNALS = 500  # how many of the newest signal ids a checkpoint carries
+_SHARE_FIELDS = tuple(f.name for f in fields(ShareState))
 
 
 @dataclass
@@ -176,8 +181,8 @@ class PositionManager:
 
         self._tracks: dict[str, _Track] = {}
         self._entry_orders: dict[str, str] = {}  # client order id of an accepted entry -> its share id
-        self._seen_signals: set[str] = set()
-        self._seen_events: set[tuple[object, ...]] = set()
+        self._seen_signals: dict[str, None] = {}  # insertion-ordered and bounded (``SEEN_LIMIT``)
+        self._seen_events: dict[tuple[object, ...], None] = {}
         self._tids_done: dict[str, set[int]] = {}  # per leader: every fill tid the manager has been told about
         self._handled: dict[tuple[str, int], int] = {}  # (leader, tid) -> exchange ms our mirror/skip was recorded
         self._leader_pos: dict[tuple[str, str], Decimal] = {}  # the leader's signed size as the signals say
@@ -221,7 +226,7 @@ class PositionManager:
     def _on_signal(self, sig: Signal) -> None:
         if sig.signal_id in self._seen_signals:
             return
-        self._seen_signals.add(sig.signal_id)
+        _remember(self._seen_signals, sig.signal_id)
         self._tids_done.setdefault(sig.wallet, set()).add(sig.tid)
         key = (sig.wallet, sig.coin)
         self._flip_wait.pop(key, None)  # any later signal of the leader on the coin outdates a waiting flip open leg
@@ -633,7 +638,7 @@ class PositionManager:
         for event in events:
             key = _event_key(event)
             if key not in self._seen_events:
-                self._seen_events.add(key)
+                _remember(self._seen_events, key)
                 self._events.append(event)
         if self._draining:
             return
@@ -930,6 +935,121 @@ class PositionManager:
                 track.closing, track.closing_ms = True, now
         return report
 
+    # ============================================================================== restart (R0 checkpoint)
+
+    def export_state(self) -> dict[str, Any]:
+        """What a restart needs, as a ledger-encodable tree: ``{"state": ..., "volatile": ...}``. ``state`` changes
+        only when something structural does (a share, a stop, a pending close); ``volatile`` holds the cursors and the
+        per-share best price that move all the time, so a caller that writes a checkpoint when ``state`` changed does
+        not write one per mark. Only shares that are not closed are carried: closed ones live in the ledger.
+        Not carried, by design: pending entries (dropped at a restart), deferred leader signals of a pending entry, a
+        flip's waiting open leg (the position is flat then; a missed re-entry is safe) and the entry-order map."""
+        live = [state for state in self._book.states() if state.status != CLOSED]
+        live_ids = {state.share_id for state in live}
+        return {
+            "state": {
+                "shares": [_share_payload(state) for state in live],
+                "tracks": {
+                    sid: _track_payload(track) for sid, track in sorted(self._tracks.items()) if sid in live_ids
+                },
+                "leader_pos": [[leader, coin, size] for (leader, coin), size in sorted(self._leader_pos.items())],
+                "ours_won": sorted([leader, coin] for leader, coin in self._ours_won),
+                "dropped": sorted(self._dropped),
+                "orphans_closing": sorted(self._orphans_closing & live_ids),
+                "missed_count": self._missed_count,
+                "synthetic_tid": self._synthetic_tid,
+                "seen_signals": list(self._seen_signals)[-CHECKPOINT_SEEN_SIGNALS:],
+            },
+            "volatile": {
+                "best_px": {state.share_id: state.best_px for state in live},
+                "audit_end": dict(sorted(self._audit_end.items())),
+                "reconcile_since": dict(sorted(self._reconcile_since.items())),
+                "stretches": {
+                    leader: [stretch.first_attempt_ms, stretch.start_ms, stretch.breached]
+                    for leader, stretch in sorted(self._stretches.items())
+                },
+            },
+        }
+
+    def restore_state(
+        self, exported: dict[str, Any], *, cid_map: Mapping[str, str], tids_done: Mapping[str, Iterable[int]]
+    ) -> None:
+        """Load what ``export_state`` wrote into a FRESH manager (call after the broker was restored).
+
+        ``cid_map`` maps the client order ids of stops the broker registered again to their new ids (a share's stop
+        bookkeeping follows them); ``tids_done`` is every leader fill tid already ledgered as a signal. A share that
+        was a pending entry is booked as closed with nothing held (the broker dropped the order) and ledgered so.
+        A share is ``closing`` only while the broker really holds an exit for it. Time cursors are loaded last.
+
+        Raises:
+            ValueError: the manager is not fresh.
+        """
+        if self._book.states() or self._tracks:
+            raise ValueError("restore_state needs a fresh manager")
+        state, volatile = exported["state"], exported["volatile"]
+        exiting = {order.share_id for order in self._broker.pending_exits()}
+        for payload in state["shares"]:
+            share = _share_from_payload(
+                payload, Price(volatile["best_px"].get(payload["share_id"], payload["entry_px"]))
+            )
+            if share.status == PENDING_ENTRY:
+                self._book.add(replace(share, status=CLOSED, qty=Qty(0), open_risk_usd=Decimal(0)))
+                self._append_share("restart_dropped", self._share(share.share_id), reason="entry_pending_at_restart")
+                continue
+            self._book.add(share)
+            self._tracks[share.share_id] = _track_from_payload(state["tracks"][share.share_id], cid_map)
+            self._tracks[share.share_id].closing = share.share_id in exiting
+        self._leader_pos = {(leader, coin): Decimal(size) for leader, coin, size in state["leader_pos"]}
+        self._ours_won = {(leader, coin) for leader, coin in state["ours_won"]}
+        self._dropped = set(state["dropped"])
+        self._orphans_closing = set(state["orphans_closing"])
+        self._missed_count = state["missed_count"]
+        self._synthetic_tid = state["synthetic_tid"]
+        self._seen_signals = dict.fromkeys(state["seen_signals"])
+        self._tids_done = {leader: set(tids) for leader, tids in tids_done.items()}
+        self._audit_end = dict(volatile["audit_end"])
+        self._reconcile_since = dict(volatile["reconcile_since"])
+        self._stretches = {leader: _Stretch(*values) for leader, values in volatile["stretches"].items()}
+        self._audit_leaders = {s.leader for s in self._book.states() if s.status != CLOSED}
+
+    def verify_protection(self) -> tuple[str, ...]:
+        """After ``restore_state``: every open share held by the broker must have ONE live stop-loss on the opposite
+        side for EXACTLY its quantity (a stop is lost when a kill -9 tears a restore, or is larger than the position
+        after a kill -9 between a take-profit fill and the stop resize). The share's ``sl_cid`` is taken from the
+        broker's stops by share id, not from the checkpoint. A missing or wrong stop is re-placed through the gate (the
+        wrong one is cancelled after); when none can be placed the share is closed. Returns the share ids that needed
+        repair."""
+        repaired: list[str] = []
+        for share in self._book.states():
+            if share.status != OPEN:
+                continue
+            view = self._broker.position(share.coin)
+            if view is None or share.share_id not in view.share_ids:
+                continue
+            track = self._tracks[share.share_id]
+            side = "sell" if share.is_long else "buy"
+            mine = [
+                s for s in self._broker.stops() if s.share_id == share.share_id and s.kind == "sl" and s.side == side
+            ]
+            exact = [s for s in mine if s.qty == share.qty]
+            if exact:
+                track.sl_cid, track.sl_qty = exact[0].client_order_id, Decimal(share.qty)
+                continue
+            repaired.append(share.share_id)
+            cid = self._place_stop(share, "sl", share.qty, share.current_stop_px)
+            if cid is None:
+                track.sl_cid = None
+                self._alert("stop_failed", f"{share.coin}: no stop for {share.share_id} after the restart; closing it")
+                self._close_for_cause(share.share_id, REASON_STOP_FAILED)
+                continue
+            for stale in mine:
+                self._broker.cancel_stop(stale.client_order_id)
+            track.sl_cid, track.sl_qty = cid, Decimal(share.qty)
+            self._alert(
+                "stop_replaced", f"{share.coin}: the stop of {share.share_id} was missing or wrong after the restart"
+            )
+        return tuple(repaired)
+
     # ======================================================================================== reconciliation
 
     def on_resync(self) -> None:
@@ -1106,7 +1226,7 @@ class PositionManager:
         share = self._share(share_id)
         self._tids_done.setdefault(share.leader, set()).add(fill.tid)
         for leg in (0, 1):
-            self._seen_signals.add(detector_signal_id(share.leader, fill.tid, leg))
+            _remember(self._seen_signals, detector_signal_id(share.leader, fill.tid, leg))
         effect = rules.fill_effect(fill, is_long=share.is_long)
         self._leader_pos[(share.leader, share.coin)] = effect.post
         if effect.kind in ("close", "reduce"):
@@ -1316,6 +1436,62 @@ class PositionManager:
 
     def _append(self, kind: str, payload: dict[str, object]) -> None:
         self._ledger.append(kind, payload)  # a ledger failure is a system failure: it propagates (F2.AC6)
+
+
+def _share_payload(share: ShareState) -> dict[str, Any]:
+    payload = {name: getattr(share, name) for name in _SHARE_FIELDS}
+    del payload["best_px"]  # volatile: carried separately
+    return payload
+
+
+def _share_from_payload(payload: dict[str, Any], best_px: Price) -> ShareState:
+    decimals = {"initial_risk_usd", "open_risk_usd", "max_committed_risk_usd", "atr"}
+    prices = {"entry_px", "initial_stop_px", "current_stop_px"}
+    values: dict[str, Any] = {}
+    for name, value in payload.items():
+        if name in prices:
+            values[name] = Price(value)
+        elif name == "qty":
+            values[name] = Qty(value)
+        else:
+            values[name] = Decimal(value) if name in decimals else value
+    return ShareState(best_px=best_px, **values)
+
+
+def _track_payload(track: _Track) -> dict[str, Any]:
+    return {
+        "open_ms": track.open_ms,
+        "evidence_ms": track.evidence_ms,
+        "close_ms": track.close_ms,
+        "closing_ms": track.closing_ms,
+        "stop_seq": track.stop_seq,
+        "sl_cid": track.sl_cid,
+        "sl_qty": track.sl_qty,
+        "stops": {cid: list(values) for cid, values in sorted(track.stops.items())},
+    }
+
+
+def _track_from_payload(payload: dict[str, Any], cid_map: Mapping[str, str]) -> _Track:
+    return _Track(
+        open_ms=payload["open_ms"],
+        evidence_ms=payload["evidence_ms"],
+        close_ms=payload["close_ms"],
+        closing_ms=payload["closing_ms"],
+        stop_seq=payload["stop_seq"],
+        sl_cid=None if payload["sl_cid"] is None else cid_map.get(payload["sl_cid"], payload["sl_cid"]),
+        sl_qty=Decimal(payload["sl_qty"]),
+        stops={
+            cid_map.get(cid, cid): (kind, Decimal(qty), Decimal(trigger))
+            for cid, (kind, qty, trigger) in payload["stops"].items()
+        },
+    )
+
+
+def _remember(seen: dict[_K, None], key: _K) -> None:
+    """Add ``key`` to a bounded, insertion-ordered set."""
+    seen[key] = None
+    if len(seen) > SEEN_LIMIT:
+        del seen[next(iter(seen))]
 
 
 def _event_key(event: BrokerEvent) -> tuple[object, ...]:

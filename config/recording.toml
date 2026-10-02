@@ -1,0 +1,15 @@
+[recording]
+markets = ["core", "hip3"]
+max_coins = 250
+universe_lookback_days = 30
+l2_levels = 10
+l2_interval_ms = 2000
+asset_ctx_interval_s = 60
+leaderboard_interval_min = 60
+disk_check_interval_s = 60
+disk_alert_free_gb = 20
+disk_floor_free_gb = 8
+disk_resume_margin_gb = 2
+max_gb_per_day = 1.5
+segment_hash_minutes = 5
+candle_store = "hourly_1m_1h_hashed"

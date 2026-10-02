@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
@@ -22,6 +23,15 @@ from copytrade.paper.errors import PaperBrokerFailedError
 from copytrade.paper.gate import GateAuthority
 from copytrade.paper.liquidation import bankruptcy_price, liquidation_price
 from copytrade.paper.ports import BookSource, FundingSource, MetaSource
+from copytrade.paper.restore import (
+    STOP_EXIT_REASONS,
+    BrokerSnapshot,
+    ExitSnap,
+    PositionSnap,
+    RestoredOrder,
+    RestoreResult,
+    StopSnap,
+)
 from copytrade.paper.settings import BPS_DIVISOR, MAX_FUNDING_RATE_PER_HOUR, MONEY_CONTEXT, PaperSettings
 from copytrade.paper.state import (
     ENTRY_ACTIONS,
@@ -45,6 +55,7 @@ from copytrade.paper.types import (
     PendingExit,
     PositionView,
     StopIntent,
+    StopView,
     SubmitResult,
 )
 
@@ -52,7 +63,8 @@ _log = logging.getLogger(__name__)
 
 HOUR_MS = 3_600_000
 _SIDES = ("buy", "sell")
-_STOP_REASONS = {"sl": "stop_loss", "tp": "take_profit"}
+_STOP_REASONS = STOP_EXIT_REASONS
+_RESTART_SUFFIX = re.compile(r":r\d+$")
 # The order in which things that happen at the same millisecond are applied: an exit fill comes before the funding
 # boundary (a share closed at the boundary did not hold the position over it), which comes before an entry fill
 # (a share opened at the boundary was not held over it); a late alert never beats a fill at the same time.
@@ -202,6 +214,21 @@ class PaperBroker:
             if not order.is_entry
         )
 
+    def stops(self) -> tuple[StopView, ...]:
+        """Every registered stop that has not triggered, in registration order (a snapshot). Read-only (R0)."""
+        return tuple(
+            StopView(
+                client_order_id=stop.client_order_id,
+                coin=stop.coin,
+                kind=stop.kind,
+                side=stop.side,
+                qty=Qty(stop.qty),
+                trigger_px=Price(stop.trigger_px),
+                share_id=stop.share_id,
+            )
+            for stop in self._stops.values()
+        )
+
     def cash_usd(self) -> Decimal:
         """Wallet cash (a ``Decimal``): ``paper.wallet_usd`` plus realised P&L, minus fees, plus funding."""
         return Decimal(self._cash)
@@ -308,6 +335,169 @@ class PaperBroker:
             return False
         self._drop_stop(stop, "cancelled")
         return True
+
+    # ----------------------------------------------------------------------------------------- restart (R0)
+
+    @_fail_closed
+    def restore(self, snapshot: BrokerSnapshot, *, now_ms: int, rules: Mapping[str, CoinMeta]) -> RestoreResult:
+        """Install the books ``replay_broker`` rebuilt from the ledger into a FRESH broker (A7).
+
+        Broker time is set FIRST (``advance_to(now_ms)``), so every record written below and every later entry is
+        stamped consistently. Stops and unfilled exits are registered again under NEW client order ids
+        (``<base>:r<n>``): each old id is cancelled in the ledger (reason ``restart``) and the new one is written as a
+        ``paper_stop`` / ``paper_order`` record, so the next restart replays exactly what is live now and an old id can
+        never be sent twice. Pending entries are dropped (``paper_cancel``, reason ``restart``: an entry decided before
+        the process died is stale by definition), and so are exits the replay cannot prove (reason
+        ``restart_unproven``; they are returned so the caller can flag them). ``rules`` holds the exchange's current
+        lot and leverage rules per coin; a position on a coin it does not list keeps the rules inferred from its fills
+        (lot decimals) and its own leverage as the maximum (the conservative liquidation price), and the coin is
+        returned in ``unknown_coins``.
+
+        Raises:
+            PaperBrokerFailedError: the broker is not fresh.
+        """
+        if self._positions or self._pending or self._stops or self._now_ms:
+            raise PaperBrokerFailedError("restore needs a fresh broker")
+        self.advance_to(now_ms)
+        self._cash = snapshot.cash
+        self._retired = set(snapshot.retired)
+        self._delisted = set(snapshot.delisted)
+        unknown: list[str] = []
+        views: dict[str, PositionView] = {}
+        for item in snapshot.positions:
+            position, known = self._restored_position(item, rules)
+            self._positions[item.coin] = position
+            views[item.coin] = position.view()
+            if not known:
+                unknown.append(item.coin)
+        for cid in snapshot.entries:
+            self._append_cancel(cid, "order", "restart")
+        for exit_order in snapshot.unproven_exits:
+            self._append_cancel(exit_order.client_order_id, "order", "restart_unproven")
+        stops = [self._restore_stop(stop) for stop in snapshot.stops if stop.coin in self._positions]
+        exits = [r for r in (self._restore_exit(o, views[o.coin], now_ms) for o in snapshot.exits) if r is not None]
+        if self._positions:
+            known_ms = max(snapshot.last_time_ms, snapshot.last_funding_hour_ms or 0)
+            self._next_boundary_ms = self._boundary_after(known_ms)
+        return RestoreResult(
+            stops=tuple(s for s in stops if s is not None),
+            exits=tuple(exits),
+            unknown_coins=tuple(unknown),
+            dropped_entries=snapshot.entries,
+            dropped_exits=tuple(order.client_order_id for order in snapshot.unproven_exits),
+        )
+
+    @staticmethod
+    def _restored_position(item: PositionSnap, rules: Mapping[str, CoinMeta]) -> tuple[Position, bool]:
+        rule = rules.get(item.coin)
+        if rule is None or not _valid_rules(rule):
+            lot = max(_lot_decimals(share.qty) for share in item.shares)
+            rule = CoinMeta(sz_decimals=min(MAX_SZ_DECIMALS, lot), max_leverage=item.leverage)
+        position = Position(item.coin, item.leverage, rule.max_leverage, rule.sz_decimals)
+        position.shares = {share.share_id: share for share in item.shares}
+        return position, item.coin in rules and _valid_rules(rules[item.coin])
+
+    def _append_cancel(self, client_order_id: str, target: str, reason: str) -> None:
+        self._ledger.append("paper_cancel", {"client_order_id": client_order_id, "target": target, "reason": reason})
+
+    def _new_client_order_id(self, old: str) -> str:
+        """``<base>:r<n>`` with the smallest ``n`` the ledger has not seen (the base has any earlier suffix removed)."""
+        base = _RESTART_SUFFIX.sub("", old)
+        n = 1
+        while self._ledger.has_client_order_id(f"{base}:r{n}"):
+            n += 1
+        return f"{base}:r{n}"
+
+    def _restore_stop(self, stop: StopSnap) -> RestoredOrder | None:
+        position = self._positions[stop.coin]
+        share = position.shares.get(stop.share_id)
+        key = (stop.coin, stop.kind, stop.side, stop.qty, stop.trigger_px, stop.share_id)
+        if share is None or any(
+            (s.coin, s.kind, s.side, s.qty, s.trigger_px, s.share_id) == key for s in self._stops.values()
+        ):
+            # no such share, or a kill -9 between the new record and the cancel left this stop twice in the ledger
+            self._append_cancel(stop.client_order_id, "stop", "restart")
+            return None
+        new_id = self._new_client_order_id(stop.client_order_id)
+        self._ledger.append(
+            "paper_stop",
+            {
+                "coin": stop.coin,
+                "kind": stop.kind,
+                "side": stop.side,
+                "qty": stop.qty,
+                "trigger_px": stop.trigger_px,
+                "trade_id": stop.trade_id,
+                "share_id": stop.share_id,
+            },
+            client_order_id=new_id,
+        )
+        self._stops[new_id] = RegisteredStop(
+            client_order_id=new_id,
+            coin=stop.coin,
+            kind=stop.kind,
+            side=stop.side,
+            qty=stop.qty,
+            trigger_px=stop.trigger_px,
+            trade_id=stop.trade_id,
+            share_id=stop.share_id,
+            sz_decimals=position.sz_decimals,
+            max_leverage=position.max_leverage,
+        )
+        self._append_cancel(
+            stop.client_order_id, "stop", "restart"
+        )  # AFTER the new record: never a window with no stop
+        return RestoredOrder(stop.client_order_id, new_id, stop.share_id)
+
+    def _restore_exit(self, order: ExitSnap, view: PositionView, now_ms: int) -> RestoredOrder | None:
+        position = self._positions[order.coin]
+        share = position.shares[order.share_id]
+        new_id = self._new_client_order_id(order.client_order_id)
+        action = ActionKind.CLOSE if order.qty >= abs(share.qty) else ActionKind.REDUCE
+        base = _RESTART_SUFFIX.sub("", order.client_order_id)
+        if any(_RESTART_SUFFIX.sub("", p.client_order_id) == base for p in self._pending.values()):
+            # a kill -9 between the new record and the cancel left this exit twice (an id and its renewal): send it once
+            self._append_cancel(order.client_order_id, "order", "restart")
+            return None
+        self._ledger.append(
+            "paper_order",
+            {
+                "coin": order.coin,
+                "side": order.side,
+                "action": action.value,
+                "requested_qty": order.qty,
+                "qty": order.qty,
+                "decision_px": view.avg_entry_px,
+                "decided_at_ms": now_ms,
+                "trade_id": order.trade_id,
+                "share_id": order.share_id,
+                "leverage": None,
+                "exit_reason": order.exit_reason,
+            },
+            client_order_id=new_id,
+        )
+        fill_at_ms = now_ms + self._settings.ack_delay_ms
+        self._pending[new_id] = PendingOrder(
+            client_order_id=new_id,
+            coin=order.coin,
+            side=order.side,
+            requested_qty=order.qty,
+            remaining=order.qty,
+            action=action,
+            decided_at_ms=now_ms,
+            fill_at_ms=fill_at_ms,
+            share_id=order.share_id,
+            trade_id=order.trade_id,
+            leverage=0,
+            exit_reason=order.exit_reason,
+            sz_decimals=position.sz_decimals,
+            max_leverage=position.max_leverage,
+            next_attempt_ms=fill_at_ms,
+            alert_due_ms=now_ms + self._settings.alert_after_ms,
+            decision_px=view.avg_entry_px,
+        )
+        self._append_cancel(order.client_order_id, "order", "restart")  # AFTER the new record
+        return RestoredOrder(order.client_order_id, new_id, order.share_id)
 
     # ---------------------------------------------------------------------------------- time and marks
 
@@ -995,6 +1185,11 @@ class PaperBroker:
         self._ledger.append("paper_alert", {"kind": "funding_missing", "coin": due.coin, "hour_ms": due.hour_ms})
         self._missing_alerted[due.coin] = due.hour_ms
         self._send_alert("funding_missing", f"no funding rate for {due.coin} at hour {due.hour_ms}; retrying")
+
+
+def _lot_decimals(qty: Decimal) -> int:
+    exponent = qty.as_tuple().exponent
+    return max(0, -exponent) if isinstance(exponent, int) else 0
 
 
 def _valid_rules(rules: object) -> bool:

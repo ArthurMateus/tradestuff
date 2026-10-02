@@ -180,6 +180,14 @@ class ClockSync:
         elif not self._alert_sent:
             self._send_alert(problem)
 
+    def resample(self) -> bool:
+        """Force a fresh offset estimate now (the time base does this while the clock is in doubt). ``True`` when one
+        was taken; ``False`` when the source failed and the previous estimate stands. Never raises for a source
+        failure."""
+        now = self._clock.now_ms()
+        self._last_attempt_ms = now
+        return self._try_estimate(now)
+
     def refusal_reason(self, action: ActionKind) -> str | None:
         """``"clock_unsynced"`` for OPEN/ADD while unsynced; ``None`` otherwise. Exits are never refused."""
         if action in _ENTRY_ACTIONS and self._problem(self._clock.now_ms()) is not None:
@@ -202,7 +210,7 @@ class ClockSync:
         elapsed = now - self._last_attempt_ms
         return elapsed < 0 or elapsed >= self._offset_interval_s * 1000
 
-    def _try_estimate(self, now: int) -> None:
+    def _try_estimate(self, now: int) -> bool:
         try:
             estimate = self._source.estimate()
         except (OSError, ValueError) as exc:
@@ -210,9 +218,10 @@ class ClockSync:
                 "clock offset estimate failed",
                 extra={"event": "clock_offset_failed", "error_type": type(exc).__name__},
             )
-            return
+            return False
         self._estimate = estimate
         self._estimate_taken_ms = now
+        return True
 
     def _problem(self, now: int) -> str | None:
         """Why entries must be refused, or ``None`` when the clock is synced."""
