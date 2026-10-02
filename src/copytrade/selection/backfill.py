@@ -404,8 +404,7 @@ class Backfiller:
 
     def _drop_too_active(self, wallet: str, pages: int, *, reason: str = "too_active") -> None:
         _log.warning(
-            "wallet has more fills in the window than can be fetched, dropped for a day: "
-            "wallet=%s reason=%s pages=%d",
+            "wallet has more fills in the window than can be fetched, dropped for a day: wallet=%s reason=%s pages=%d",
             wallet,
             reason,
             pages,

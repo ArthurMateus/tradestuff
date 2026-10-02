@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import signal
 import threading
 from collections.abc import Callable, Mapping
@@ -11,6 +12,7 @@ from typing import TextIO
 
 from copytrade.core.errors import CopytradeError
 from copytrade.runner.deps import RunnerDeps, production_deps
+from copytrade.runner.logsetup import configure_logging
 from copytrade.runner.wiring import build_runner
 
 
@@ -54,6 +56,8 @@ def run_app(  # noqa: PLR0913 - the pinned R0 signature
     restore: Callable[[], None] | None = None
     try:
         runner = build_runner(root, env, deps if deps is not None else production_deps(root))
+        log_path = configure_logging(runner.paths.ledger_dir.parent / "logs")
+        logging.getLogger(__name__).info("copytrade run starting in paper mode, logging to %s", log_path)
         event = stop if stop is not None else threading.Event()
         if stop is None:
             restore = _install_stop_handlers(event)
