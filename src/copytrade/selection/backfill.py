@@ -287,7 +287,10 @@ class Backfiller:
             return
         self._skip_logged[wallet] = until_ms
         _log.info(
-            "refresh of a candidate skipped, it is cooling down",
+            "refresh of a candidate skipped, it is cooling down: wallet=%s reason=%s until_ms=%d",
+            wallet,
+            reason,
+            until_ms,
             extra={"event": "backfill_refresh_skipped", "wallet": wallet, "reason": reason, "until_ms": until_ms},
         )
 
@@ -304,7 +307,11 @@ class Backfiller:
         """One record per failed attempt: the message of an HL error names the request type and status, never the URL
         or the response body."""
         _log.warning(
-            "backfill of a candidate failed, it will be retried",
+            "backfill of a candidate failed, it will be retried: wallet=%s status=%s error=%s (%s)",
+            wallet,
+            getattr(exc, "status", None),
+            exc,
+            type(exc).__name__,
             extra={
                 "event": "backfill_failed",
                 "wallet": wallet,
@@ -359,7 +366,10 @@ class Backfiller:
 
         if outcome is _FillsOutcome.STUCK:
             _log.warning(
-                "fills backfill did not reach the present, the wallet stays stale",
+                "fills backfill did not reach the present, the wallet stays stale: wallet=%s pages=%d fills=%d",
+                wallet,
+                progress.pages,
+                len(progress.fetched),
                 extra={
                     "event": "backfill_incomplete",
                     "wallet": wallet,
@@ -394,7 +404,10 @@ class Backfiller:
 
     def _drop_too_active(self, wallet: str, pages: int, *, reason: str = "too_active") -> None:
         _log.warning(
-            "wallet has more fills in the window than can be fetched, dropped for a day",
+            "wallet has more fills in the window than can be fetched, dropped for a day: wallet=%s reason=%s pages=%d",
+            wallet,
+            reason,
+            pages,
             extra={"event": "backfill_too_active", "wallet": wallet, "reason": reason, "pages": pages},
         )
         self._too_active_until[wallet] = self._clock.now_ms() + _DAY_MS
