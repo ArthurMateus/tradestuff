@@ -23,6 +23,7 @@ from typing import Any, TypeVar
 
 from copytrade.core.config import Config
 from copytrade.core.domain import ActionKind
+from copytrade.core.errors import ClockUnsyncedError
 from copytrade.core.events import Alert, AlertSink
 from copytrade.core.money import Price, Qty
 from copytrade.hl.models import Fill
@@ -200,6 +201,7 @@ class PositionManager:
         self._draining = False
 
         self._last_ms = 0
+        self._unsynced_logged: str | None = None  # the reason of the clock line already shown, until the clock works
         now = self._read_clock()
         self._audit_anchor_ms: int | None = now
         self._next_audit_ms: int | None = None if now is None else now + self._settings.fill_audit_interval_ms
@@ -1373,9 +1375,19 @@ class PositionManager:
     def _read_clock(self) -> int | None:
         try:
             now = self._exchange_time.exchange_now().ms
+        except ClockUnsyncedError as error:  # expected at start-up: one short line per reason, not a traceback per read
+            if self._unsynced_logged != str(error):
+                self._unsynced_logged = str(error)
+                _log.warning(
+                    "exchange time is not available yet (%s): entries refused until it is",
+                    error,
+                    extra={"event": "positions_clock_unsynced"},
+                )
+            return None
         except Exception:
             _log.warning("exchange time unavailable", extra={"event": "positions_clock_failed"}, exc_info=True)
             return None
+        self._unsynced_logged = None
         self._last_ms = max(self._last_ms, now)
         return now
 
