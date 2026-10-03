@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -98,7 +99,7 @@ class RateBudget:
     ``floor(budget_per_min * scoring_share)``. The only way past a limit is ``charge``, which records weight
     that is known only after a response and therefore cannot be refused.
 
-    Single-threaded: one caller drives it (the supervisor loop).
+    Thread-safe: the trading thread and the clock worker share it, so every public method runs under one lock.
     """
 
     def __init__(self, *, budget_per_min: int, scoring_share: Decimal, clock: Clock) -> None:
@@ -114,6 +115,7 @@ class RateBudget:
         self._scoring = 0
         self._critical_queue: deque[QueuedRequest] = deque()
         self._scoring_queue: deque[QueuedRequest] = deque()
+        self._lock = threading.RLock()
 
     @property
     def scoring_cap(self) -> int:
@@ -122,47 +124,52 @@ class RateBudget:
 
     def used(self) -> int:
         """Total weight currently inside the window."""
-        self._expire()
-        return self._total
+        with self._lock:
+            self._expire()
+            return self._total
 
     def scoring_used(self) -> int:
         """SCORING weight currently inside the window."""
-        self._expire()
-        return self._scoring
+        with self._lock:
+            self._expire()
+            return self._scoring
 
     def try_acquire(self, weight: int, priority: Priority) -> bool:
         """Record ``weight`` now if it fits; return whether it did. A refusal records nothing."""
-        _check_weight(weight)
-        self._expire()
-        if not self._fits(weight, priority, self._total, self._scoring):
-            return False
-        self._record(weight, priority)
-        return True
+        with self._lock:
+            _check_weight(weight)
+            self._expire()
+            if not self._fits(weight, priority, self._total, self._scoring):
+                return False
+            self._record(weight, priority)
+            return True
 
     def charge(self, weight: int, priority: Priority) -> None:
         """Record extra weight known only after a response (items returned). Never refused, even over the limit."""
-        _check_weight(weight)
-        self._expire()
-        if weight:
-            self._record(weight, priority)
+        with self._lock:
+            _check_weight(weight)
+            self._expire()
+            if weight:
+                self._record(weight, priority)
 
     def wait_ms(self, weight: int, priority: Priority) -> int | None:
         """Milliseconds until ``try_acquire`` would succeed (0 = now); ``None`` if it can never succeed."""
-        _check_weight(weight)
-        if weight > self._budget or (priority is Priority.SCORING and weight > self._scoring_cap):
-            return None
-        self._expire()
-        now = self._clock.now_ms()
-        total, scoring = self._total, self._scoring
-        if self._fits(weight, priority, total, scoring):
-            return 0
-        for entry in self._window:
-            total -= entry.weight
-            if entry.priority is Priority.SCORING:
-                scoring -= entry.weight
+        with self._lock:
+            _check_weight(weight)
+            if weight > self._budget or (priority is Priority.SCORING and weight > self._scoring_cap):
+                return None
+            self._expire()
+            now = self._clock.now_ms()
+            total, scoring = self._total, self._scoring
             if self._fits(weight, priority, total, scoring):
-                return max(0, entry.at_ms + WINDOW_MS - now)
-        return 0  # unreachable: an empty window always fits a weight that passed the checks above
+                return 0
+            for entry in self._window:
+                total -= entry.weight
+                if entry.priority is Priority.SCORING:
+                    scoring -= entry.weight
+                if self._fits(weight, priority, total, scoring):
+                    return max(0, entry.at_ms + WINDOW_MS - now)
+            return 0  # unreachable: an empty window always fits a weight that passed the checks above
 
     def enqueue(self, request: QueuedRequest) -> None:
         """Queue a request for ``drain``.
@@ -170,22 +177,25 @@ class RateBudget:
         Raises:
             HlBudgetError: the request can never fit its class (it would block the queue forever).
         """
-        if self.wait_ms(request.weight, request.priority) is None:
-            raise HlBudgetError(f"queued request {request.tag!r} can never fit the {request.priority.value} budget")
-        queue = self._critical_queue if request.priority is Priority.CRITICAL else self._scoring_queue
-        queue.append(request)
+        with self._lock:
+            if self.wait_ms(request.weight, request.priority) is None:
+                raise HlBudgetError(f"queued request {request.tag!r} can never fit the {request.priority.value} budget")
+            queue = self._critical_queue if request.priority is Priority.CRITICAL else self._scoring_queue
+            queue.append(request)
 
     def drain(self) -> list[QueuedRequest]:
         """Acquire and return every queued request that fits now: CRITICAL before SCORING, FIFO within a
         class. While any CRITICAL request is still queued after the drain, no SCORING request is returned."""
-        served = self._drain_queue(self._critical_queue)
-        if not self._critical_queue:
-            served += self._drain_queue(self._scoring_queue)
-        return served
+        with self._lock:
+            served = self._drain_queue(self._critical_queue)
+            if not self._critical_queue:
+                served += self._drain_queue(self._scoring_queue)
+            return served
 
     def pending(self) -> int:
         """Number of queued requests."""
-        return len(self._critical_queue) + len(self._scoring_queue)
+        with self._lock:
+            return len(self._critical_queue) + len(self._scoring_queue)
 
     def _drain_queue(self, queue: deque[QueuedRequest]) -> list[QueuedRequest]:
         served: list[QueuedRequest] = []

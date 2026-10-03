@@ -8,6 +8,7 @@ Errors name the endpoint and the field path, never a payload value (which may be
 from __future__ import annotations
 
 import logging
+import threading
 from collections import deque
 from collections.abc import Callable
 from decimal import Decimal
@@ -386,17 +387,19 @@ class SchemaFailureMonitor:
         self._alerts = alerts
         self._failures: dict[str, deque[int]] = {}
         self._alerted: set[str] = set()
+        self._lock = threading.RLock()  # the trading thread and the clock worker both record failures
 
     def record_failure(self, endpoint: str) -> None:
-        now = self._clock.now_ms()
-        failures = self._failures.setdefault(endpoint, deque())
-        while failures and now - failures[0] >= ALERT_WINDOW_MS:
-            failures.popleft()
-        if len(failures) < ALERT_FAILURES:
-            self._alerted.discard(endpoint)
-        failures.append(now)
-        if len(failures) >= ALERT_FAILURES and endpoint not in self._alerted:
-            self._send_alert(endpoint, len(failures))
+        with self._lock:
+            now = self._clock.now_ms()
+            failures = self._failures.setdefault(endpoint, deque())
+            while failures and now - failures[0] >= ALERT_WINDOW_MS:
+                failures.popleft()
+            if len(failures) < ALERT_FAILURES:
+                self._alerted.discard(endpoint)
+            failures.append(now)
+            if len(failures) >= ALERT_FAILURES and endpoint not in self._alerted:
+                self._send_alert(endpoint, len(failures))
 
     def _send_alert(self, endpoint: str, count: int) -> None:
         message = f"{count} schema failures within 10 minutes on {endpoint}: responses are being rejected"

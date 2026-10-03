@@ -126,8 +126,9 @@ class TimeBase:
         """While the restart baseline is unverified the projection runs from the REPLAYED time, which lags the live
         exchange by the downtime, and the paper broker fills only from books at or before broker time (the hub keeps
         seconds of them): a triggered stop or exit would stay pending. So broker time catches up, forward only, to
-        ``live_time_ms`` (the newest exchange-stamped book, or the raw clock estimate even when too uncertain for
-        entries). Entries stay refused: the clock is still in doubt."""
+        ``live_time_ms`` (the newest exchange-stamped book that a second book confirms; never the raw clock estimate:
+        a retried request or a wall-clock step would put it ahead of the exchange for good). Entries stay refused:
+        the clock is still in doubt."""
         if not self._unverified:
             return projection
         live = self._live_time_ms()

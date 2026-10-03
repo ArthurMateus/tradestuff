@@ -204,8 +204,7 @@ class Runner:
         self._tail: LedgerTail | None = None
         self._doubt_alerted = False
         self._next_doubt_alert_ms = 0
-        self._seen_rebases = 0
-        self._stale_marks = 0
+        self._seen_rebases = self._stale_marks = 0
         self._next_marks_alert_ms = 0
         self._known_followed: frozenset[str] = frozenset()
         self._last_step_ms = self._clock.now_ms()
@@ -215,6 +214,7 @@ class Runner:
         self._next_selection_ms = 0
         self._next_delist_ms = self._next_hourly_ms = self._next_posts_ms = 0
         self._section_alerted: dict[str, int] = {}
+        self._section_alert_lock = threading.Lock()  # sections run on the loop, the retention thread and the bot
         self._pruned: set[str] = set()  # recordings already pruned; extended by the retention thread
         self._retention: threading.Thread | None = None
         self._seen_written: list[str] = []  # the signal ids the checkpoints written so far carry (the chain)
@@ -262,6 +262,7 @@ class Runner:
         )  # marks before the first frame
         self._prune_now(self._clock.now_ms())
         parts.recorder.start()
+        self._section("hub", parts.hub_tap.drain)  # connect and subscribe now: books flow before the first iteration
         with self.gate_lock:
             self.ledger.append(
                 KIND_RUNNER_START,
@@ -349,7 +350,7 @@ class Runner:
             self.manager.advance_to(target)
             self.last_advanced_ms = target
             self._mark(target)
-        self._delistings(target)
+        self._section("delistings", lambda: self._delistings(target))  # an unexpected failure must not end the loop
         with self.gate_lock:
             if self._last_mark_ms is None or target - self._last_mark_ms >= self._mark_interval_ms:
                 self._last_mark_ms = target
@@ -469,11 +470,11 @@ class Runner:
 
     def _alert_section(self, name: str, detail: str) -> None:
         now = self._clock.now_ms()
-        if now - self._section_alerted.get(name, -SECTION_ALERT_INTERVAL_MS) >= SECTION_ALERT_INTERVAL_MS:
+        with self._section_alert_lock:
+            if now - self._section_alerted.get(name, -SECTION_ALERT_INTERVAL_MS) < SECTION_ALERT_INTERVAL_MS:
+                return
             self._section_alerted[name] = now
-            self._parts.relay.send(
-                Alert(kind=ALERT_SECTION_FAILED, message=f"{name} failed ({detail}); trading goes on")
-            )
+        self._parts.relay.send(Alert(kind=ALERT_SECTION_FAILED, message=f"{name} failed ({detail}); trading goes on"))
 
     def _selection(self) -> None:
         """The follow cycle when due and one paced scoring-input slice every ``SELECTION_WORK_INTERVAL_S``."""

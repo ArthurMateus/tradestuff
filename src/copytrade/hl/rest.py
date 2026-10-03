@@ -60,6 +60,16 @@ def _status_text(exc: Exception) -> str:
 
 
 @dataclass(frozen=True)
+class Timed:
+    """A decoded response and the local window (``sent_ms`` .. ``received_ms``) of the ATTEMPT that produced it: not the
+    retries, back-off sleeps or budget waits before it (what a clock estimate has to measure)."""
+
+    value: Any
+    sent_ms: int
+    received_ms: int
+
+
+@dataclass(frozen=True)
 class HttpResponse:
     status: int
     body: str
@@ -201,6 +211,10 @@ class HlRestClient:
             HlRequestError, HlHttpError, HlRateLimitedError, HlTimeoutError, HlConnectionError, HlBudgetError,
             HlSchemaError.
         """
+        return self.info_timed(request_type, params, priority=priority).value
+
+    def info_timed(self, request_type: str, params: Mapping[str, Any], *, priority: Priority) -> Timed:
+        """``info`` plus the local send/receive times of the final attempt (same checks, retries and errors)."""
         if request_type not in INFO_REQUEST_TYPES:
             raise HlRequestError("request type is not an allowed info request")
         if "type" in params:
@@ -244,6 +258,10 @@ class HlRestClient:
     def l2_book(self, coin: str, *, priority: Priority) -> L2Book:
         result: L2Book = self.info("l2Book", {"coin": _name(coin, "coin")}, priority=priority)
         return result
+
+    def l2_book_timed(self, coin: str, *, priority: Priority) -> Timed:
+        """The book and the local window of the attempt that fetched it (``Timed.value`` is the ``L2Book``)."""
+        return self.info_timed("l2Book", {"coin": _name(coin, "coin")}, priority=priority)
 
     def clearinghouse_state(self, user: str, *, priority: Priority) -> ClearinghouseState:
         result: ClearinghouseState = self.info(
@@ -295,9 +313,10 @@ class HlRestClient:
         result: dict[str, PortfolioWindow] = self.info("portfolio", {"user": normalize_wallet(user)}, priority=priority)
         return result
 
-    def _attempt(self, request_type: str, body: str, weight: int, priority: Priority) -> Any:
+    def _attempt(self, request_type: str, body: str, weight: int, priority: Priority) -> Timed:
         self._wait_for_cooldown(request_type)
         self._acquire(request_type, weight, priority)
+        sent_ms = self._clock.now_ms()
         try:
             response = self._transport.post(self._url, body, timeout_s=self._timeout_s)
         except TimeoutError as exc:
@@ -306,10 +325,11 @@ class HlRestClient:
         except OSError as exc:
             self._access.record_timeout()
             raise HlConnectionError(f"{request_type}: connection failed ({type(exc).__name__})") from exc
+        received_ms = self._clock.now_ms()
         self._access.record_response(response.status, response.body)
         if 200 <= response.status < 300:
             self._rate_limited_in_a_row.pop(request_type, None)
-            return self._decode(request_type, response.body, weight, priority)
+            return Timed(self._decode(request_type, response.body, weight, priority), sent_ms, received_ms)
         if response.status == 429:
             self._cooldown_until_ms[request_type] = self._clock.now_ms() + self._rate_limit_cooldown_ms(request_type)
             raise HlRateLimitedError(f"{request_type}: HTTP 429")

@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import cast
 
 import copytrade
-from copytrade.core.clock import ClockSync
+from copytrade.core.clock import Clock, ClockSync
 from copytrade.core.config import Config
-from copytrade.core.errors import ClockUnsyncedError, ConfigError, CopytradeError
+from copytrade.core.errors import ConfigError, CopytradeError
 from copytrade.core.events import Alert, AlertSink
 from copytrade.core.secrets import Secrets, SecretValue
 from copytrade.core.startup import startup
@@ -73,6 +73,7 @@ from copytrade.telegram.api import TelegramApi
 from copytrade.telegram.bot import TelegramBot
 
 _PROBE_COIN = "BTC"
+CATCH_UP_MAX_AHEAD_MS = 30_000  # a book stamped further ahead of the local clock is not a live exchange time
 _TELEGRAM_ID_KEYS = ("telegram.allowed_user_id", "telegram.control_chat_id", "telegram.alerts_chat_id")
 _LEADERBOARD_TIMEOUT_FACTOR = 3  # the leaderboard body is large: three REST timeouts for the whole GET
 
@@ -221,18 +222,17 @@ def _rest_client(
     )
 
 
-def _live_exchange_ms(hub: MarketHub, sync: ClockSync) -> Callable[[], int | None]:
-    """The live exchange time a restart with an unverified clock catches broker time up to: the newest exchange-stamped
-    book in the hub, or the raw clock estimate even when it is too uncertain for entries (the later of the two)."""
+def _live_exchange_ms(hub: MarketHub, clock: Clock) -> Callable[[], int | None]:
+    """The live exchange time a restart with an unverified clock catches broker time up to: ONLY the newest hub book
+    time that a second book confirms (RISK-73: never the raw clock estimate, which a retried request or a wall-clock
+    step can put ahead of the exchange for good), and never one that is more than ``CATCH_UP_MAX_AHEAD_MS`` ahead of
+    the local clock (a bogus future stamp)."""
 
     def live() -> int | None:
-        newest = hub.newest_book_time_ms()
-        try:
-            estimated: int | None = sync.exchange_now().ms
-        except ClockUnsyncedError:
-            estimated = None
-        known = [t for t in (newest, estimated) if t is not None]
-        return max(known) if known else None
+        confirmed = hub.confirmed_book_time_ms()
+        if confirmed is None or confirmed > clock.now_ms() + CATCH_UP_MAX_AHEAD_MS:
+            return None
+        return confirmed
 
     return live
 
@@ -255,7 +255,7 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
     sync = ClockSync.from_config(
         config,
         clock=clock,
-        source=ExchangeOffsetSource(rest=rest_clock, clock=clock, probe_coin=_PROBE_COIN),
+        source=ExchangeOffsetSource(rest=rest_clock, clock=clock, probe_coin=_PROBE_COIN, sleeper=deps.sleeper),
         alerts=relay,
     )
     connector = WebsocketsConnector(
@@ -273,7 +273,7 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
             clock=clock,
             max_offset_uncertainty_ms=sync.max_offset_uncertainty_ms,
             resample=clock_worker,
-            live_time_ms=_live_exchange_ms(hub, sync),
+            live_time_ms=_live_exchange_ms(hub, clock),
         )
         if deps.monotonic_ms is None
         else TimeBase(
@@ -282,7 +282,7 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
             max_offset_uncertainty_ms=sync.max_offset_uncertainty_ms,
             monotonic_ms=deps.monotonic_ms,
             resample=clock_worker,
-            live_time_ms=_live_exchange_ms(hub, sync),
+            live_time_ms=_live_exchange_ms(hub, clock),
         )
     )
     return _Exchange(
