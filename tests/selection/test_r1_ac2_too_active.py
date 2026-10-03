@@ -25,9 +25,16 @@ TOO_MANY = 101_000  # > 50 pages x 2 000
 HOUR = 3_600_000
 
 
+def spread(n: int) -> list[dict[str, object]]:
+    """``n`` fills one a minute from 175 days ago: inside the scoring window for the whole test (clock advances of a few
+    days included), never reaching the present, and a 2 000-fill page spans 1.4 days, so R3's first-page exit (a full
+    page inside a day) does not fire: these tests are about R1's 50-page cap (the R3 exit has its own tests)."""
+    return synth_fills(n, start_ms=T0 - 175 * DAY, step_ms=60_000)  # type: ignore[return-value]
+
+
 def setup_world(**kw: object):  # type: ignore[no-untyped-def]
     world = make_world(**kw)
-    world.hl.set_fills(HEAVY, synth_fills(TOO_MANY))
+    world.hl.set_fills(HEAVY, spread(TOO_MANY))
     world.hl.set_fills(B, synth_fills(5, tid0=500_000))
     world.hl.set_fills(C, synth_fills(5, tid0=600_000))
     return world
@@ -125,7 +132,7 @@ def test_R1_AC2_the_cooldown_is_one_day_then_one_new_attempt(caplog: pytest.LogC
 
 def test_R1_AC2_a_wallet_just_inside_the_cap_is_not_dropped(caplog: pytest.LogCaptureFixture) -> None:
     world = make_world()
-    world.hl.set_fills(HEAVY, synth_fills(99_000))  # 50 pages x 2 000 minus the repeated cursor fill, with margin
+    world.hl.set_fills(HEAVY, spread(99_000))  # 50 pages x 2 000 minus the repeated cursor fill, with margin
     world.backfiller.set_candidates([HEAVY])
     with caplog.at_level(logging.WARNING, logger=BACKFILL_LOGGER):
         run_to_complete(world, 25)
@@ -137,7 +144,7 @@ def test_R1_AC2_a_wallet_just_inside_the_cap_is_not_dropped(caplog: pytest.LogCa
 def test_R1_AC2_a_dropped_wallet_does_not_stop_the_manager_and_is_never_followed(tmp_path: Path) -> None:
     mw = make_manager_world(tmp_path)  # the PO's wiring: fail-fast scoring client, one 10 s slice at a time
     world = mw.world
-    world.hl.set_fills(HEAVY, synth_fills(TOO_MANY))
+    world.hl.set_fills(HEAVY, spread(TOO_MANY))
     mw.board.outcome = board_body([(HEAVY, "50000.0"), (B, "50000.0"), (C, "50000.0")])
     first = mw.manager.run_cycle(p95_latency_s=None)
     assert first.status == STATUS_BACKFILLING

@@ -75,6 +75,20 @@ def synth_fills(n: int, *, start_ms: int = T0 - 2 * DAY, step_ms: int = 50, tid0
     return out
 
 
+def spread_fills(n: int, *, start_ms: int = T0 - 20 * DAY, step_ms: int = 60_000, tid0: int = 1) -> list[dict[str, Any]]:
+    """``n`` fills one a minute (``synth_fills`` with a step that makes a full 2 000-fill page span 1.4 days). R3's first-page
+    exit drops a wallet whose FIRST page is full inside one day, so a test about a later rule (the 50-page cap, the
+    10 000-fill truncation) needs fills spread like this. 20 000 of them end about 6 days before ``T0``."""
+    return synth_fills(n, start_ms=start_ms, step_ms=step_ms, tid0=tid0)
+
+
+def stuck_fills() -> list[dict[str, Any]]:
+    """A wallet whose cursor cannot move: one fill two days ago (so the full first page spans more than a day and R3's
+    first-page exit does not fire), then 2 500 fills in ONE millisecond. Page 1 = the old fill + 1 999 of the pile; page 2
+    (from that millisecond) = the first 2 000 of the pile, no progress: 2 001 distinct fills in 2 pages."""
+    return [*synth_fills(1, start_ms=T0 - 2 * DAY), *synth_fills(2_500, start_ms=T0 - 3_600_000, step_ms=0, tid0=2)]
+
+
 class FakeHl:
     """The info endpoint. ``fills`` per wallet (wire format); ``rules`` may answer a ``(wallet, request type)`` first
     (return ``None`` to fall through to the normal answer); everything but fills is served from the F3 fixtures."""
