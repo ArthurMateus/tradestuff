@@ -486,3 +486,10 @@ def page_s9(t: int, n: int = 149) -> list[dict[str, Any]]:
 FAILING_PAGES: dict[str, Callable[[int], list[dict[str, Any]]]] = {
     "S3": page_s3, "S4": page_s4, "S5": page_s5, "S6": page_s6, "S7": page_s7, "S8": page_s8, "S9": page_s9,
 }
+
+
+def ranked_rows(n: int, *, first: int = 1, bps: int = 50) -> list[dict[str, Any]]:
+    """``n`` rows with the same K1 and a higher all-time pnl for a higher number: rank order is last, ..., first."""
+    return [
+        row(w(i), bps_m=bps, bps_p=bps, vlm_prior=1_600_000 + i * 1_000) for i in range(first, first + n)
+    ]
