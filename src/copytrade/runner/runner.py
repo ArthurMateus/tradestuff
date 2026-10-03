@@ -250,9 +250,12 @@ class Runner:
         with self.gate_lock:
             result = self._reload()
             if result.restored_positions:
-                # whatever the clock says now: project the replayed time and accept the first synced sample without the
-                # jump guard (a clock that drops before the first iteration must not leave positions unmanaged)
-                self._timebase.seed_unverified(result.restore_ms)
+                if self._exchange_now_ms() == 0:
+                    # the clock is not trusted: project the replayed time and accept the first synced sample without
+                    # the jump guard (a clock that drops before the first iteration must not leave positions unmanaged)
+                    self._timebase.seed_unverified(result.restore_ms)
+                else:
+                    self._timebase.seed(result.restore_ms)  # trusted: the jump guard holds from the first iteration
             self._known_followed = self.follow.followed
         self._section(
             "feed", self.feed.tick, strict=True
@@ -343,6 +346,7 @@ class Runner:
     def _advance_and_mark(self) -> tuple[int | None, str | None]:
         """Broker time is the time base's monotonic projection and is advanced on EVERY iteration (Amendment 13); a
         clock in doubt (the returned reason) refuses entries only, exits, stops, marks and delistings go on."""
+        self._timebase.resample_if_due()  # waits for the clock worker: never under the lock the Telegram thread needs
         with self.gate_lock:
             target, reason = self._timebase.next_target_ms()
             self._clock_alerts(reason)

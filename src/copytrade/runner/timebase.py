@@ -72,6 +72,7 @@ class TimeBase:
         self._in_doubt = False
         self._reason: str | None = None
         self._next_resample_ms = 0
+        self._resampled: bool | None = None  # the outcome of a forced resample taken ahead of ``next_target_ms``
         self._fresh_offsets: list[int] = []
         self.rebase_count = 0
 
@@ -93,6 +94,20 @@ class TimeBase:
         self._set_base(ms)
         self._unverified = True
 
+    def seed(self, ms: int) -> None:
+        """After a restart with positions and a TRUSTED exchange clock: ``ms`` (the restored broker time, never behind
+        the exchange) is the verified baseline, projected with monotonic time, so the jump guard holds from the first
+        iteration (a wall-clock step before it is refused, not accepted)."""
+        self._set_base(ms)
+
+    def resample_if_due(self) -> None:
+        """The forced resample of a clock in doubt (``DOUBT_RESAMPLE_S``) when it is due, taken NOW so the loop can call
+        this outside ``gate_lock``: the wait for the clock worker must not hold the lock the Telegram thread needs. The
+        outcome is used by the next ``next_target_ms``."""
+        if self._in_doubt and not self._frozen and self._resampled is None and self._mono() >= self._next_resample_ms:
+            self._next_resample_ms = self._mono() + DOUBT_RESAMPLE_S * 1000
+            self._resampled = self._resample()
+
     def next_target_ms(self) -> tuple[int | None, str | None]:
         """``(broker_target, doubt_reason)``. The target is ``None`` only while no baseline exists at all; the reason is
         ``None`` when the exchange clock is trusted (entries allowed)."""
@@ -109,16 +124,16 @@ class TimeBase:
             self._in_doubt = True
             self._fresh_offsets = []
             self._next_resample_ms = self._mono() + DOUBT_RESAMPLE_S * 1000
-        if not self._frozen and self._mono() >= self._next_resample_ms:
-            self._next_resample_ms = self._mono() + DOUBT_RESAMPLE_S * 1000
-            if self._resample():
-                candidate = self._candidate()
-                if candidate is not None and self._trusts(candidate, projection):
-                    return self._accept(candidate, projection), None
-                rebased = self._take_fresh_estimate(candidate, projection)
-                if rebased is not None:
-                    return rebased, None
-                projection = self._projection()
+        self.resample_if_due()  # already taken by the loop outside the lock, normally
+        resampled, self._resampled = self._resampled, None
+        if resampled:
+            candidate = self._candidate()
+            if candidate is not None and self._trusts(candidate, projection):
+                return self._accept(candidate, projection), None
+            rebased = self._take_fresh_estimate(candidate, projection)
+            if rebased is not None:
+                return rebased, None
+            projection = self._projection()
         self._reason = SKIP_CLOCK_UNSYNCED if candidate is None else SKIP_CLOCK_JUMP
         return self._caught_up(projection), self._reason
 
