@@ -45,12 +45,19 @@ def run_to_complete(world: World, limit: int = 30) -> None:
     raise AssertionError("the backfill did not complete")
 
 
+MINUTE = 60_000
+
+
 def recent(n: int) -> list[dict[str, object]]:
-    return synth_fills(n)  # everything in the last two days: far after window_start + 1 day
+    # one fill a minute, the last one about 6 days (n = 20 000: 13.9 days of fills) before now: far after window_start + 1 day,
+    # and the first 2 000-fill page spans 1.4 days, so R3's first-page exit (a full page inside a day) does not fire
+    return synth_fills(n, start_ms=T0 - 20 * DAY, step_ms=MINUTE)  # type: ignore[return-value]
 
 
 def starting_at(first_ms: int, n: int = HL_FILLS_LIMIT) -> list[dict[str, object]]:
-    return synth_fills(n, start_ms=first_ms, step_ms=1_000)  # type: ignore[return-value]
+    # one fill a minute (was a second): a 2 000-fill page spans 1.4 days, so R3's first-page exit does not fire and the
+    # R1 truncation rule is what these tests are about
+    return synth_fills(n, start_ms=first_ms, step_ms=MINUTE)  # type: ignore[return-value]
 
 
 def test_R1_AC7_the_fake_serves_oldest_retrievable_first_and_nothing_older() -> None:

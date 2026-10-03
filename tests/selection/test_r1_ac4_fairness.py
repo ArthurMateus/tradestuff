@@ -18,7 +18,7 @@ import pytest
 
 from tests.hl.support import T0, status
 from tests.selection.helpers import w
-from tests.selection.r1_world import DAY, World, make_world, synth_fills
+from tests.selection.r1_world import DAY, World, make_world, spread_fills, synth_fills
 
 HEAVY, B, C = w(1), w(2), w(3)
 HEAVY_FILLS = 24_000  # 12 full pages, under the 50-page cap
@@ -27,7 +27,7 @@ MAX_PAGES_PER_STEP = 3
 
 def setup(*, fail_fast: bool) -> World:
     world = make_world(fail_fast=fail_fast)
-    world.hl.set_fills(HEAVY, synth_fills(HEAVY_FILLS))
+    world.hl.set_fills(HEAVY, spread_fills(HEAVY_FILLS))  # spread: R3 drops a full first page inside a day
     world.hl.set_fills(B, synth_fills(5, tid0=500_000))
     world.hl.set_fills(C, synth_fills(5, tid0=600_000))
     world.backfiller.set_candidates([HEAVY, B, C])  # the heavy wallet is first in the queue

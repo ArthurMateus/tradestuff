@@ -15,7 +15,7 @@ from copytrade.hl.errors import HlError, WsUserLimitError
 from copytrade.hl.wallet import normalize_wallet
 from copytrade.ledger.store import Ledger
 from copytrade.recorder.ports import SOURCE_FAILURES, LeaderboardSource
-from copytrade.recorder.registry import rows_in_leaderboard
+from copytrade.recorder.registry import LeaderboardRow, parse_leaderboard
 from copytrade.scoring.cycle import run_cycle as score_and_persist
 from copytrade.scoring.models import CostModel, CycleResult, ScoreStore, WalletInputs
 from copytrade.selection.models import (
@@ -40,6 +40,7 @@ from copytrade.selection.models import (
     STATUS_BACKFILLING,
     STATUS_LEADERBOARD_OUTAGE,
     STATUS_OVERRUN,
+    CandidateList,
     CycleReport,
     Decision,
     Follow,
@@ -47,6 +48,7 @@ from copytrade.selection.models import (
     InputsProvider,
     OpenShareSource,
     PolicyOutcome,
+    ScreeningInputs,
     SelectionState,
     StateSource,
     WalletFeed,
@@ -54,6 +56,7 @@ from copytrade.selection.models import (
 from copytrade.selection.pause import LeaderPauseTracker
 from copytrade.selection.policy import apply_cycle as apply_policy
 from copytrade.selection.policy import safety_reason
+from copytrade.selection.prefilter import ROTATE_AFTER_CYCLES, candidate_list
 
 _log = logging.getLogger(__name__)
 
@@ -122,6 +125,7 @@ class FollowManager:
         self._no_eligible = False
         self._no_eligible_alerted = False
         self._outage_alerted = False
+        self._ineligible_streak: dict[str, int] = {}  # RO1: consecutive scored cycles a candidate was ineligible
 
     # --- views -----------------------------------------------------------------------------------------------
 
@@ -174,11 +178,11 @@ class FollowManager:
         and apply the result. Always ledgers a ``select_cycle`` record."""
         started_ms = self._clock.now_ms()
         self._next_due_ms = started_ms + self._interval_ms  # anchored to this start, whatever happens below
-        candidates = self._fetch_candidates()
-        if candidates is None:
+        found = self._fetch_candidates()
+        if found is None:
             return self._leaderboard_outage(started_ms, p95_latency_s)
         self._outage_alerted = False
-        self._inputs.set_candidates(candidates)
+        candidates = self._set_candidates(found)
         if not self._inputs.complete:
             return self._finish(STATUS_BACKFILLING, (), started_ms)
         result = self._score([*candidates, *sorted(self._subscribed - set(candidates))], p95_latency_s)
@@ -196,31 +200,56 @@ class FollowManager:
         """Apply an already scored cycle (no leaderboard, no backfill gate, no overrun check)."""
         return self._apply(result, now_ms=now_ms)
 
-    def _fetch_candidates(self) -> list[str] | None:
-        """The first ``scoring.candidates_k`` leaderboard wallets, in the order served, that the leaderboard row alone
-        does not rule out (G11 account value, address half of G13), or ``None`` on an outage. The row value is
-        self-reported: it only saves a fetch, a row that cannot decide (no readable value) is kept for the scorer."""
+    def _set_candidates(self, found: CandidateList) -> list[str]:
+        """Hand stage 1's list to the inputs provider and return the wallets to score. A provider that runs the screen
+        gets the whole list (it screens in order until ``scoring.candidates_k`` wallets are OK) and the followed wallets
+        to keep; any other gets the first ``scoring.candidates_k`` rows."""
+        if isinstance(self._inputs, ScreeningInputs):
+            self._inputs.set_screen_plan(found, keep=sorted({*self._state.followed, *self._subscribed}))
+            return self._inputs.candidates()
+        candidates = [row.address for row in found.rows[: self._candidates_k]]
+        self._inputs.set_candidates(candidates)
+        return candidates
+
+    def _fetch_candidates(self) -> CandidateList | None:
+        """Stage 1 of the candidate screen over the leaderboard (no request besides the leaderboard itself), or ``None``
+        on an outage. The row figures are self-reported: they only decide whom to look at, never who is followed."""
         try:
-            rows = rows_in_leaderboard(self._leaderboard.fetch())
+            board = parse_leaderboard(self._leaderboard.fetch())
         except _OUTAGE_ERRORS as exc:
             _log.warning(
                 "leaderboard unavailable", extra={"event": "leaderboard_failed", "error_type": type(exc).__name__}
             )
             return None
-        valid = list(dict.fromkeys(row.address for row in rows if _is_address(row.address)))
-        if len(valid) < MIN_LEADERBOARD_ROWS:
+        if board.row_count < MIN_LEADERBOARD_ROWS:
             _log.warning(
                 "leaderboard has too few rows",
-                extra={"event": "leaderboard_short", "rows": len(valid), "minimum": MIN_LEADERBOARD_ROWS},
+                extra={"event": "leaderboard_short", "rows": board.row_count, "minimum": MIN_LEADERBOARD_ROWS},
             )
             return None
-        ruled_out = {
-            row.address
-            for row in rows
-            if row.address in self._excluded
-            or (row.account_value is not None and row.account_value < self._min_account_value)
-        }
-        return [wallet for wallet in valid if wallet not in ruled_out][: self._candidates_k]
+        valid = [row for row in board.rows if _is_address(row.address)]
+        first_of: dict[str, LeaderboardRow] = {}
+        for row in valid:
+            first_of.setdefault(row.address, row)  # the first row of an address wins, in served order
+        found = candidate_list(
+            list(first_of.values()),
+            excluded=self._excluded,
+            min_account_value=self._min_account_value,
+            k=self._candidates_k,
+        )
+        _log.info(
+            "candidate prefilter: rows=%d ranked=%d candidates=%d",
+            board.row_count,
+            found.ranked_count,
+            len(found.rows),
+            extra={
+                "event": "candidate_prefilter",
+                "rows": board.row_count,
+                "ranked": found.ranked_count,
+                "candidates": len(found.rows),
+            },
+        )
+        return found
 
     def _score(self, wallets: Sequence[str], p95_latency_s: Decimal | None) -> CycleResult | None:
         """Refresh and score ``wallets`` at the time the data was gathered, persisting through F5 (once). A wallet
@@ -275,9 +304,40 @@ class FollowManager:
             result = CycleResult(t_ms=now_ms, scores=())
         outcome = apply_policy(self._config, self._state, result, now_ms=now_ms, paused=self._pause.paused())
         decisions = self._enact(outcome, now_ms)
+        self._rotate_ineligible(result)
         self._eligible_count = outcome.eligible_count
         self._track_no_eligible(outcome.no_eligible)
         return self._finish(STATUS_APPLIED, decisions, now_ms)
+
+    def _rotate_ineligible(self, result: CycleResult) -> None:
+        """RO1: a candidate that is not followed and was ineligible in ``ROTATE_AFTER_CYCLES`` consecutive scored cycles
+        is cooled down for ``ROTATE_COOLDOWN_H``, so the slots go on down the ranked list instead of staying on wallets
+        that keep failing the gates. One eligible cycle starts the count over; a cycle that scored nobody counts for
+        nobody. The cooldown applies from the next cycle's candidate list."""
+        if not isinstance(self._inputs, ScreeningInputs):
+            return
+        scored = {score.address for score in result.scores}
+        self._ineligible_streak = {w: n for w, n in self._ineligible_streak.items() if w in scored}  # not consecutive
+        rotated: list[str] = []
+        for score in result.scores:
+            wallet = score.address
+            if score.eligible or wallet in self._state.followed or wallet in self._subscribed:
+                self._ineligible_streak.pop(wallet, None)
+                continue
+            streak = self._ineligible_streak.get(wallet, 0) + 1
+            if streak >= ROTATE_AFTER_CYCLES:
+                self._ineligible_streak.pop(wallet, None)
+                rotated.append(wallet)
+            else:
+                self._ineligible_streak[wallet] = streak
+        if rotated:
+            self._inputs.rotate(rotated)
+            _log.info(
+                "candidates rotated out after %d ineligible cycles: %d",
+                ROTATE_AFTER_CYCLES,
+                len(rotated),
+                extra={"event": "candidates_rotated", "wallets": len(rotated)},
+            )
 
     # --- carrying out the policy's decisions ----------------------------------------------------------------
 
