@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from copytrade.selection.models import STATUS_APPLIED
+from copytrade.selection.models import STATUS_APPLIED, Follow
 from tests.hl.support import T0
 from tests.selection.helpers import cycle as scored_cycle
 from tests.selection.helpers import score, w
@@ -184,3 +184,39 @@ def test_R3_AC6_a_holder_keeps_its_slot_only_within_the_top_two_times_k(
     assert fresh == [w(1000 + j) for j in range(newcomers, newcomers - screened, -1)]  # best newcomers first
     for wallet in first:
         assert len(r3.screen_calls(wallet)) == 1  # a holder is never screened a second time
+
+
+def test_R3_AC6_a_followed_wallet_is_never_rotated_and_counts_from_zero_once_unfollowed(tmp_path: Path) -> None:
+    # R3-SD4: ineligible while FOLLOWED never counts (the followed are never rotated); the 72 h cooldown must not be
+    # waiting for the wallet at the moment it is unfollowed. drop_confirm_cycles 6 keeps it followed through five
+    # ineligible cycles (3 would rotate a wallet that counted), the sixth drops it (followed for over 24 h).
+    # refreshed_in_next_cycle(): the wallet got a fills request while that cycle's work ran.
+    r3 = make_r3(tmp_path, select__drop_confirm_cycles=6)
+    target = w(1)
+    for i in (1, 2):
+        r3.serve(w(i), ok_page(T0))
+    r3.set_board(ranked_rows(2))
+    r3.mw.manager.restore(
+        {target: Follow(followed_at_ms=r3.clock.now_ms() - 30 * 3_600_000, drop_streak=0)}, subscribed=[target], paused=[]
+    )
+    r3.cycle()
+    r3.drive_until_complete()
+    assert target in r3.mw.manager.followed
+
+    def refreshed_in_next_cycle() -> bool:
+        before = len(r3.fills_calls(target))
+        hourly_cycle(r3, 40)
+        return len(r3.fills_calls(target)) > before
+
+    for n in range(1, 6):  # scored cycles 1-5 while followed: no streak, nothing rotates
+        hourly_cycle(r3)
+        assert target in r3.mw.manager.followed, n
+    assert refreshed_in_next_cycle()  # cycle 6: a cooldown from cycle 3 would not hold a followed wallet back either
+    r3.mw.manager.tick()  # dropped by the sixth ineligible cycle, no open share: released now
+    assert target not in r3.mw.manager.followed
+    # unfollowed, the wallet counts from zero: the cycles right after are not enough to rotate it (a wallet that had
+    # counted its followed cycles would be cooling down from the first of them) ...
+    for n in (7, 8, 9):
+        assert refreshed_in_next_cycle(), n
+    # ... and it IS rotated once three counted cycles have passed
+    assert not all(refreshed_in_next_cycle() for _ in range(4))
