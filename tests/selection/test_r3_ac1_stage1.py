@@ -324,3 +324,14 @@ def test_R3_AC1_stage_1_leaves_the_leaderboard_outage_rule_alone(tmp_path: Path)
     report = r3.mw.manager.run_cycle(p95_latency_s=None)
     assert report.status == STATUS_LEADERBOARD_OUTAGE
     assert r3.world.http.calls == []
+
+
+def test_R3_AC1_K1_a_huge_edge_ranks_exactly_like_50_bps_and_is_tie_broken_by_all_time_pnl(tmp_path: Path) -> None:
+    # R3-SD2: pins the 50 bps cap of the K1 key. Small account (AV 10 000) rows have small all-time pnl; the lowest
+    # address belongs to the huge-edge row so neither the address nor an uncapped edge may explain the order.
+    huge = row(w(1), av=10_000, vlm_prior=80_000, bps_m=200, bps_p=200)  # K1 capped to 50, all-time pnl 3 200
+    at_cap = row(w(2), av=10_000, vlm_prior=80_000, bps_m=50, bps_p=50)  # K1 50, all-time pnl 800
+    rich = row(w(3), bps_m=50, bps_p=50)  # K1 50, all-time pnl 10 000: the pnl tie-break puts it before both
+    just_below = row(w(4), bps_m="49.99", bps_p="49.99")  # K1 49.99 < cap: after every capped row despite pnl ~ 10 000
+    _, order = stage1(tmp_path, [just_below, at_cap, huge, rich])
+    assert order == [w(3), w(1), w(2), w(4)]
