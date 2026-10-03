@@ -19,7 +19,7 @@ from copytrade.hl.budget import Priority
 from tests.hl.support import T0, status
 from tests.selection.helpers import w
 from tests.selection.r1_logs import BACKFILL_LOGGER, attr, events
-from tests.selection.r1_world import World, make_world, synth_fills
+from tests.selection.r1_world import World, make_world, stuck_fills, synth_fills
 
 BAD = w(1)
 
@@ -123,13 +123,13 @@ def test_R1_AC1_no_secret_or_url_in_any_record(caplog: pytest.LogCaptureFixture)
 
 def test_R1_AC1_the_incomplete_case_logs_pages_and_fills_fetched(caplog: pytest.LogCaptureFixture) -> None:
     world = make_world()
-    stuck = synth_fills(2_500, start_ms=T0 - 3_600_000, step_ms=0)  # 2 500 fills in ONE millisecond: the cursor cannot move
+    stuck = stuck_fills()  # 2 500 fills in ONE millisecond (after one older fill): the cursor cannot move
     world.hl.set_fills(BAD, stuck)
     step_once(world, caplog)
     (rec,) = events(caplog, "backfill_incomplete")
     assert attr(rec, "wallet") == BAD
     assert attr(rec, "pages") == 2  # one full page, then a page with no progress
-    assert attr(rec, "fills") == 2_000  # the distinct fills got (the server repeats the same 2 000)
+    assert attr(rec, "fills") == 2_001  # the distinct fills got (the old fill + the same 2 000 of the pile twice)
 
 
 def test_R1_AC1_every_failed_attempt_is_exactly_one_countable_record(caplog: pytest.LogCaptureFixture) -> None:
