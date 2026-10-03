@@ -73,7 +73,7 @@ Row fields: `AV`=accountValue; `pnl_w`, `vlm_w` for w in day/week/month/allTime 
 - After deployment (paper, not a gate): per cycle, record the share of candidates that EX1/EX2 drop and the share eligible after scoring. The
   eligible share has no threshold: G7 is strict and 0-5 eligible of 50 is plausible. Report it; never tune the gates on it.
 - **Variants:** at most 3 in total (D = variant 1; each later one changes a single parameter, is written here before running, and is logged).
-  Tried so far: 1 designed, 0 runs.
+  Tried so far: variant 1 (D) run once = KILL (candidate-ranking-run1.md); variant 2 pre-registered in section 9, 0 runs.
 - How to run (PO, bot stopped, ~5 min): `uv run python docs\sdlc\copytrade-v1\research\scripts\candidate_rank_check.py`. It saves the leaderboard
   gzip under `research/data/candidate_ranking/` (gitignored). Send back the whole console output. Self-test: `--selftest`.
 
@@ -109,3 +109,62 @@ EX1 reuses R1's too-active cooldown (24 h constant). The one-day span and the 2,
 3. Cooldowns: empty 7 d, too active 24 h (keep R1's) or longer, rotation 72 h after 3 ineligible cycles.
 4. Run `candidate_rank_check.py` once and send the output. The thresholds above are frozen before that run.
 5. Later and optional: research a stage-2 `portfolio` prefilter; decide separately whether `gate.dsr_n_trials` should follow the 47k leaderboard (frozen addendum).
+
+## 9. Variant 2 (2 of max 3): D on the row + a first-page fills screen. PRE-REGISTERED 2026-10-03, before any variant-2 data
+Why: run 1 KILLED D (candidate-ranking-run1.md): 14 of 20 were unjudged full pages, and the row did not separate market makers (maker share
+>= 0.8 on 8 of 20) or off-universe traders (core share <= 0.15 on 7). The first page of fills does, at <= 120 weight. The screen only decides
+who gets the full backfill: no metric, gate, score or FROZEN rule changes (F5.AC6 holds; the gates still decide on the full history).
+Notation: `t` = screen time, `ws = t - scoring.window_days`, `AV` = row accountValue. REUSED = existing key and value; NEW = new number.
+1. **V1 stage 1** = option D unchanged (P1-P8, K1, L1-L5, EX1-EX3, RO1). Stage 2 runs on the L1 list in K1 order after the L2 skips
+   (every cooldown, V5's included). Followed wallets are never screened (they are always scored).
+2. **V2 request** = exactly backfill page 1: one `userFillsByTime {user, startTime: ws, aggregateByTime: true}`, <= 2,000 rows, weight
+   20 + rows/20 (<= 120), charged to the scoring share. A fetch or schema error is not a rejection: R1's per-wallet error cooldown applies.
+3. **V3 features** (that page only): dedupe on (tid, time, coin, sz) as F5; core = `is_core_perp(coin)`; notional = sz x px; `full` = 2,000
+   rows; `span_d` = (last - first fill) / 1 d; `core_share` = core notional / all notional; `maker_share` = M13 on the core fills (crossed ==
+   false notional / core notional); `first_core` = earliest core fill; `rate` = 2,000 / span_d (full pages). Trips = F5 `reconstruct` on core
+   fills (open at the page start: ignored until flat; flips split); a trip still open at the page end is censored with hold = +inf (upper bound).
+   `hold_med` = median hold (min) over closed + censored trips = `n_trips`; `n_rt` = closed. `exec_share` = share of those trips with
+   open_sz x open_px / AV x `paper.wallet_usd` >= `sizing.min_order_usd` (M16 without the risk cap: an upper bound).
+4. **V4 rules** (inclusive; a wallet passes if none fails; n/e = not evaluable/applicable, never a failure):
+   - S1 rows >= 1. S2 not (full and span_d < 1). (Variant 1's EX2/EX1, moved into the screen.)
+   - S3 `core_share >= prefilter.min_core_perp_share` (0.50, **NEW**).
+   - S4 `maker_share <= gate.max_maker_share` (0.70, REUSED, G13's formula; no core notional = fail, closed like G13).
+   - S5 `(t - first_core) / 1 d >= gate.min_fill_span_days` (60, REUSED): the page holds the oldest retrievable fills, so this is necessary for G3.
+   - S6 (full pages; else n/e) `rate x scoring.window_days < HL_FILLS_LIMIT` (10,000; REUSED R1 constants = 55.6 fills/day at 180 d). It
+     predicts R1's `too_active_truncated`, which already drops every wallet with >= 10,000 fills in the window.
+   - S7 `hold_med >= gate.min_median_hold_min` (15, REUSED, G8 floor; latency term ignored). S8 `exec_share >= gate.min_executable_share`
+     (0.50, REUSED, G12 flavour). Both n/e if `n_trips < prefilter.screen_min_trips` (30, **NEW**).
+   - S9 (non-full pages, which hold the whole window; else n/e) `n_rt >= gate.min_round_trips` (150, REUSED: G2's count at t).
+5. **V5 outcomes and cooldowns** (keyed by lowercase address; all rules computed and logged even after a failure): S1 fail = `backfill_empty`
+   168 h (EX2); S2 fail = `too_active_first_page` 24 h (EX1); any S3-S9 fail = `screen_rejected` (failing ids listed) for
+   `prefilter.screen_cooldown_h` (72 h, **NEW** key, RO1's value). After it, a still-ranked wallet is screened again.
+6. **V6 order and budget:** screen in K1 order, skipping cooldowns, until `candidates_k` wallets are screened OK (L3 sticky ones count and are
+   not re-screened) or `prefilter.screen_max_per_cycle` screens are spent (100, **NEW**, budget only: <= 12,000 weight, ~27 min of the 450/min
+   share). The rest wait for the next cycle, in K1 order.
+7. **V7 feed:** an OK wallet enters the backfill with the screen page as its page 1 (cursor resumes after its last fill, no refetch); a non-full
+   page is the complete backfill (0 more requests). OK stays OK while the wallet remains a candidate (L3). R1 (EX3, error cooldowns), RO1, F5 unchanged.
+8. **V8 persist (B5):** per cycle, each screened wallet's features, per-rule pass/fail/n/e, outcome and cooldown end, plus fail counts per rule.
+
+**Bias (honest).** Above 2,000 fills in the window, the page is the OLDEST 2,000 of the latest <= 10,000: every feature describes the start
+of the retrievable history, not today. Rate: wallets whose activity rose (likely: stage 1 selects recent volume) look slower, so S6 is lenient
+(R1 still drops them, ~5 pages wasted); wallets that slowed look faster (false reject, re-screened after 72 h). A style change since the page
+(maker, core, hold) is missed; G13/G8 on the full history still catch the harmful direction. Censoring is resolved upward (+inf), so S7 never
+rejects because of where the page ends. `exec_share` uses today's AV for old opens: grown wallets get understated sizes (false-reject bias).
+**Why the NEW numbers.** S3 0.50: the stage-1 evidence (row pnl, vlm) is account-wide; under half of the notional in our universe means the
+row's edge is mostly not the edge we would copy (G12's "at least half copyable" logic). 30 trips: a wallet with a true median hold of 30 min
+(2x the floor, lognormal sigma 1.5) is wrongly rejected with p ~ 0.03 at 30 trips (0.07 at 20, 0.19 at 10). 72 h and 100: budget only.
+
+**Pre-registered validation (D4; rules and numbers frozen before any variant-2 data).**
+- Data: D ranks **21-40** of the SAME snapshot as run 1 (oldest file in `research/data/candidate_ranking/`): all unseen, ranks 1-20 excluded
+  (no tuning on seen data). Fills are fetched at run time. `n` = valid fetches (n < 16 = INCONCLUSIVE, rerun); `pass` = wallets passing S1-S9.
+- COPYABLE (survivors; verdict-only, **NEW**, never config), all of: c1 >= 80% of survivors had S7 and S8 evaluated (not passing by default);
+  c2 median survivor `hold_med` >= 30 min (2x the G8 floor); c3 median survivor `maker_share` <= 0.50; c4 median survivor `exec_share` >= 0.70.
+- **PASS:** pass >= ceil(0.5 n) (10 of 20) AND c1-c4. **KILL:** pass < ceil(0.3 n) (6 of 20). **PARTIAL:** otherwise (incl. >= 10 but not copyable).
+  PASS -> PM amendment (F6) -> test-designer. PARTIAL/KILL -> at most ONE more variant (3 of 3), pre-registered here first; if it fails too,
+  keep served order + EX1/EX2 only. Info only: `--baseline` screens served-order rows 21-40 with the same rules (D5 naive baseline).
+- Run (PO, bot stopped, ~2-4 min; >= 3 s between calls, 6 s after a full page to stay under 1,200 weight/min):
+  `uv run python docs\sdlc\copytrade-v1\research\scripts\candidate_screen_check.py` (self-test `--selftest`); send back the SUMMARY block.
+- Config (PM; NEW keys are F1 schema changes): `prefilter.min_core_perp_share` 0.50 (0.1-1, OF), `prefilter.screen_min_trips` 30 (10-200, OF),
+  `prefilter.screen_cooldown_h` 72 (6-720), `prefilter.screen_max_per_cycle` 100 (10-1000). REUSED: `gate.max_maker_share`,
+  `gate.min_fill_span_days`, `gate.min_median_hold_min`, `gate.min_executable_share`, `gate.min_round_trips`, `scoring.window_days`,
+  `paper.wallet_usd`, `sizing.min_order_usd`; constants HL_FILLS_LIMIT and the 2,000-row page.
