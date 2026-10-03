@@ -15,7 +15,7 @@ from copytrade.hl.errors import HlError, WsUserLimitError
 from copytrade.hl.wallet import normalize_wallet
 from copytrade.ledger.store import Ledger
 from copytrade.recorder.ports import SOURCE_FAILURES, LeaderboardSource
-from copytrade.recorder.registry import rows_in_leaderboard
+from copytrade.recorder.registry import LeaderboardRow, rows_in_leaderboard
 from copytrade.scoring.cycle import run_cycle as score_and_persist
 from copytrade.scoring.models import CostModel, CycleResult, ScoreStore, WalletInputs
 from copytrade.selection.models import (
@@ -40,6 +40,7 @@ from copytrade.selection.models import (
     STATUS_BACKFILLING,
     STATUS_LEADERBOARD_OUTAGE,
     STATUS_OVERRUN,
+    CandidateList,
     CycleReport,
     Decision,
     Follow,
@@ -54,6 +55,7 @@ from copytrade.selection.models import (
 from copytrade.selection.pause import LeaderPauseTracker
 from copytrade.selection.policy import apply_cycle as apply_policy
 from copytrade.selection.policy import safety_reason
+from copytrade.selection.prefilter import candidate_list
 
 _log = logging.getLogger(__name__)
 
@@ -174,10 +176,11 @@ class FollowManager:
         and apply the result. Always ledgers a ``select_cycle`` record."""
         started_ms = self._clock.now_ms()
         self._next_due_ms = started_ms + self._interval_ms  # anchored to this start, whatever happens below
-        candidates = self._fetch_candidates()
-        if candidates is None:
+        found = self._fetch_candidates()
+        if found is None:
             return self._leaderboard_outage(started_ms, p95_latency_s)
         self._outage_alerted = False
+        candidates = [row.address for row in found.rows[: self._candidates_k]]
         self._inputs.set_candidates(candidates)
         if not self._inputs.complete:
             return self._finish(STATUS_BACKFILLING, (), started_ms)
@@ -196,10 +199,9 @@ class FollowManager:
         """Apply an already scored cycle (no leaderboard, no backfill gate, no overrun check)."""
         return self._apply(result, now_ms=now_ms)
 
-    def _fetch_candidates(self) -> list[str] | None:
-        """The first ``scoring.candidates_k`` leaderboard wallets, in the order served, that the leaderboard row alone
-        does not rule out (G11 account value, address half of G13), or ``None`` on an outage. The row value is
-        self-reported: it only saves a fetch, a row that cannot decide (no readable value) is kept for the scorer."""
+    def _fetch_candidates(self) -> CandidateList | None:
+        """Stage 1 of the candidate screen over the leaderboard (no request besides the leaderboard itself), or ``None``
+        on an outage. The row figures are self-reported: they only decide whom to look at, never who is followed."""
         try:
             rows = rows_in_leaderboard(self._leaderboard.fetch())
         except _OUTAGE_ERRORS as exc:
@@ -207,20 +209,33 @@ class FollowManager:
                 "leaderboard unavailable", extra={"event": "leaderboard_failed", "error_type": type(exc).__name__}
             )
             return None
-        valid = list(dict.fromkeys(row.address for row in rows if _is_address(row.address)))
+        first_of: dict[str, LeaderboardRow] = {}
+        for row in rows:
+            if row.address not in first_of and _is_address(row.address):
+                first_of[row.address] = row  # the first row of an address wins, in served order
+        valid = list(first_of.values())
         if len(valid) < MIN_LEADERBOARD_ROWS:
             _log.warning(
                 "leaderboard has too few rows",
                 extra={"event": "leaderboard_short", "rows": len(valid), "minimum": MIN_LEADERBOARD_ROWS},
             )
             return None
-        ruled_out = {
-            row.address
-            for row in rows
-            if row.address in self._excluded
-            or (row.account_value is not None and row.account_value < self._min_account_value)
-        }
-        return [wallet for wallet in valid if wallet not in ruled_out][: self._candidates_k]
+        found = candidate_list(
+            valid, excluded=self._excluded, min_account_value=self._min_account_value, k=self._candidates_k
+        )
+        _log.info(
+            "candidate prefilter: rows=%d ranked=%d candidates=%d",
+            len(valid),
+            found.ranked_count,
+            len(found.rows),
+            extra={
+                "event": "candidate_prefilter",
+                "rows": len(valid),
+                "ranked": found.ranked_count,
+                "candidates": len(found.rows),
+            },
+        )
+        return found
 
     def _score(self, wallets: Sequence[str], p95_latency_s: Decimal | None) -> CycleResult | None:
         """Refresh and score ``wallets`` at the time the data was gathered, persisting through F5 (once). A wallet

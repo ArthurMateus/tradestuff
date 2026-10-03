@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Protocol
 
 from copytrade.hl.models import ClearinghouseState
@@ -51,6 +52,27 @@ REASON_STATE_UNAVAILABLE = "state_unavailable"  # a join or swap whose ``clearin
 GATE_CURRENT_DRAWDOWN = "G15"  # the F5 gate whose failure is a safety trigger (edge-hypothesis 10.6 step 2)
 HOUR_MS = 3_600_000
 MIN_LEADERBOARD_ROWS = 1000  # F6.AC5: fewer rows is an outage
+
+
+@dataclass(frozen=True)
+class ScreenRow:
+    """What stage 2 and the logs keep of a leaderboard row: the lower-cased address, the self-reported ``accountValue``
+    (``None`` when unreadable) and the week and month volume of the row (``None`` when unreadable)."""
+
+    address: str
+    account_value: Decimal | None
+    vlm_week: Decimal | None
+    vlm_month: Decimal | None
+
+
+@dataclass(frozen=True)
+class CandidateList:
+    """Stage 1 of the candidate screen (``selection.prefilter``): the candidates in screening order, the K1-ranked rows
+    first (``ranked_count`` of them) and then, when fewer than ``scoring.candidates_k`` rows are ranked, the rows that
+    could not be ranked because a figure was unreadable, in the order served."""
+
+    rows: tuple[ScreenRow, ...]
+    ranked_count: int
 
 
 @dataclass(frozen=True)

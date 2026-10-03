@@ -6,8 +6,8 @@ import json
 import os
 import re
 import sys
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -81,15 +81,26 @@ class WalletRegistry:
 
 
 @dataclass(frozen=True)
+class WindowFigures:
+    """The ``pnl`` and ``vlm`` of one ``windowPerformances`` entry (``None`` when missing, unparsable or not finite)."""
+
+    pnl: Decimal | None
+    vlm: Decimal | None
+
+
+@dataclass(frozen=True)
 class LeaderboardRow:
-    """What a leaderboard row offers a prefilter: the lower-cased address and the self-reported ``accountValue``
-    (``None`` when missing or unreadable). The value only saves a fetch; it never scores or admits a wallet."""
+    """What a leaderboard row offers a prefilter: the lower-cased address, the self-reported ``accountValue`` and the
+    ``pnl`` / ``vlm`` of each performance window by name (``day``, ``week``, ``month``, ``allTime``). A figure is
+    ``None`` when it is missing or unreadable. The row only saves a fetch; it never scores or admits a wallet. The
+    ``roi`` field is never read (its denominator is undocumented)."""
 
     address: str
     account_value: Decimal | None
+    windows: Mapping[str, WindowFigures] = field(default_factory=dict)
 
 
-def _account_value(raw: object) -> Decimal | None:
+def _finite_decimal(raw: object) -> Decimal | None:
     if not isinstance(raw, str):
         return None
     try:
@@ -97,6 +108,17 @@ def _account_value(raw: object) -> Decimal | None:
     except InvalidOperation:
         return None
     return value if value.is_finite() else None
+
+
+def _windows(raw: object) -> dict[str, WindowFigures]:
+    """``windowPerformances`` is a list of ``[name, {pnl, roi, vlm}]`` pairs; anything else yields no window."""
+    if not isinstance(raw, list):
+        return {}
+    out: dict[str, WindowFigures] = {}
+    for item in raw:
+        if isinstance(item, list | tuple) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], dict):
+            out[item[0]] = WindowFigures(_finite_decimal(item[1].get("pnl")), _finite_decimal(item[1].get("vlm")))
+    return out
 
 
 def rows_in_leaderboard(body: bytes) -> tuple[LeaderboardRow, ...]:
@@ -113,7 +135,11 @@ def rows_in_leaderboard(body: bytes) -> tuple[LeaderboardRow, ...]:
     if not isinstance(rows, list):
         raise ValueError("the leaderboard body has no leaderboardRows list")  # noqa: TRY004 - ValueError is the contract
     return tuple(
-        LeaderboardRow(row["ethAddress"].lower(), _account_value(row.get("accountValue")))
+        LeaderboardRow(
+            row["ethAddress"].lower(),
+            _finite_decimal(row.get("accountValue")),
+            _windows(row.get("windowPerformances")),
+        )
         for row in rows
         if isinstance(row, dict) and isinstance(row.get("ethAddress"), str)
     )
