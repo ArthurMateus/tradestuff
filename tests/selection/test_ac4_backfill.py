@@ -59,6 +59,12 @@ def backfiller(**overrides: object) -> tuple[FeedRig, Backfiller, FakeCandles]:
     return fr, bf, candles
 
 
+def one_fill(fr: FeedRig) -> None:
+    """Every wallet of the fake server has one fill inside the window. R3 drops a wallet with no fill in the window after
+    one request (168 h), so a test that needs its wallets backfilled and held must give them a fill."""
+    fr.server_fills.append(fill_json(1))
+
+
 def candidates(n: int = 200) -> list[str]:
     return [w(i) for i in range(1, n + 1)]
 
@@ -68,6 +74,7 @@ def candidates(n: int = 200) -> list[str]:
 
 def test_F6_AC4_the_default_backfill_of_200_candidates_finishes_within_backfill_max_hours() -> None:
     fr, bf, _ = backfiller()
+    one_fill(fr)
     cands = candidates(200)
     assert fr.rig.cfg["scoring.candidates_k"] == 200 and fr.rig.cfg["select.backfill_max_hours"] == 24
     assert bf.complete is False  # nothing has been set yet: fail closed
@@ -90,10 +97,11 @@ def test_F6_AC4_the_default_backfill_of_200_candidates_finishes_within_backfill_
 
 def test_F6_AC4_backfill_traffic_stays_inside_the_scoring_share_of_the_budget() -> None:
     fr, bf, _ = backfiller()
+    one_fill(fr)
     bf.set_candidates(candidates(60))
     while not bf.complete:
         assert bf.step() is True
-    events = [(c.t_ms, oracle_weight(c.body["type"], 0)) for c in fr.rig.http.calls]  # the fake server holds no fills
+    events = [(c.t_ms, oracle_weight(c.body["type"], 0)) for c in fr.rig.http.calls]  # the fake server holds one fill (a page of one: 20 + 1 // 20 = 20, as for no fill)
     cap = int(fr.rig.cfg["hl.rest_weight_budget_per_min"] * D(str(fr.rig.cfg["hl.scoring_weight_share"])))
     assert max_window_sum(events) <= cap  # SCORING priority: never the whole budget
 
@@ -111,6 +119,7 @@ def test_F6_AC4_the_first_fetch_reaches_back_scoring_window_days() -> None:
 
 def test_F6_AC4_completion_needs_every_candidate_and_a_failed_wallet_is_retried_after_the_others() -> None:
     fr, bf, _ = backfiller()
+    one_fill(fr)
     failing = {"on": True}
     bad = w(2)
 
@@ -136,6 +145,7 @@ def test_F6_AC4_completion_needs_every_candidate_and_a_failed_wallet_is_retried_
 
 def test_F6_AC4_completion_is_latched_when_new_candidates_appear_later() -> None:
     fr, bf, _ = backfiller()
+    one_fill(fr)
     bf.set_candidates([w(1), w(2)])
     while not bf.complete:
         bf.step()
@@ -197,6 +207,7 @@ def test_F6_AC4_a_later_fetch_is_incremental_and_never_duplicates_fills() -> Non
 
 def test_F6_AC4_a_failed_refresh_keeps_the_old_data_and_raises() -> None:
     fr, bf, _ = backfiller()
+    one_fill(fr)
     bf.set_candidates([w(1)])
     bf.step()
     before = bf.inputs(w(1), T0)
