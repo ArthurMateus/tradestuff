@@ -49,6 +49,7 @@ def test_R1_AC1_an_http_error_on_a_later_request_of_the_same_wallet_is_visible_t
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     world = make_world()
+    world.hl.set_fills(BAD, synth_fills(1))  # R3: a wallet without a fill is dropped after one request
     world.hl.rules[(BAD, "portfolio")] = lambda call: status(503)
     step_once(world, caplog)
     (rec,) = events(caplog, "backfill_failed")
@@ -104,6 +105,7 @@ def test_R1_AC1_an_os_error_from_the_candle_source_logs_its_message(caplog: pyte
 
 def test_R1_AC1_a_budget_refusal_is_visible_with_its_message(caplog: pytest.LogCaptureFixture) -> None:
     world = make_world(fail_fast=True)
+    world.hl.set_fills(BAD, synth_fills(1))  # R3: a wallet without a fill is dropped after one request
     for _ in range(6):  # exhaust the scoring share so the next request does not fit
         world.client.user_role(BAD, priority=Priority.SCORING)
     step_once(world, caplog)

@@ -33,7 +33,7 @@ from tests.selection.helpers import (
     score,
     w,
 )
-from tests.selection.test_ac4_backfill import backfiller
+from tests.selection.test_ac4_backfill import backfiller, one_fill
 
 # --- F3 extension: the exchange's unrealised P&L reaches the position ---------------------------------------------
 
@@ -54,6 +54,7 @@ def test_F6_a_position_without_unrealized_pnl_parses_with_none() -> None:
 
 def test_F6_backfill_carries_the_unrealized_pnl_of_open_positions_into_the_scoring_state() -> None:
     fr, bf, _ = backfiller()
+    one_fill(fr)  # R3: a wallet without a fill in the window is dropped after one request
     bf.set_candidates([w(1)])
     bf.step()
     got = bf.inputs(w(1), T0)
@@ -64,6 +65,7 @@ def test_F6_backfill_carries_the_unrealized_pnl_of_open_positions_into_the_scori
 
 def test_F6_backfill_refuses_a_state_with_an_unknown_unrealized_pnl_and_leaves_the_wallet_undone() -> None:
     fr, bf, _ = backfiller()
+    one_fill(fr)  # R3: a wallet without a fill in the window is dropped after one request
     payload = copy.deepcopy(fixture("clearinghouseState"))
     del payload["assetPositions"][0]["position"]["unrealizedPnl"]
     fr.rig.http.overrides["clearinghouseState"] = lambda call: payload
@@ -83,7 +85,8 @@ def test_F6_backfill_refuses_a_state_with_an_unknown_unrealized_pnl_and_leaves_t
 def test_F6_backfill_pages_userFillsByTime_until_the_present() -> None:
     fr, bf, _ = backfiller()
     base = T0 - 10 * 24 * HOUR
-    fr.server_fills.extend(fill_json(i, time_ms=base + i * 1000) for i in range(1, 4501))
+    # one a minute: page 1 spans more than a day (R3 first-page exit)
+    fr.server_fills.extend(fill_json(i, time_ms=base + i * 60_000) for i in range(1, 4501))
     pages: list[int] = []
 
     def capped(call: Any) -> Any:
@@ -104,12 +107,14 @@ def test_F6_backfill_pages_userFillsByTime_until_the_present() -> None:
 def test_F6_backfill_that_cannot_reach_the_present_leaves_the_wallet_stale() -> None:
     fr, bf, _ = backfiller()
     same_ms = T0 - HOUR
-    fr.server_fills.extend(fill_json(i, time_ms=same_ms) for i in range(1, 2001))
+    # R3: page 1 must span more than a day (else the first-page exit drops the wallet): one old fill + 2 000 in one ms
+    fr.server_fills.append(fill_json(1, time_ms=T0 - 2 * 24 * HOUR))
+    fr.server_fills.extend(fill_json(i, time_ms=same_ms) for i in range(2, 2002))
     fr.rig.http.overrides["userFillsByTime"] = lambda call: [f for f in fr.server_fills if f["time"] >= call.body["startTime"]]
     bf.set_candidates([w(1)])
     bf.step()
     got = bf.inputs(w(1), T0)
-    assert got is not None and len(got.fills) == 2000
+    assert got is not None and len(got.fills) == 2001  # 2 000 + the old one
     assert got.fills_fetched_ms is None  # the scorer will call it stale_input: never scored on a partial history
 
 
@@ -132,6 +137,7 @@ def test_F6_candles_are_fetched_once_per_coin_and_hour_and_shared_between_wallet
 
 def test_F6_the_role_is_requested_once_per_wallet() -> None:
     fr, bf, _ = backfiller()
+    one_fill(fr)  # R3: a wallet without a fill in the window is dropped after one request
     bf.set_candidates([w(1)])
     bf.step()
     bf.refresh(w(1))

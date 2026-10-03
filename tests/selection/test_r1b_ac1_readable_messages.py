@@ -16,7 +16,7 @@ from copytrade.hl.errors import HlError
 from tests.hl.support import status
 from tests.selection.helpers import w
 from tests.selection.r1_logs import BACKFILL_LOGGER, events
-from tests.selection.r1_world import HL_FILLS_LIMIT, World, make_world, spread_fills, stuck_fills
+from tests.selection.r1_world import HL_FILLS_LIMIT, World, make_world, spread_fills, stuck_fills, synth_fills
 
 BAD = w(1)
 
@@ -50,6 +50,7 @@ def test_R1b_AC1_backfill_failed_message_names_wallet_status_error_and_type(
 
 def test_R1b_AC1_backfill_failed_message_is_not_the_bare_legacy_text(caplog: pytest.LogCaptureFixture) -> None:
     world = make_world()
+    world.hl.set_fills(BAD, synth_fills(1))  # R3: a wallet without a fill is dropped after one request
     world.hl.rules[(BAD, "portfolio")] = lambda call: status(503)
     _step(world, caplog)
     (rec,) = events(caplog, "backfill_failed")

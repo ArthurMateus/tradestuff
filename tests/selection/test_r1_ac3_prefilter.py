@@ -15,17 +15,31 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from tests.hl.support import Call, ok
 from tests.selection.helpers import w
 from tests.selection.r1_world import board_body, make_manager_world
+from tests.selection.r3_world import good_trips
 
 EXCLUDED = "0xdfc24b077bc1425ad1dea75bcb6f8158e10df303"
 K = 50  # scoring.candidates_k floor
 
 
 def run(
-    tmp_path: Path, rows: list[tuple[str, str | None]], *, filler_passes: bool = True, **overrides: object
+    tmp_path: Path,
+    rows: list[tuple[str, str | None]],
+    *,
+    filler_passes: bool = True,
+    serve_passing: list[str] = (),  # type: ignore[assignment]
+    **overrides: object,
 ) -> tuple[set[str], set[str], Any]:
     mw = make_manager_world(tmp_path, fail_fast=False, **overrides)
+
+    def passing_history(call: Call) -> Any:  # R3: a wallet that passes the screen S1-S9 (one history per call time)
+        lo = call.body["startTime"]
+        return ok([r for r in good_trips(call.t_ms) if r["time"] >= lo][:2000])
+
+    for wallet in serve_passing:
+        mw.world.hl.rules[(wallet, "userFillsByTime")] = passing_history
     mw.board.outcome = board_body(rows, filler_passes=filler_passes)
     mw.manager.run_cycle(p95_latency_s=None)
     mw.work_until_complete(max_ticks=400)
@@ -81,7 +95,9 @@ def test_R1_AC3_candidates_k_takes_the_first_k_survivors_in_rank_order(tmp_path:
     # unreadable row is unrankable and is no longer a survivor once K rows are ranked, covered by the test above.)
     rows = [(w(1), "5.0"), (EXCLUDED, "90000.0"), (w(3), "9999.99"), (w(4), "10000.0"), (w(5), "20000.0")]
     expected = [w(4), w(5), *filler(K - 2)]
-    _, fetched, mw = run(tmp_path, rows, scoring__candidates_k=K)
+    # R3: the pass stops once K candidates passed the screen, and a wallet with no fill is dropped (S1) without counting, so
+    # the K expected wallets serve a history that passes the screen (the others have none and could not be held anyway)
+    _, fetched, mw = run(tmp_path, rows, serve_passing=expected, scoring__candidates_k=K)
     assert mw.world.cfg["scoring.candidates_k"] == K
     assert fetched == set(expected)  # exactly K wallets, the filtered rows did not eat into K
 
