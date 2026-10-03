@@ -170,6 +170,7 @@ class HlRestClient:
         access: AccessMonitor,
         schema_monitor: SchemaFailureMonitor,
         info_url: str = MAINNET_INFO_URL,
+        escalate_cooldown: bool = False,
     ) -> None:
         self._url = _validate_info_url(info_url)
         self._config = config
@@ -186,6 +187,7 @@ class HlRestClient:
         self._schema_monitor = schema_monitor
         self._cooldown_until_ms: dict[str, int] = {}
         self._rate_limited_in_a_row: dict[str, int] = {}
+        self._escalate_cooldown = escalate_cooldown
 
     def info(self, request_type: str, params: Mapping[str, Any], *, priority: Priority) -> Any:
         """Send one info request and return the validated, typed response (see ``schema.parse_response``).
@@ -314,9 +316,11 @@ class HlRestClient:
         raise HlHttpError(f"{request_type}: HTTP {response.status}", status=response.status)
 
     def _rate_limit_cooldown_ms(self, request_type: str) -> int:
-        """One base backoff after the first 429; doubled for every further 429 in a row (up to ``hl.backoff_max_s``), so
-        a caller that does not wait out the retries (it fails and asks again later) never turns a 429 into a retry
-        storm. A success resets it."""
+        """One base backoff after a 429. With ``escalate_cooldown`` (a client whose sleeper never waits, so its callers
+        fail and ask again later) it doubles for every further 429 in a row, up to ``hl.backoff_max_s``, so those
+        callers never turn a 429 into a retry storm; a success resets it."""
+        if not self._escalate_cooldown:
+            return math.ceil(self._backoff_base_s * 1000)
         streak = self._rate_limited_in_a_row.get(request_type, 0) + 1
         self._rate_limited_in_a_row[request_type] = streak
         delay_s: float = min(self._backoff_base_s * 2 ** min(streak - 1, 62), self._backoff_max_s)

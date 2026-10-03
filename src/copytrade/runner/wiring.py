@@ -199,7 +199,12 @@ def build_runner(root: Path, env: Mapping[str, str], deps: RunnerDeps) -> Runner
 
 
 def _rest_client(
-    config: Config, deps: RunnerDeps, sleeper: Sleeper, shared: tuple[RateBudget, AccessMonitor, SchemaFailureMonitor]
+    config: Config,
+    deps: RunnerDeps,
+    sleeper: Sleeper,
+    shared: tuple[RateBudget, AccessMonitor, SchemaFailureMonitor],
+    *,
+    escalate_cooldown: bool = False,
 ) -> HlRestClient:
     budget, access, schema_monitor = shared
     return HlRestClient(
@@ -212,6 +217,7 @@ def _rest_client(
         access=access,
         schema_monitor=schema_monitor,
         info_url=deps.endpoints.info_url,
+        escalate_cooldown=escalate_cooldown,
     )
 
 
@@ -244,7 +250,7 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
     schema_monitor = SchemaFailureMonitor(clock=clock, alerts=relay)
     shared = (budget, access, schema_monitor)
     trading_sleeper = TradingSleeper(deps.sleeper)
-    rest = _rest_client(config, deps, trading_sleeper, shared)
+    rest = _rest_client(config, deps, trading_sleeper, shared, escalate_cooldown=True)
     rest_clock = _rest_client(config, deps, deps.sleeper, shared)
     sync = ClockSync.from_config(
         config,
