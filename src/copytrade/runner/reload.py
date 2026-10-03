@@ -80,6 +80,7 @@ class LedgerScan:
     snapshot: BrokerSnapshot | None = None
     checkpoint: Mapping[str, Any] | None = None
     tail_state_records: int = 0
+    tail_shares: dict[str, list[tuple[int, Mapping[str, Any]]]] = field(default_factory=dict)  # share_state since then
     had_previous_run: bool = False
     followed: tuple[str, ...] = ()
     follow_started: dict[str, int] = field(default_factory=dict)
@@ -97,9 +98,12 @@ class LedgerScan:
         self.last_ts_ms = record.ts.ms
         if kind == KIND_CHECKPOINT:
             self.checkpoint, self.tail_state_records = payload, 0
+            self.tail_shares = {}
             self._observe_seen(payload)
         elif kind in _STATE_KINDS:
             self.tail_state_records += 1
+            if kind == "share_state":
+                self.tail_shares.setdefault(payload["share_id"], []).append((record.ts.ms, payload))
         if kind == KIND_RUNNER_START:
             self.had_previous_run = True
         elif kind == "paper_order":
@@ -226,10 +230,13 @@ def reload_state(parts: ReloadParts, scan: LedgerScan, *, now_ms: int) -> Reload
         manager_state = {**manager_state, "state": {**manager_state["state"], "seen_signals": scan.seen_signals}}
         parts.manager.restore_state(manager_state, cid_map=cid_map, tids_done=scan.signal_tids)
         parts.manager.verify_protection()
+    if parts.manager.adopt_unbooked_shares(scan.tail_shares):
+        parts.manager.verify_protection()  # the adopted shares' stops (registered again by the broker replay)
     _restore_follow(parts, scan)
     if checkpoint:
         parts.manager.heal_pending_entries()
     uncertain = _uncertainties(parts, scan, result_unknown=result.unknown_coins, dropped=result.dropped_exits)
+    parts.manager.drop_ghost_shares()  # flagged above, then settled now rather than at the next reconciliation
     return ReloadResult(
         restored_positions=len(snapshot.positions),
         restored_stops=len(result.stops),

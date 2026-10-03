@@ -85,6 +85,7 @@ _ORPHAN_LEADER = "orphan"
 _RETRY_TID = 0  # appended to the tids of a retried close: real tids are positive, synthetic ones negative
 _RETRIED_REFUSALS = frozenset({"share_closed", "exceeds_position"})  # a fill got in first: the close is re-sized
 _MIN_WINDOW_MS = 3_600_000
+_SHARE_PREFIX = "share:"  # a share id is "share:" + the id of the signal that opened it
 RECONCILE_RETRY_MS = 30_000  # a failed leader read is tried again after max(its wait hint, this), not a full interval
 SEEN_LIMIT = 20_000  # the oldest remembered signal id / broker event is forgotten beyond this
 CHECKPOINT_SEEN_SIGNALS = 500  # how many of the newest signal ids a checkpoint carries
@@ -1111,6 +1112,78 @@ class PositionManager:
             if found is not None:
                 view, qty = found
                 self._heal_entry(share, Decimal(qty), share.entry_px if len(view.share_ids) > 1 else view.avg_entry_px)
+
+    def adopt_unbooked_shares(self, tail: Mapping[str, Sequence[tuple[int, Mapping[str, Any]]]]) -> tuple[str, ...]:
+        """The reload's second pass over what the broker holds: a share the checkpoint did not know (it was opened and
+        filled inside the checkpoint gap, or after a checkpoint write failed) is booked open again from its own
+        ``share_state`` records, ``tail`` = ``{share_id: [(ledger time ms, payload), ...]}`` in ledger order for the
+        records written after the last checkpoint, so the first periodic reconciliation does not close a valid copy as
+        an orphan. Quantity comes from the broker, the entry price and the initial stop from the ``opened`` record, the
+        ATR from the initial stop distance (the trail only reads it), the side from the position. A share with no
+        usable ``opened`` record stays unbooked (the reload flags it, the reconciliation closes it). Returns the
+        adopted share ids; the caller runs ``verify_protection`` for their stops."""
+        adopted = []
+        for view in self._broker.positions():
+            for share_id, qty in zip(view.share_ids, view.share_qtys, strict=True):
+                if self._book.state(share_id) is None:
+                    share = self._share_from_tail(
+                        view.qty > 0, view.coin, share_id, Decimal(qty), tail.get(share_id, ())
+                    )
+                    if share is not None:
+                        self._adopt(share, tail[share_id][0][0])
+                        adopted.append(share_id)
+        return tuple(adopted)
+
+    def _share_from_tail(
+        self, is_long: bool, coin: str, share_id: str, qty: Decimal, records: Sequence[tuple[int, Mapping[str, Any]]]
+    ) -> ShareState | None:
+        opened = next((payload for _ms, payload in records if payload.get("event") == "opened"), None)
+        mult = self._settings.stop_atr_mult
+        if opened is None or not share_id.startswith(_SHARE_PREFIX) or mult <= 0 or opened["coin"] != coin:
+            return None
+        entry, initial_stop = Price(Decimal(opened["entry_px"])), Price(Decimal(opened["stop_px"]))
+        if entry <= 0 or initial_stop <= 0:
+            return None
+        signal_id = share_id[len(_SHARE_PREFIX) :]
+        current = Price(Decimal(records[-1][1]["stop_px"]) or initial_stop)
+        return ShareState(
+            share_id=share_id,
+            trade_id=f"trade:{signal_id}",
+            signal_id=signal_id,
+            leader=str(opened["leader"]),
+            coin=coin,
+            is_long=is_long,
+            status=OPEN,
+            qty=Qty(qty),
+            entry_px=entry,
+            initial_stop_px=initial_stop,
+            current_stop_px=current,
+            initial_risk_usd=Decimal(opened["open_risk_usd"]),
+            open_risk_usd=rules.open_risk_usd(is_long=is_long, qty=qty, entry_px=entry, stop_px=current),
+            max_committed_risk_usd=max(Decimal(payload["open_risk_usd"]) for _ms, payload in records),
+            atr=MONEY_CONTEXT.divide(abs(MONEY_CONTEXT.subtract(entry, initial_stop)), mult),
+            best_px=entry,
+            tp_done=any(payload.get("event") == "tp_filled" for _ms, payload in records),
+        )
+
+    def _adopt(self, share: ShareState, opened_ms: int) -> None:
+        self._book.add(share)
+        self._tracks[share.share_id] = _Track(open_ms=opened_ms, evidence_ms=opened_ms)
+        _remember(self._seen_signals, share.signal_id)
+        self._audit_leaders.add(share.leader)
+        self._alert(
+            "position_mismatch", f"{share.coin}: {share.share_id} was held but not in the checkpoint; booked again"
+        )
+        self._append_share("adopted", share, reason="checkpoint_gap")
+
+    def drop_ghost_shares(self) -> tuple[str, ...]:
+        """The reload's last step: a share booked open that the broker no longer holds (its stop-loss or exit filled
+        after the last checkpoint) is dropped from the book now, not at the next periodic reconciliation."""
+        held = {share_id for view in self._broker.positions() for share_id in view.share_ids}
+        ghosts = [s for s in self._book.states() if s.status == OPEN and s.share_id not in held]
+        for share in ghosts:
+            self._drop_ghost(share, "the broker holds no such share")
+        return tuple(s.share_id for s in ghosts)
 
     # ======================================================================================== reconciliation
 
