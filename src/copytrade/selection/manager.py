@@ -56,7 +56,7 @@ from copytrade.selection.models import (
 from copytrade.selection.pause import LeaderPauseTracker
 from copytrade.selection.policy import apply_cycle as apply_policy
 from copytrade.selection.policy import safety_reason
-from copytrade.selection.prefilter import candidate_list
+from copytrade.selection.prefilter import ROTATE_AFTER_CYCLES, candidate_list
 
 _log = logging.getLogger(__name__)
 
@@ -125,6 +125,7 @@ class FollowManager:
         self._no_eligible = False
         self._no_eligible_alerted = False
         self._outage_alerted = False
+        self._ineligible_streak: dict[str, int] = {}  # RO1: consecutive scored cycles a candidate was ineligible
 
     # --- views -----------------------------------------------------------------------------------------------
 
@@ -303,9 +304,40 @@ class FollowManager:
             result = CycleResult(t_ms=now_ms, scores=())
         outcome = apply_policy(self._config, self._state, result, now_ms=now_ms, paused=self._pause.paused())
         decisions = self._enact(outcome, now_ms)
+        self._rotate_ineligible(result)
         self._eligible_count = outcome.eligible_count
         self._track_no_eligible(outcome.no_eligible)
         return self._finish(STATUS_APPLIED, decisions, now_ms)
+
+    def _rotate_ineligible(self, result: CycleResult) -> None:
+        """RO1: a candidate that is not followed and was ineligible in ``ROTATE_AFTER_CYCLES`` consecutive scored cycles
+        is cooled down for ``ROTATE_COOLDOWN_H``, so the slots go on down the ranked list instead of staying on wallets
+        that keep failing the gates. One eligible cycle starts the count over; a cycle that scored nobody counts for
+        nobody. The cooldown applies from the next cycle's candidate list."""
+        if not isinstance(self._inputs, ScreeningInputs):
+            return
+        scored = {score.address for score in result.scores}
+        self._ineligible_streak = {w: n for w, n in self._ineligible_streak.items() if w in scored}  # not consecutive
+        rotated: list[str] = []
+        for score in result.scores:
+            wallet = score.address
+            if score.eligible or wallet in self._state.followed or wallet in self._subscribed:
+                self._ineligible_streak.pop(wallet, None)
+                continue
+            streak = self._ineligible_streak.get(wallet, 0) + 1
+            if streak >= ROTATE_AFTER_CYCLES:
+                self._ineligible_streak.pop(wallet, None)
+                rotated.append(wallet)
+            else:
+                self._ineligible_streak[wallet] = streak
+        if rotated:
+            self._inputs.rotate(rotated)
+            _log.info(
+                "candidates rotated out after %d ineligible cycles: %d",
+                ROTATE_AFTER_CYCLES,
+                len(rotated),
+                extra={"event": "candidates_rotated", "wallets": len(rotated)},
+            )
 
     # --- carrying out the policy's decisions ----------------------------------------------------------------
 
