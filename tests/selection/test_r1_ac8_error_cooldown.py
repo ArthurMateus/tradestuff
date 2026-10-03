@@ -23,7 +23,7 @@ from copytrade.hl.errors import HlError
 from tests.hl.support import T0, Call, status
 from tests.selection.helpers import w
 from tests.selection.r1_logs import BACKFILL_LOGGER, attr, events
-from tests.selection.r1_world import DAY, HL_FILLS_LIMIT, World, make_world, synth_fills
+from tests.selection.r1_world import DAY, HL_FILLS_LIMIT, World, make_world, spread_fills, synth_fills
 
 BAD, B, C = w(1), w(2), w(3)
 Rule = Callable[[Call], Any]
@@ -130,7 +130,7 @@ def make_cooling(reason: str) -> tuple[World, int]:
     longest the cooldown may last from now)."""
     if reason == "too_active":
         world = make_world(fills_limit=HL_FILLS_LIMIT)
-        world.hl.set_fills(BAD, synth_fills(20_000))
+        world.hl.set_fills(BAD, spread_fills(20_000))
         world.backfiller.set_candidates([BAD])
         for _ in range(10):
             world.backfiller.step()

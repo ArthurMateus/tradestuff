@@ -75,6 +75,20 @@ def synth_fills(n: int, *, start_ms: int = T0 - 2 * DAY, step_ms: int = 50, tid0
     return out
 
 
+def spread_fills(n: int, *, start_ms: int = T0 - 20 * DAY, step_ms: int = 60_000, tid0: int = 1) -> list[dict[str, Any]]:
+    """``n`` fills one a minute (``synth_fills`` with a step that makes a full 2 000-fill page span 1.4 days). R3's first-page
+    exit drops a wallet whose FIRST page is full inside one day, so a test about a later rule (the 50-page cap, the
+    10 000-fill truncation) needs fills spread like this. 20 000 of them end about 6 days before ``T0``."""
+    return synth_fills(n, start_ms=start_ms, step_ms=step_ms, tid0=tid0)
+
+
+def stuck_fills() -> list[dict[str, Any]]:
+    """A wallet whose cursor cannot move: one fill two days ago (so the full first page spans more than a day and R3's
+    first-page exit does not fire), then 2 500 fills in ONE millisecond. Page 1 = the old fill + 1 999 of the pile; page 2
+    (from that millisecond) = the first 2 000 of the pile, no progress: 2 001 distinct fills in 2 pages."""
+    return [*synth_fills(1, start_ms=T0 - 2 * DAY), *synth_fills(2_500, start_ms=T0 - 3_600_000, step_ms=0, tid0=2)]
+
+
 class FakeHl:
     """The info endpoint. ``fills`` per wallet (wire format); ``rules`` may answer a ``(wallet, request type)`` first
     (return ``None`` to fall through to the normal answer); everything but fills is served from the F3 fixtures."""
@@ -184,14 +198,36 @@ def make_world(*, fail_fast: bool = False, fills_limit: int | None = None, **ove
 # --- leaderboard ---------------------------------------------------------------------------------------------------
 
 
-def board_body(rows: Sequence[tuple[str, str | None]], *, total: int = 1000, filler_value: str = "50000.0") -> bytes:
+def _passing_windows() -> list[list[Any]]:
+    """windowPerformances that pass stage 1 (P1, P4-P8) for any account value from 10 000 to 200 000 USD and do not depend on
+    it: the same figures on every row, so the K1 order of such rows is the lower-case address (R3)."""
+    cells = {
+        "day": ("100", "1000"),
+        "week": ("1000", "200000"),
+        "month": ("2000", "400000"),  # 50 bps a traded dollar
+        "allTime": ("10000", "2000000"),
+    }
+    return [[name, {"pnl": pnl, "roi": "0.1", "vlm": vlm}] for name, (pnl, vlm) in cells.items()]
+
+
+def board_body(
+    rows: Sequence[tuple[str, str | None]],
+    *,
+    total: int = 1000,
+    filler_value: str = "50000.0",
+    filler_passes: bool = True,
+) -> bytes:
     """A leaderboard JSON of the recorded shape: ``rows`` first (address, accountValue or ``None`` for a row without the
-    field), then rich filler wallets up to ``total`` rows (``w(1_000_000 + i)``)."""
+    field), then rich filler wallets up to ``total`` rows (``w(1_000_000 + i)``).
+
+    Every row carries figures that pass the stage-1 rules P4-P8 (R3), except that ``filler_passes=False`` makes the
+    FILLER fail P4 (template windows, month volume below 2 x account value), e.g. so a test about rows that cannot be
+    ranked is not drowned by ``candidates_k`` ranked filler rows."""
     template = json.loads((Path(__file__).resolve().parent.parent / "fixtures/exchange/hl/leaderboard.json").read_text())
     base = template["leaderboardRows"][0]
     out: list[dict[str, Any]] = []
     for address, value in rows:
-        row = {**base, "ethAddress": address}
+        row = {**base, "ethAddress": address, "windowPerformances": _passing_windows()}
         if value is None:
             row.pop("accountValue", None)
         else:
@@ -199,7 +235,10 @@ def board_body(rows: Sequence[tuple[str, str | None]], *, total: int = 1000, fil
         out.append(row)
     i = 0
     while len(out) < total:
-        out.append({**base, "ethAddress": w(1_000_000 + i), "accountValue": filler_value})
+        filler = {**base, "ethAddress": w(1_000_000 + i), "accountValue": filler_value}
+        if filler_passes:
+            filler["windowPerformances"] = _passing_windows()
+        out.append(filler)
         i += 1
     return json.dumps({"leaderboardRows": out}).encode()
 

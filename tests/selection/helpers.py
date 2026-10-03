@@ -119,7 +119,12 @@ def cfg(**overrides: Any) -> Config:
 
 def leaderboard_body(rows: int, first: Sequence[str] = ()) -> bytes:
     """A leaderboard JSON (recorded shape, see tests/fixtures/exchange/hl/leaderboard.json) with ``rows`` rows whose
-    first rows are ``first``."""
+    first rows are ``first``.
+
+    R3 stage 1 ranks rows (K1: edge capped at 50 bps, all-time pnl, then lower-case address). Every row built here has the
+    same recorded figures and the same account value, which pass P1-P8 (month turnover 4, edge 25 / 80 bps, all positive), so
+    all rows tie and the candidate order is the ADDRESS order. Callers pass ``first`` in ascending address order (``w(i)``
+    with i ascending, all below the filler ``w(1_000_000 + k)``), which is then also the served order."""
     addresses = list(first)
     i = 1_000_000
     while len(addresses) < rows:

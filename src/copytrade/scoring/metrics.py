@@ -197,7 +197,8 @@ def _concentration(trips: Sequence[RoundTrip]) -> tuple[Decimal | None, Decimal 
     return max(t.net_pnl for t in trips) / total, max(by_coin.values()) / total
 
 
-def _maker_share(fills: Sequence[Fill]) -> Decimal | None:
+def maker_share(fills: Sequence[Fill]) -> Decimal | None:
+    """M13: the maker (not crossed) share of the traded notional of ``fills``; ``None`` when there is no notional."""
     total = sum((f.sz * f.px for f in fills), _ZERO)
     if total <= 0:
         return None
@@ -349,7 +350,7 @@ def compute_metrics(inputs: WalletInputs, *, cfg: Config, t_ms: int, costs: Cost
         median_hold_min=median(holds),
         top_trade_share=top_trade,
         top_asset_share=top_asset,
-        maker_share=_maker_share(p.fills),
+        maker_share=maker_share(p.fills),
         copy_mean_r=mean(replayed),
         copy_edge_ratio=_copy_edge_ratio(p, costs),
         executable_share=_executable_share(p, records),
