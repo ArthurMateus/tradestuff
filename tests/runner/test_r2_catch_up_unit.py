@@ -8,7 +8,7 @@ from __future__ import annotations
 from hypothesis import given
 from hypothesis import strategies as st
 
-from copytrade.core.clock import TimeSource, Timestamp
+from copytrade.core.clock import Timestamp
 from copytrade.core.errors import ClockUnsyncedError
 from copytrade.runner.timebase import SKIP_CLOCK_UNSYNCED, TimeBase
 from tests.hl.support import FakeClock
