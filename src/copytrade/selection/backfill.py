@@ -10,6 +10,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
+from typing import NamedTuple
 
 from copytrade.core.clock import Clock
 from copytrade.core.config import Config
@@ -44,6 +45,8 @@ _BUDGET_KEY = ""  # the cooldown after a budget refusal belongs to no wallet
 _WOULD_WAIT = re.compile(
     r"would wait (\d+(?:\.\d+)?) s"
 )  # the fail-fast scoring sleeper's refusal text (runner.wiring)
+_BUDGET_MARGIN_MS = 1_000  # added to the wait a budget refusal names
+_PROGRESS_INTERVAL_MS = 60_000  # at most one progress line a minute while a pass is incomplete
 _LIQUIDATION_MARK = "iquidat"  # "Liquidated Cross Long", "Liquidated Isolated Short", ...
 
 
@@ -130,6 +133,29 @@ class _Progress:
     page_done: _FillsOutcome | None = None  # how that page ended the fetch, if it did (a page that is not full)
 
 
+@dataclass
+class _Pass:
+    """The counters of one pass over the candidates, from the first work to the last (for the progress line). Every
+    counter only grows within a pass: a wallet that drops out stays counted as a candidate of the pass."""
+
+    wallets: set[str]  # every wallet the pass had to backfill (kept ones and those screened OK)
+    done: set[str]  # those whose backfill is complete
+    screen_ok: int = 0
+    screen_rejected: int = 0
+    dropped: int = 0  # dropped by an early exit or as too active while being backfilled
+    last_progress_ms: int | None = None
+
+
+class _Scan(NamedTuple):
+    """The state of the screening list: the next wallet that can be screened now, how many wallets wait out an error or
+    rate limit cooldown, whether any wallet still has to be screened, and when the earliest of them can be tried."""
+
+    ready: str | None
+    cooling: int
+    pending: bool
+    wake_ms: int
+
+
 class Backfiller:
     """Fetches scoring inputs for candidate wallets through the real REST client at SCORING priority (which paces
     itself on the rate budget). Satisfies ``copytrade.selection.models.InputsProvider``.
@@ -200,6 +226,7 @@ class Backfiller:
         self._keep: tuple[str, ...] = ()  # followed wallets: backfilled and scored whatever the screen says
         self._ok: dict[str, None] = {}  # screened OK, in the order they were admitted
         self._cycle_screens = 0
+        self._pass: _Pass | None = None  # the pass in progress, if any
         self._bars: dict[str, tuple[sc.Candle, ...]] = {}
         self._bars_hour: dict[str, int] = {}
 
@@ -267,6 +294,7 @@ class Backfiller:
             and wallet not in self._empty_until
         )
         self._has_candidates = self._screening or bool(wanted)
+        self._open_pass(wanted)
         self._latch()
 
     def _handed_off(self, wallet: str) -> bool:
@@ -278,6 +306,7 @@ class Backfiller:
         ``_MAX_PAGES_PER_STEP`` fill pages of it. A wallet whose fetch raises ``HlError`` (or ``OSError`` from the
         candle source), or that is not finished yet, is left undone and retried after the others; one rate limited
         (HTTP 429) waits out its cooldown. Returns False when no wallet can be fetched now."""
+        self._report_progress()
         wallet = self._next_ready()
         if wallet is None:
             return self._screen_next()
@@ -298,7 +327,7 @@ class Backfiller:
 
     def _screen_next(self) -> bool:
         """Screen the next wallet of the list, if one can be screened now. True when a request was made."""
-        wallet, _cooling, _pending = self._scan()
+        wallet = self._scan().ready
         if wallet is None:
             self._latch()
             return False
@@ -341,10 +370,13 @@ class Backfiller:
         )
         if result.ok:
             self._admit(wallet, page, now)
-        elif "S1" in result.failed:
-            self._drop_empty(wallet)
+            self._count(screen_ok=1)
+            return
+        self._count(screen_rejected=1)
+        if "S1" in result.failed:
+            self._drop_empty(wallet, screened=True)
         elif "S2" in result.failed:
-            self._drop_too_active(wallet, 1, reason="too_active_first_page")
+            self._drop_too_active(wallet, 1, reason="too_active_first_page", screened=True)
         else:
             self._rejected_until[wallet] = now + SCREEN_COOLDOWN_H * _HOUR_MS
 
@@ -391,8 +423,72 @@ class Backfiller:
         """Complete when every wallet to backfill is done and nothing is left to screen in this cycle: the list is
         exhausted, ``scoring.candidates_k`` wallets are OK or the cycle's screens are spent. It does not matter whether
         anybody passed: the manager must go on to score the followed wallets."""
-        if self._has_candidates and not self._undone and not self._scan()[2]:
+        if self._has_candidates and not self._has_work():
             self._complete = True
+            self._close_pass()
+
+    def _has_work(self) -> bool:
+        return bool(self._undone) or self._scan().pending
+
+    def _open_pass(self, wanted: list[str]) -> None:
+        """A pass starts with the first work after an idle time and grows with the wallets a new plan adds."""
+        if self._pass is None:
+            if not self._has_work():
+                return
+            self._pass = _Pass(
+                wallets=set(wanted), done={w for w in wanted if w in self._held and w not in self._undone}
+            )
+        else:
+            self._pass.wallets.update(wanted)
+
+    def _close_pass(self) -> None:
+        if self._pass is None:
+            return
+        done, total = len(self._pass.done), len(self._pass.wallets)
+        _log.info(
+            "backfill pass complete: done=%d of %d candidates, screen_ok=%d, screen_rejected=%d, dropped=%d",
+            done,
+            total,
+            self._pass.screen_ok,
+            self._pass.screen_rejected,
+            self._pass.dropped,
+            extra={"event": "backfill_pass_complete", "done": done, "candidates": total},
+        )
+        self._pass = None
+
+    def _report_progress(self) -> None:
+        """At most one INFO line a minute while a pass is incomplete: what is done, screened, dropped and waiting, and
+        the seconds until the pass can try again (above 0 while it waits for the rate budget or a cooldown)."""
+        if self._pass is None:
+            return
+        now = self._clock.now_ms()
+        if self._pass.last_progress_ms is not None and now - self._pass.last_progress_ms < _PROGRESS_INTERVAL_MS:
+            return
+        self._pass.last_progress_ms = now
+        scan = self._scan()
+        budget_until = self._error_until.get(_BUDGET_KEY, 0)
+        cooling, wakes = scan.cooling, [scan.wake_ms] if scan.pending else []
+        for wallet in self._undone:
+            until = max(self._rate_limited_until.get(wallet, 0), self._error_until.get(wallet, 0))
+            cooling += until > now
+            wakes.append(max(until, budget_until))
+        retry_s = math.ceil(max(min(wakes, default=now) - now, 0) / 1000)
+        screen_ok, screen_rejected = self._pass.screen_ok, self._pass.screen_rejected
+        # the wallets of the pass so far plus the slots that may still be filled from the screening list
+        total = len(self._pass.wallets) + max(min(self._k - len(self._ok), len(self._ranked)), 0)
+        _log.info(
+            "backfill progress: done=%d of %d candidates, screened=%d, screen_ok=%d, screen_rejected=%d, dropped=%d, "
+            "cooling=%d, next retry in %d s",
+            len(self._pass.done),
+            total,
+            screen_ok + screen_rejected,
+            screen_ok,
+            screen_rejected,
+            self._pass.dropped,
+            cooling,
+            retry_s,
+            extra={"event": "backfill_progress", "done": len(self._pass.done), "candidates": total},
+        )
 
     def _screen_blocked(self, wallet: str, now: int) -> bool:
         """A decision about the wallet (screen outcome, early exit, rotation) keeps it out until its cooldown ends."""
@@ -401,26 +497,26 @@ class Backfiller:
             for table in (self._rejected_until, self._empty_until, self._too_active_until, self._rotated_until)
         )
 
-    def _scan(self) -> tuple[str | None, int, bool]:
-        """Walk the screening list in order: ``(next wallet that can be screened now, wallets waiting out an error or
-        rate limit cooldown, whether any wallet still has to be screened)``. A wallet that is OK, kept, or in a
-        decision cooldown is passed over. While the budget refuses, every pending wallet waits: the walk stops at the
-        first one."""
+    def _scan(self) -> _Scan:
+        """Walk the screening list in order. A wallet that is OK, kept, or in a decision cooldown is passed over. While
+        the budget refuses, every pending wallet waits: the walk stops at the first one."""
         if not self._screening or len(self._ok) >= self._k or self._cycle_screens >= SCREEN_MAX_PER_CYCLE:
-            return None, 0, False
+            return _Scan(None, 0, False, 0)
         now = self._clock.now_ms()
-        budget_wait = self._error_until.get(_BUDGET_KEY, 0) > now
-        cooling = 0
+        budget_until = self._error_until.get(_BUDGET_KEY, 0)
+        cooling, wake = 0, None
         for wallet in self._ranked:
             if wallet in self._ok or wallet in self._keep or self._screen_blocked(wallet, now):
                 continue
-            if self._rate_limited_until.get(wallet, 0) > now or self._error_until.get(wallet, 0) > now:
+            own = max(self._rate_limited_until.get(wallet, 0), self._error_until.get(wallet, 0))
+            if own > now:
                 cooling += 1
-            elif budget_wait:
-                return None, cooling, True
+                wake = min(wake or own, max(own, budget_until))
+            elif budget_until > now:
+                return _Scan(None, cooling, True, min(wake or budget_until, budget_until))
             else:
-                return wallet, cooling, True
-        return None, cooling, cooling > 0
+                return _Scan(wallet, cooling, True, now)
+        return _Scan(None, cooling, wake is not None, wake or 0)
 
     def _cooldown(self, wallet: str) -> tuple[str, int] | None:
         """The cooldown the wallet is in now as ``(reason, until_ms)``, the one that lasts longest; None when free."""
@@ -455,7 +551,8 @@ class Backfiller:
             self._rate_limited_until[wallet] = now + self._rate_limit_cooldown_ms
             return
         if isinstance(exc, HlBudgetError) and (said := _WOULD_WAIT.search(str(exc))) is not None:
-            self._error_until[_BUDGET_KEY] = now + math.ceil(float(said.group(1)) * 1000)  # the wait the refusal named
+            # the wait the refusal named (it prints tenths of a second, so it can be that much short) plus a second
+            self._error_until[_BUDGET_KEY] = now + math.ceil(float(said.group(1)) * 1000) + _BUDGET_MARGIN_MS
             return
         key = _BUDGET_KEY if isinstance(exc, HlBudgetError) else wallet
         streak = self._error_streak.get(key, 0) + 1
@@ -557,6 +654,17 @@ class Backfiller:
                 },
             )
             fills_fetched_ms = previous.fills_fetched_ms if previous is not None else None
+        if previous is None and outcome is not _FillsOutcome.STUCK:
+            _log.info(
+                "backfill of a candidate complete: wallet=%s fills=%d pages=%d",
+                wallet,
+                len(fills),
+                progress.requests,
+                extra={"event": "backfill_complete", "wallet": wallet, "fills": len(fills), "pages": progress.requests},
+            )
+        if self._pass is not None:
+            self._pass.wallets.add(wallet)
+            self._pass.done.add(wallet)
         del self._progress[wallet]
         return sc.WalletInputs(
             address=wallet,
@@ -581,7 +689,13 @@ class Backfiller:
             return False
         return min(raw.time_ms for raw in progress.fetched.values()) > progress.window_start + _DAY_MS
 
-    def _drop_too_active(self, wallet: str, pages: int, *, reason: str = "too_active") -> None:
+    def _count(self, *, screen_ok: int = 0, screen_rejected: int = 0, dropped: int = 0) -> None:
+        if self._pass is not None:
+            self._pass.screen_ok += screen_ok
+            self._pass.screen_rejected += screen_rejected
+            self._pass.dropped += dropped
+
+    def _drop_too_active(self, wallet: str, pages: int, *, reason: str = "too_active", screened: bool = False) -> None:
         _log.warning(
             "wallet has more fills in the window than can be fetched, dropped for a day: wallet=%s reason=%s pages=%d",
             wallet,
@@ -590,11 +704,12 @@ class Backfiller:
             extra={"event": "backfill_too_active", "wallet": wallet, "reason": reason, "pages": pages},
         )
         self._too_active_until[wallet] = self._clock.now_ms() + TOO_ACTIVE_COOLDOWN_H * _HOUR_MS
+        self._count(dropped=not screened)
         self._error_streak.pop(wallet, None)
         self._progress.pop(wallet, None)
         self._ok.pop(wallet, None)
 
-    def _drop_empty(self, wallet: str) -> None:
+    def _drop_empty(self, wallet: str, *, screened: bool = False) -> None:
         """A wallet with no fill in the window (EX2): dropped for ``EMPTY_COOLDOWN_H``. The leaderboard row's volumes
         are logged when the row is known: a wallet the row called active but whose fills are empty means the row's
         volume is not this address's fills."""
@@ -607,6 +722,7 @@ class Backfiller:
             extra={"event": "backfill_empty", "wallet": wallet, "reason": "backfill_empty"},
         )
         self._empty_until[wallet] = self._clock.now_ms() + EMPTY_COOLDOWN_H * _HOUR_MS
+        self._count(dropped=not screened)
         self._error_streak.pop(wallet, None)
         self._progress.pop(wallet, None)
         self._ok.pop(wallet, None)
@@ -660,8 +776,7 @@ class Backfiller:
         ``progress`` as it arrives, so a failure or a pause loses nothing. The first page of a fetch that
         ``judge_first_page`` may end it at once (``DROPPED``)."""
         if progress.page_done is not None:  # the candidate screen's page was the whole fetch (or cannot be followed)
-            ended, progress.page_done = progress.page_done, None
-            return ended
+            return progress.page_done
         requested = 0
         allowance = max_pages if progress.pages or not self._undone else min(max_pages, _FIRST_SLICE_PAGES)
         while progress.pages < _MAX_FILL_PAGES:
