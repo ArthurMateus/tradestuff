@@ -383,6 +383,30 @@ class Ledger:
         """All records in sequence order."""
         return read_records(self._directory)
 
+    def read_from(self, offset: int, *, kinds: frozenset[str] | None = None) -> tuple[list[LedgerRecord], int]:
+        """The complete records stored at or after byte ``offset`` (only those of ``kinds`` when given; the other lines
+        are not even parsed) and the offset after the last complete line (pass it to the next call). Read-only and NOT
+        verified again: this process is the only writer and wrote them itself; an unterminated last line is left for
+        the next call. Costs what was appended since, never the whole ledger.
+
+        Raises:
+            ValueError: a stored line is not a well-formed record.
+        """
+        try:
+            with (self._directory / LEDGER_FILENAME).open("rb") as handle:
+                handle.seek(offset)
+                data = handle.read()
+        except FileNotFoundError:
+            return [], offset
+        complete = data[: data.rfind(b"\n") + 1]
+        markers = None if kinds is None else tuple(f'"kind":"{kind}"'.encode("ascii") for kind in sorted(kinds))
+        wanted = [
+            decode_line(line)
+            for line in complete.splitlines()
+            if markers is None or any(marker in line for marker in markers)
+        ]
+        return [r for r in wanted if kinds is None or r.kind in kinds], offset + len(complete)
+
     def verify(self) -> VerificationResult:
         """Verify the stored chain again."""
         return verify_ledger(self._directory)

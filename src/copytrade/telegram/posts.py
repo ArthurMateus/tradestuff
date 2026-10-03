@@ -6,6 +6,7 @@ The text is rendered from the share book; the leverage, the realised P&L and the
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -15,6 +16,7 @@ from copytrade.positions.types import OPEN, ShareState
 GREEN, RED = "\U0001f7e2", "\U0001f534"
 _CLOSING_EVENTS = frozenset({"closed", "liquidated", "delisted"})
 _LEVERAGE_UNKNOWN = "n/a"
+_FACT_KINDS = frozenset({"paper_order", "trade", "share_state"})
 
 
 def leader_label(address: str) -> str:
@@ -67,34 +69,48 @@ def render(view: PostView, closing: Closing | None = None) -> str:
 
 
 class LedgerFacts:
-    """Reads the few ledger facts a post needs. Leverage is cached per share (one scan when a share first appears)."""
+    """The few ledger facts a post needs: the leverage of a share, and a closed position's realised P&L and exit reason.
+
+    Kept in memory and fed from the ledger FILE incrementally: the first call reads what is stored (once, on the
+    calling thread, only the lines of the three kinds it needs are decoded), every later call reads only what was
+    appended since. Never a hash-verified walk of the whole ledger, so a post costs the same after weeks of trading."""
 
     def __init__(self, ledger: Ledger) -> None:
         self._ledger = ledger
+        self._lock = threading.Lock()
+        self._offset = 0
         self._leverage: dict[str, str] = {}
+        self._pnl: dict[str, Decimal] = {}
+        self._reason: dict[str, tuple[int, str]] = {}
 
     def leverage(self, share_id: str) -> str:
-        if share_id not in self._leverage:
-            found = _LEVERAGE_UNKNOWN
-            for record in self._ledger.records():
-                lev = record.payload.get("leverage")
-                if record.kind == "paper_order" and record.payload.get("share_id") == share_id and lev:
-                    found = f"{lev}x"
-                    break
-            self._leverage[share_id] = found
-        return self._leverage[share_id]
+        with self._lock:
+            self._catch_up()
+            return self._leverage.get(share_id, _LEVERAGE_UNKNOWN)
 
     def closing(self, share_ids: set[str]) -> Closing:
-        pnl, reason = Decimal(0), "unknown"
-        for record in self._ledger.records():
+        with self._lock:
+            self._catch_up()
+            pnl = sum((self._pnl.get(share_id, Decimal(0)) for share_id in share_ids), Decimal(0))
+            # the last closing event of any of the shares that carried a reason (ledger order)
+            reasons = [self._reason[share_id] for share_id in share_ids if share_id in self._reason]
+            return Closing(pnl, max(reasons)[1] if reasons else "unknown")
+
+    def _catch_up(self) -> None:
+        records, self._offset = self._ledger.read_from(self._offset, kinds=_FACT_KINDS)
+        for record in records:
             payload = record.payload
-            if payload.get("share_id") not in share_ids:
+            share_id = payload.get("share_id")
+            if share_id is None:
                 continue
-            if record.kind == "trade":
-                pnl += Decimal(str(payload["pnl_usd"]))
+            if record.kind == "paper_order":
+                lev = payload.get("leverage")
+                if lev and share_id not in self._leverage:
+                    self._leverage[share_id] = f"{lev}x"
+            elif record.kind == "trade":
+                self._pnl[share_id] = self._pnl.get(share_id, Decimal(0)) + Decimal(str(payload["pnl_usd"]))
             elif record.kind == "share_state" and payload.get("event") in _CLOSING_EVENTS and payload.get("reason"):
-                reason = str(payload["reason"])
-        return Closing(pnl, reason)
+                self._reason[share_id] = (record.seq, str(payload["reason"]))
 
 
 def live_views(states: tuple[ShareState, ...], facts: LedgerFacts) -> dict[str, tuple[PostView, set[str]]]:

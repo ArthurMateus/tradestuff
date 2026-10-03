@@ -25,6 +25,7 @@ from copytrade.paper.types import MarkUpdate
 from copytrade.positions.book import PositionBook
 from copytrade.positions.manager import PositionManager
 from copytrade.recorder.service import Recorder
+from copytrade.recorder.store import RecordingStore
 from copytrade.risk.gate import STATE_FILENAME, RiskGate
 from copytrade.runner.adapters import HubTap, MarketHub, RestMarketSource, RestMetaSource
 from copytrade.runner.deps import RunnerDeps
@@ -67,7 +68,7 @@ _log = logging.getLogger(__name__)
 
 SELECTION_WORK_INTERVAL_S = 10  # one paced scoring-input slice (see ``PacedInputs``) per this much local time
 CHECKPOINT_MIN_INTERVAL_S = 1  # a changed state is written at most once per second ...
-CHECKPOINT_FORCE_INTERVAL_S = 60  # ... and an unchanged one at least once per minute (cursors, best prices)
+CHECKPOINT_FORCE_INTERVAL_S = 600  # ... and an unchanged one at least every 10 min (cursors, best prices)
 HOURLY_MS = 3_600_000  # retention pruning and the recording-universe refresh
 POSTS_INTERVAL_MS = 1_000  # trade posts are synced on a timer, not only when a command arrives
 THREAD_JOIN_TIMEOUT_S = 8.0
@@ -137,6 +138,7 @@ class RunnerParts:
     manager: PositionManager
     bot: TelegramBot
     recorder: Recorder
+    store: RecordingStore
     follow: FollowManager
     detector: SignalDetector
     feed: HlWsFeed
@@ -207,10 +209,11 @@ class Runner:
         self._last_fingerprint: bytes | None = None
         self._last_checkpoint_ms = 0
         self._next_selection_ms = 0
-        self._next_delist_ms = 0
-        self._next_hourly_ms = 0
-        self._next_posts_ms = 0
+        self._next_delist_ms = self._next_hourly_ms = self._next_posts_ms = 0
         self._section_alerted: dict[str, int] = {}
+        self._pruned: set[str] = set()  # recordings already pruned; extended by the retention thread
+        self._retention: threading.Thread | None = None
+        self._seen_written: list[str] = []  # the signal ids the checkpoints written so far carry (the chain)
         self._mark_interval_ms = int(parts.config["eval.mark_interval_s"]) * 1000
         self._stall_ms = 3 * int(parts.config["ledger.heartbeat_interval_s"]) * 1000
         self._stall_alerted = False
@@ -251,9 +254,7 @@ class Runner:
         self._section(
             "mids", lambda: self.hub.seed_mids(parts.market.all_mids()), strict=True
         )  # marks before the first frame
-        prune_recordings(
-            self.config, recordings_dir=self.paths.recordings_dir, ledger=self.ledger, now_ms=self._clock.now_ms()
-        )
+        self._prune_now(self._clock.now_ms())
         parts.recorder.start()
         with self.gate_lock:
             self.ledger.append(
@@ -294,6 +295,7 @@ class Runner:
         )
         now_ms = self._exchange_now_ms()
         scan = scan_ledger(self.ledger, self._paper, now_ms=self._clock.now_ms())
+        self._pruned = scan.pruned_paths
         result = reload_state(reload_parts, scan, now_ms=now_ms)
         announce_and_pause(reload_parts, result.uncertain)
         return result
@@ -505,14 +507,36 @@ class Runner:
             return
         first = self._next_hourly_ms == 0
         self._next_hourly_ms = now + HOURLY_MS
-        self._section(
-            "retention",
-            lambda: prune_recordings(
-                self.config, recordings_dir=self.paths.recordings_dir, ledger=self.ledger, now_ms=now
-            ),
-        )
+        self._section("retention", lambda: self._start_retention(now))
         if not first:
             self._section("recording_universe", self.recorder.refresh_universe)
+
+    def _prune_now(self, now_ms: int) -> None:
+        """One retention pass from memory (the recorder's live index of closed files and the set of pruned paths): it
+        reads nothing from the ledger. Hashing a file to be pruned can take a while, so the loop runs it on a thread."""
+        prune_recordings(
+            self.config,
+            recordings_dir=self.paths.recordings_dir,
+            ledger=self.ledger,
+            now_ms=now_ms,
+            closed_files=self._parts.store.files,
+            already=self._pruned,
+        )
+
+    def _start_retention(self, now_ms: int) -> None:
+        """Start the hourly retention pass on its own thread (never two at once); the trading thread does not wait for
+        the hashing and deleting."""
+        if self._retention is not None and self._retention.is_alive():
+            return
+
+        def work() -> None:
+            try:
+                self._prune_now(now_ms)
+            except Exception as exc:
+                self._section_failed("retention", exc)
+
+        self._retention = threading.Thread(target=work, name="r2-retention", daemon=True)
+        self._retention.start()
 
     # ------------------------------------------------------------------------------------------ checkpoints
     def _write_checkpoint(self, *, force: bool = False) -> None:
@@ -520,8 +544,10 @@ class Runner:
         ``CHECKPOINT_MIN_INTERVAL_S``), at least once per ``CHECKPOINT_FORCE_INTERVAL_S``, or when forced. The caller
         holds the gate lock."""
         exported = self.manager.export_state()
+        seen = exported["state"].pop("seen_signals")
+        delta = self._seen_delta(seen)
         entries = self.gate.export_entries()
-        fingerprint = dumps(encode_value({"state": exported["state"], "entries": entries}))
+        fingerprint = dumps(encode_value({"state": exported["state"], "entries": entries, "seen": delta}))
         now = self._clock.now_ms()
         since_ms = now - self._last_checkpoint_ms
         changed = fingerprint != self._last_fingerprint
@@ -539,9 +565,19 @@ class Runner:
                 risk_state_expected=(self.paths.state_dir / STATE_FILENAME).exists(),
                 manager=exported,
                 gate_entries=entries,
+                seen_signals=delta,
             ),
         )
+        self._seen_written = seen
         self._last_fingerprint, self._last_checkpoint_ms = fingerprint, now
+
+    def _seen_delta(self, seen: list[str]) -> dict[str, Any]:
+        """The signal ids a checkpoint must carry: those after the newest id the checkpoints already carry; all of them
+        (``full``) when there is no such chain (the first checkpoint of a run) or more than the list's length is new."""
+        written = self._seen_written
+        if written and written[-1] in seen:
+            return {"full": False, "ids": seen[seen.index(written[-1]) + 1 :]}
+        return {"full": True, "ids": list(seen)}
 
     # ------------------------------------------------------------------------------------------------ threads
     def _start_threads(self) -> None:
@@ -627,8 +663,9 @@ class Runner:
                 self._best_effort("the recorder shutdown", self.recorder.shutdown)
             self.hub.close()
         self._threads_stop.set()
-        for thread in self.threads:
-            thread.join(timeout=THREAD_JOIN_TIMEOUT_S)
+        for thread in (*self.threads, self._retention):
+            if thread is not None:
+                thread.join(timeout=THREAD_JOIN_TIMEOUT_S)
         self._best_effort("closing the ledger", self.ledger.close)
         return 0
 

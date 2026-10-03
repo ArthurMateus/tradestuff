@@ -435,6 +435,7 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         manager=manager,
         bot=bot,
         recorder=recorder,
+        store=store,
         follow=follow,
         detector=detector,
         feed=feed,
