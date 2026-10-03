@@ -203,6 +203,8 @@ def reload_state(parts: ReloadParts, scan: LedgerScan, *, now_ms: int) -> Reload
         parts.manager.restore_state(checkpoint["manager"], cid_map=cid_map, tids_done=scan.signal_tids)
         parts.manager.verify_protection()
     _restore_follow(parts, scan)
+    if checkpoint:
+        parts.manager.heal_pending_entries()
     uncertain = _uncertainties(parts, scan, result_unknown=result.unknown_coins, dropped=result.dropped_exits)
     return ReloadResult(
         restored_positions=len(snapshot.positions),
