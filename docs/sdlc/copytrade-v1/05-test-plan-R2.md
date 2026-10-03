@@ -69,3 +69,23 @@ Per AC (fail/pass): AC1 9/1, AC2 10/1, AC3 5/3, AC4 3/0, AC5 3/1, AC6 0/5, AC7 2
 * AC7: the real `wiring._FailFastSleeper` is imported (private name): if it is renamed, update the import. It does not cover the
   real exchange's weight accounting (F3 tests do).
 * Not tested here by design: live orders or keys (none exist), mutation score of the fix (run the senior-dev mutants again at /review).
+
+## R2b addendum (round-1 fix batch: RISK-73..79, R2-SD1..SD3; R2b.AC10 progress lines moved to the R3 branch)
+
+All new tests fail on current src unless listed as guards. No existing test was edited. Shared helpers in `r2_support.py`.
+
+| AC | Tests (file) |
+|---|---|
+| R2b.AC1 (RISK-73) | `tests/runner/test_r2b_ac1_catch_up.py`: slow first estimate (12 s / 30 s) does not push broker time ahead and the stop fills; bogus future book time; wall-clock step forward after a restart; offset estimate times only its final attempt |
+| R2b.AC2 (RISK-74) | `tests/runner/test_r2b_ac2_thread_safety.py`: RateBudget (wait_ms vs record, expiry, concurrent acquires, exact totals), SchemaFailureMonitor alert-once, AccessMonitor (guards, pass today), `_delistings` exception does not escape step |
+| R2b.AC3 (RISK-75, R2-SD3) | `tests/runner/test_r2b_ac3_all_rest_hanging.py`: loop iteration duration with every REST endpoint hanging and 5 leaders; each endpoint alone; /flatten waits at most the bound; funding retries >= 10 s apart |
+| R2b.AC4 (R2-SD1) | `tests/runner/test_r2b_ac4_heal_wrong_size_stop.py`: a stop of another quantity [0.40, 1.50] is replaced; right-size stop still taken (guard) |
+| R2b.AC5 (R2-SD2, RISK-79b) | `tests/ledger/test_r2b_ac5_read_from.py`: unterminated last line (guard, passes: read_from already leaves it); bad line logged and skipped, also with a kinds filter |
+| R2b.AC6 (RISK-77) | `tests/runner/test_r2b_ac6_reload_reconciles.py`: share opened/filled in the checkpoint gap is not closed as orphan; known and protected right after start; OPEN share whose SL filled after the checkpoint is no ghost (checkpoints stretched by the module constants) |
+| R2b.AC7 (RISK-76) | `tests/runner/test_r2b_ac7_reconcile_retry.py`: after a failed leader read a new attempt within 90 s (not +300 s) |
+| R2b.AC8 (RISK-78) | `tests/runner/test_r2b_ac8_synced_start_keeps_guard.py`: synced restart + wall step +300 s before step 1 is refused as `clock_jump` |
+| R2b.AC9 (RISK-79a) | `tests/runner/test_r2b_ac9_resample_off_lock.py`: gate_lock acquirable while the forced resample request hangs |
+
+Run summary (targeted): 36 tests, 27 fail on assertions naming the defect, 9 pass as deliberate guards (AC2 x4 incl. AccessMonitor and world fixture sanity, AC3 x3: l2Book/fundingHistory alone and the 1 s-step variant already within the bound, AC4 x1, AC5 x1). RISK-73 probe reproduced as AC1 (first estimate 12/30 s, later estimates uncertain, SL never fills).
+Notes for the developer: AC3 bound is 3 s of loop time, code constants only (no new config key). AC7 bound 90 s covers max(wait_s, 30 s). AC6 relies on `runner_module.CHECKPOINT_MIN_INTERVAL_S` / `CHECKPOINT_FORCE_INTERVAL_S` module constants. AC9 probes `runner.gate_lock.acquire(timeout=0.1)` from the test thread.
+Not covered here: real-network RTT (QA), long-run lock contention (simulation), advisory R2-SD4/5/6 (no test).
