@@ -54,12 +54,16 @@ def _stop_fills_within_5_s(world: World, runner: Any, what: str) -> None:
         if runner.broker.position("SOL") is None:
             break
     ahead = (runner.last_advanced_ms or 0) - world.exchange_ms()
-    assert runner.broker.position("SOL") is None, f"{what}: the stop never filled in 5 s; broker time ahead by {ahead} ms"
+    assert runner.broker.position("SOL") is None, (
+        f"{what}: the stop never filled in 5 s; broker time ahead by {ahead} ms"
+    )
     assert ahead <= AHEAD_LIMIT_MS, f"{what}: broker time is {ahead} ms ahead of the exchange"
 
 
 @pytest.mark.parametrize("slow_ms", [12_000, 30_000])
-def test_R2b_AC1_a_slow_first_estimate_does_not_push_broker_time_ahead_and_the_stop_fills(new_world: Any, slow_ms: int) -> None:
+def test_R2b_AC1_a_slow_first_estimate_does_not_push_broker_time_ahead_and_the_stop_fills(
+    new_world: Any, slow_ms: int
+) -> None:
     world, runner = _restart_with_uncertain_clock(new_world, first_estimate_ms=slow_ms)
     _stop_fills_within_5_s(world, runner, f"first estimate took {slow_ms} ms")
 
@@ -75,7 +79,9 @@ def test_R2b_AC1_a_bogus_future_book_time_does_not_push_broker_time_ahead(new_wo
 def test_R2b_AC1_a_wall_clock_step_forward_does_not_move_broker_time_after_a_restart(new_world: Any) -> None:
     world, runner = _restart_with_uncertain_clock(new_world, first_estimate_ms=None)
     world.step(runner, 2, ms=500)
-    world.step_wall(60_000)  # Windows steps the local wall clock forward one minute: the raw clock estimate moves with it
+    world.step_wall(
+        60_000
+    )  # Windows steps the local wall clock forward one minute: the raw clock estimate moves with it
     world.step(runner, 1, ms=500)
     _stop_fills_within_5_s(world, runner, "after a wall-clock step forward of 60 s")
 
@@ -98,6 +104,12 @@ def test_R2b_AC1_the_offset_estimate_times_only_its_final_attempt(new_world: Any
     world.hl.hook = hook
     runner, _ = world.start()
     assert calls["n"] >= 3, "the scenario needs the first estimate to be retried"
-    error = abs(runner.sync.exchange_now().ms - world.exchange_ms()) if runner.sync.refusal_reason(ActionKind.OPEN) is None else None
-    assert error is not None, "a final attempt of 100 ms round trip must give a trusted estimate (the retries do not count)"
+    error = (
+        abs(runner.sync.exchange_now().ms - world.exchange_ms())
+        if runner.sync.refusal_reason(ActionKind.OPEN) is None
+        else None
+    )
+    assert error is not None, (
+        "a final attempt of 100 ms round trip must give a trusted estimate (the retries do not count)"
+    )
     assert error <= 150, f"the estimate is {error} ms off: the retried attempts were counted in the round trip"
