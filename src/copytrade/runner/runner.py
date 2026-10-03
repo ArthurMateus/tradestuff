@@ -677,6 +677,7 @@ class Runner:
                 self._best_effort("the recorder shutdown", self.recorder.shutdown)
             self.hub.close()
         self._threads_stop.set()
+        self._parts.clock_worker.join(THREAD_JOIN_TIMEOUT_S)
         for thread in (*self.threads, self._retention):
             if thread is not None:
                 thread.join(timeout=THREAD_JOIN_TIMEOUT_S)

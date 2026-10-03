@@ -28,6 +28,7 @@ class BackgroundClock:
         self._sync = sync
         self._answer_wait_s = answer_wait_s
         self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
         self._running: threading.Event | None = None  # set when the running estimate has finished
         self._fresh = False  # an estimate was taken and not yet reported through ``__call__``
 
@@ -51,8 +52,18 @@ class BackgroundClock:
             finished = self._running
             if finished is None or finished.is_set():
                 finished = self._running = threading.Event()
-                threading.Thread(target=self._work, args=(finished,), name="r0-clock-estimate", daemon=True).start()
+                self._thread = threading.Thread(
+                    target=self._work, args=(finished,), name="r0-clock-estimate", daemon=True
+                )
+                self._thread.start()
         finished.wait(self._answer_wait_s)
+
+    def join(self, timeout_s: float) -> None:
+        """Wait (bounded) for a running estimate, so none touches the access monitor's ledger after it is closed."""
+        with self._lock:
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout=timeout_s)
 
     def _work(self, finished: threading.Event) -> None:
         taken = False
