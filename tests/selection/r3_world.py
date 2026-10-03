@@ -14,7 +14,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -493,3 +494,36 @@ def ranked_rows(n: int, *, first: int = 1, bps: int = 50) -> list[dict[str, Any]
     return [
         row(w(i), bps_m=bps, bps_p=bps, vlm_prior=1_600_000 + i * 1_000) for i in range(first, first + n)
     ]
+
+
+# --- log capture stamped with the fake clock -----------------------------------------------------------------------
+
+
+class Stamped(logging.Handler):
+    """Collects (fake clock ms at emit time, record) of every INFO+ record: how often a line is logged is observable."""
+
+    def __init__(self, clock: Any) -> None:
+        super().__init__(logging.INFO)
+        self.clock = clock
+        self.items: list[tuple[int, logging.LogRecord]] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.items.append((self.clock.now_ms(), record))
+
+    def lines(self, pattern: str) -> list[tuple[int, str]]:
+        rx = re.compile(pattern)
+        return [(t, rec.getMessage()) for t, rec in self.items if rx.search(rec.getMessage())]
+
+
+@contextmanager
+def stamped(r3: R3) -> Iterator[Stamped]:
+    handler = Stamped(r3.clock)
+    root = logging.getLogger()
+    previous = root.level
+    root.setLevel(logging.INFO)
+    root.addHandler(handler)
+    try:
+        yield handler
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(previous)
