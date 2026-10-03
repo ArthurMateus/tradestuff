@@ -778,6 +778,10 @@ class PositionManager:
             self._close_for_cause(share_id, REASON_STOP_FAILED)
             return
         track.sl_cid, track.sl_qty = cid, Decimal(share.qty)
+        for stale in (s for s in held if s.kind == "sl" and s.client_order_id != cid):
+            self._broker.cancel_stop(
+                stale.client_order_id
+            )  # a stop of another size never protects the share (after the new one)
         if self._settings.tp_enabled and not any(s.kind == "tp" for s in held):
             self._place_take_profit(share)
 
