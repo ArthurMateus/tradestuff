@@ -166,6 +166,12 @@ class MarketHub:
             qualifying = [book for book in self._books.get(coin, ()) if book.time_ms >= time_ms]
         return min(qualifying, key=lambda book: book.time_ms, default=None)
 
+    def newest_book_time_ms(self) -> int | None:
+        """The exchange timestamp of the most recent book received for any coin (the live exchange time, to within the
+        WebSocket latency), or ``None`` when no book has arrived."""
+        with self._lock:
+            return max((books[-1].time_ms for books in self._books.values() if books), default=None)
+
     def mids(self) -> Mapping[str, Price]:
         with self._lock:
             return dict(self._mids)

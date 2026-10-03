@@ -6,7 +6,7 @@ import random
 import secrets
 import sys
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -14,7 +14,7 @@ from typing import cast
 import copytrade
 from copytrade.core.clock import ClockSync
 from copytrade.core.config import Config
-from copytrade.core.errors import ConfigError, CopytradeError
+from copytrade.core.errors import ClockUnsyncedError, ConfigError, CopytradeError
 from copytrade.core.events import Alert, AlertSink
 from copytrade.core.secrets import Secrets, SecretValue
 from copytrade.core.startup import startup
@@ -45,8 +45,10 @@ from copytrade.runner.adapters import (
     RestMarketSource,
     RestMetaSource,
 )
+from copytrade.runner.clockwork import BackgroundClock
 from copytrade.runner.deps import RunnerDeps
 from copytrade.runner.disk import SystemDiskProbe, check_start_disk
+from copytrade.runner.failfast import TradingSleeper
 from copytrade.runner.flatten import FlattenSupervisor
 from copytrade.runner.policy import RunnerEntryPolicy
 from copytrade.runner.runner import Runner, RunnerParts, RunnerPaths
@@ -136,8 +138,11 @@ class _LockedSignals:
 class _Exchange:
     """Everything that talks to Hyperliquid or tells the time."""
 
-    rest: HlRestClient
+    rest: HlRestClient  # the trading thread's: fail-fast once the runner is started
+    rest_clock: HlRestClient  # the clock estimates' (they run on a worker thread, so they may wait out a back-off)
     rest_scoring: HlRestClient
+    trading_sleeper: TradingSleeper
+    clock_worker: BackgroundClock
     access: AccessMonitor
     schema_monitor: SchemaFailureMonitor
     sync: ClockSync
@@ -210,6 +215,22 @@ def _rest_client(
     )
 
 
+def _live_exchange_ms(hub: MarketHub, sync: ClockSync) -> Callable[[], int | None]:
+    """The live exchange time a restart with an unverified clock catches broker time up to: the newest exchange-stamped
+    book in the hub, or the raw clock estimate even when it is too uncertain for entries (the later of the two)."""
+
+    def live() -> int | None:
+        newest = hub.newest_book_time_ms()
+        try:
+            estimated: int | None = sync.exchange_now().ms
+        except ClockUnsyncedError:
+            estimated = None
+        known = [t for t in (newest, estimated) if t is not None]
+        return max(known) if known else None
+
+    return live
+
+
 def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: AlertRelay) -> _Exchange:
     """Two REST clients over ONE rate budget, access monitor and schema monitor: the trading thread's (real sleeper,
     CRITICAL work) and the scoring one (never sleeps: a request that does not fit the budget fails and is retried)."""
@@ -222,16 +243,31 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
     access = AccessMonitor(config=config, clock=clock, alerts=relay, ledger=LedgerDowntime(ledger))
     schema_monitor = SchemaFailureMonitor(clock=clock, alerts=relay)
     shared = (budget, access, schema_monitor)
-    rest = _rest_client(config, deps, deps.sleeper, shared)
+    trading_sleeper = TradingSleeper(deps.sleeper)
+    rest = _rest_client(config, deps, trading_sleeper, shared)
+    rest_clock = _rest_client(config, deps, deps.sleeper, shared)
     sync = ClockSync.from_config(
-        config, clock=clock, source=ExchangeOffsetSource(rest=rest, clock=clock, probe_coin=_PROBE_COIN), alerts=relay
+        config,
+        clock=clock,
+        source=ExchangeOffsetSource(rest=rest_clock, clock=clock, probe_coin=_PROBE_COIN),
+        alerts=relay,
     )
+    connector = WebsocketsConnector(
+        deps.endpoints.ws_url,
+        connect_timeout_s=float(config["hl.ws_connect_timeout_s"]),
+        max_message_bytes=int(config["hl.ws_max_message_bytes"]),
+    )
+    hub = MarketHub(
+        connector=connector, clock=clock, max_book_age_ms=config["paper.max_book_age_ms"], seed=secrets.randbits(32)
+    )
+    clock_worker = BackgroundClock(sync)
     timebase = (
         TimeBase(
             exchange_time=SyncedExchangeTime(sync),
             clock=clock,
             max_offset_uncertainty_ms=sync.max_offset_uncertainty_ms,
-            resample=sync.resample,
+            resample=clock_worker,
+            live_time_ms=_live_exchange_ms(hub, sync),
         )
         if deps.monotonic_ms is None
         else TimeBase(
@@ -239,26 +275,23 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
             clock=clock,
             max_offset_uncertainty_ms=sync.max_offset_uncertainty_ms,
             monotonic_ms=deps.monotonic_ms,
-            resample=sync.resample,
+            resample=clock_worker,
+            live_time_ms=_live_exchange_ms(hub, sync),
         )
-    )
-    connector = WebsocketsConnector(
-        deps.endpoints.ws_url,
-        connect_timeout_s=float(config["hl.ws_connect_timeout_s"]),
-        max_message_bytes=int(config["hl.ws_max_message_bytes"]),
     )
     return _Exchange(
         rest=rest,
+        rest_clock=rest_clock,
         rest_scoring=_rest_client(config, deps, _FailFastSleeper(), shared),
+        trading_sleeper=trading_sleeper,
+        clock_worker=clock_worker,
         access=access,
         schema_monitor=schema_monitor,
         sync=sync,
         timebase=timebase,
         guarded=GuardedExchangeTime(timebase),
         connector=connector,
-        hub=MarketHub(
-            connector=connector, clock=clock, max_book_age_ms=config["paper.max_book_age_ms"], seed=secrets.randbits(32)
-        ),
+        hub=hub,
         market=RestMarketSource(rest=rest, clock=clock),
         meta=RestMetaSource(rest=rest),
     )
@@ -424,6 +457,8 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         run_id=run_id,
         ledger=ledger,
         sync=ex.sync,
+        clock_worker=ex.clock_worker,
+        trading_sleeper=ex.trading_sleeper,
         timebase=ex.timebase,
         hub=ex.hub,
         hub_tap=hub_tap,

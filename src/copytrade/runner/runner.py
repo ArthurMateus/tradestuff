@@ -28,7 +28,9 @@ from copytrade.recorder.service import Recorder
 from copytrade.recorder.store import RecordingStore
 from copytrade.risk.gate import STATE_FILENAME, RiskGate
 from copytrade.runner.adapters import HubTap, MarketHub, RestMarketSource, RestMetaSource
+from copytrade.runner.clockwork import BackgroundClock
 from copytrade.runner.deps import RunnerDeps
+from copytrade.runner.failfast import TradingSleeper
 from copytrade.runner.flatten import (
     ALERT_FLATTEN_INCOMPLETE,
     FLATTEN_RERUN_INTERVAL_S,
@@ -127,6 +129,8 @@ class RunnerParts:
     run_id: str
     ledger: Ledger
     sync: ClockSync
+    clock_worker: BackgroundClock
+    trading_sleeper: TradingSleeper
     timebase: TimeBase
     hub: MarketHub
     hub_tap: HubTap
@@ -245,8 +249,10 @@ class Runner:
         parts.sync.tick()
         with self.gate_lock:
             result = self._reload()
-            if result.restored_positions and self._exchange_now_ms() == 0:
-                self._timebase.seed_unverified(result.restore_ms)  # unsynced restart: project the replayed time
+            if result.restored_positions:
+                # whatever the clock says now: project the replayed time and accept the first synced sample without the
+                # jump guard (a clock that drops before the first iteration must not leave positions unmanaged)
+                self._timebase.seed_unverified(result.restore_ms)
             self._known_followed = self.follow.followed
         self._section(
             "feed", self.feed.tick, strict=True
@@ -270,6 +276,7 @@ class Runner:
             )
             self._write_checkpoint(force=True)
         self._tail = LedgerTail(self.paths.ledger_dir)
+        self._parts.trading_sleeper.fail_fast()  # from here on no REST call waits on the trading thread
         self._start_threads()
         self._last_step_ms = self._clock.now_ms()
         return StartReport(
@@ -315,7 +322,7 @@ class Runner:
         Raises ``RuntimeError`` before ``start()`` (nothing is wired to the broker before the reload)."""
         if not self._started or self._stopped:
             raise RuntimeError("step() needs a started, not yet stopped runner")
-        self._parts.sync.tick()
+        self._parts.clock_worker.tick()
         self._section("hub", self._parts.hub_tap.drain)  # mids and books first, independent of the recorder (RISK-65)
         advanced, skipped = self._advance_and_mark()
         self._section(
@@ -535,7 +542,7 @@ class Runner:
             except Exception as exc:
                 self._section_failed("retention", exc)
 
-        self._retention = threading.Thread(target=work, name="r2-retention", daemon=True)
+        self._retention = threading.Thread(target=work, name="r0-retention", daemon=True)
         self._retention.start()
 
     # ------------------------------------------------------------------------------------------ checkpoints

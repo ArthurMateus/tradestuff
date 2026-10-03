@@ -32,6 +32,10 @@ def _no_resample() -> bool:
     return False
 
 
+def _no_live_time() -> int | None:
+    return None
+
+
 class TimeBase:
     """Turns ``ExchangeTime.exchange_now()`` into the broker time of one loop iteration (F11 Amendment 13).
 
@@ -45,7 +49,7 @@ class TimeBase:
     projection onto the exchange (one forward jump, or a hold of broker time while the exchange is behind it).
     The wall clock is only used by the offset estimate; a wall step never moves broker time."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the injected boundaries of one object
         self,
         *,
         exchange_time: ExchangeTime,
@@ -53,12 +57,14 @@ class TimeBase:
         max_offset_uncertainty_ms: int,
         monotonic_ms: Callable[[], int] = _real_monotonic_ms,
         resample: Callable[[], bool] = _no_resample,
+        live_time_ms: Callable[[], int | None] = _no_live_time,
     ) -> None:
         self._exchange_time = exchange_time
         self._clock = clock
         self._allowance_ms = 2 * max_offset_uncertainty_ms
         self._mono = monotonic_ms
         self._resample = resample
+        self._live_time_ms = live_time_ms
         self._base_target_ms: int | None = None
         self._base_mono_ms = 0
         self._frozen = False  # broker time is held flat (the exchange is behind it after a backward rebase)
@@ -114,7 +120,21 @@ class TimeBase:
                     return rebased, None
                 projection = self._projection()
         self._reason = SKIP_CLOCK_UNSYNCED if candidate is None else SKIP_CLOCK_JUMP
-        return projection, self._reason
+        return self._caught_up(projection), self._reason
+
+    def _caught_up(self, projection: int) -> int:
+        """While the restart baseline is unverified the projection runs from the REPLAYED time, which lags the live
+        exchange by the downtime, and the paper broker fills only from books at or before broker time (the hub keeps
+        seconds of them): a triggered stop or exit would stay pending. So broker time catches up, forward only, to
+        ``live_time_ms`` (the newest exchange-stamped book, or the raw clock estimate even when too uncertain for
+        entries). Entries stay refused: the clock is still in doubt."""
+        if not self._unverified:
+            return projection
+        live = self._live_time_ms()
+        if live is None or live <= projection:
+            return projection
+        self._set_base(live)
+        return live
 
     def projected_ms(self) -> int | None:
         """The broker-time projection while the exchange clock is trusted, else ``None`` (the gate refuses entries and

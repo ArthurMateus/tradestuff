@@ -138,8 +138,7 @@ class ClockSync:
         self._source = source
         self._alerts = alerts
         self._last_attempt_ms: int | None = None
-        self._estimate: OffsetEstimate | None = None
-        self._estimate_taken_ms = 0
+        self._sample: tuple[OffsetEstimate, int] | None = None  # (estimate, taken at): ONE reference, set atomically
         self._alert_sent = False
 
     @classmethod
@@ -174,11 +173,22 @@ class ClockSync:
         if self._estimate_due(now):
             self._last_attempt_ms = now
             self._try_estimate(now)
-        problem = self._problem(now)
+        self.check()
+
+    def check(self) -> None:
+        """The state part of ``tick`` without any estimate: update the unsynced state and send the once-per-episode
+        alert. Cheap and never blocks, so a caller that takes the estimates on another thread (``resample``, when
+        ``estimate_due``) can still call it on every loop."""
+        problem = self._problem(self._clock.now_ms())
         if problem is None:
             self._alert_sent = False
         elif not self._alert_sent:
             self._send_alert(problem)
+
+    def estimate_due(self) -> bool:
+        """Whether ``tick`` would take an estimate now (the first one, or ``offset_interval_s`` since the last
+        attempt)."""
+        return self._estimate_due(self._clock.now_ms())
 
     def resample(self) -> bool:
         """Force a fresh offset estimate now (the time base does this while the clock is in doubt). ``True`` when one
@@ -200,9 +210,10 @@ class ClockSync:
         Raises:
             ClockUnsyncedError: no offset has been estimated yet.
         """
-        if self._estimate is None:
+        sample = self._sample
+        if sample is None:
             raise ClockUnsyncedError("no clock-offset estimate exists yet")
-        return Timestamp(ms=self._clock.now_ms() + self._estimate.offset_ms, source=TimeSource.DERIVED)
+        return Timestamp(ms=self._clock.now_ms() + sample[0].offset_ms, source=TimeSource.DERIVED)
 
     def _estimate_due(self, now: int) -> bool:
         if self._last_attempt_ms is None:
@@ -219,16 +230,16 @@ class ClockSync:
                 extra={"event": "clock_offset_failed", "error_type": type(exc).__name__},
             )
             return False
-        self._estimate = estimate
-        self._estimate_taken_ms = now
+        self._sample = (estimate, now)
         return True
 
     def _problem(self, now: int) -> str | None:
         """Why entries must be refused, or ``None`` when the clock is synced."""
-        estimate = self._estimate
-        if estimate is None:
+        sample = self._sample
+        if sample is None:
             return "no clock-offset estimate yet"
-        age_ms = now - self._estimate_taken_ms
+        estimate, taken_ms = sample
+        age_ms = now - taken_ms
         if age_ms < 0:
             return "the local clock stepped backwards since the last estimate"
         if age_ms > self._max_estimate_age_s * 1000:
