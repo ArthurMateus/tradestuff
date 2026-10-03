@@ -1,0 +1,67 @@
+[eval]
+sample_basis = "opened"
+n_trades = 300
+calendar_cap_days = 30
+extension_days = 30
+closeout_max_days = 7
+ci_level_run1 = 0.96
+ci_level_run2 = 0.99
+max_runs = 2
+ci_method = "min3"
+cluster_key = "merged_first_entry_day"
+min_day_clusters = 5
+bootstrap_b = 10000
+bootstrap_seed = "generated"
+bootstrap_statistic = "pooled_mean"
+rng = "sha256_counter_rejection"
+percentile_index = "floor_index"
+gate_round_dp = 6
+flatten_gate_rule = "min_realised_shadow"
+require_clean_engine_tree = true
+engine_path_manifest = "engine-path-set.txt"
+run_worktree_pinned = true
+run_record_env_hashes = ["packages", "data_inputs"]
+deploy_policy = "auditor_ruling_required"
+require_usd_pnl_positive = true
+baseline_gate = "direction_matched_random_time"
+max_dd = 0.15
+mark_interval_s = 60
+max_downtime_fraction = 0.02
+show_interim_stats = "descriptive_only"
+missed_exit_max_count = 3
+missed_exit_max_cost_r = 1.0
+missed_exit_gate_rule = "min_actual_mirrored"
+missed_exit_gap_rule = "candle_lo_stop_first_hi_tp_first"
+missed_exit_cost_rule = "incremental_and_trade_hi"
+p4_breach_time = "earliest_event_order"
+settled_gap_rule = "settled_min_lo"
+fill_audit_interval_h = 24
+missing_data_retry_max_h = 72
+recording_integrity = "lossless_hashed_verified"
+
+[fragility]
+top_k_trades = 5
+drop_best_day_clusters = 1
+cost_stress_mult = 2.0
+
+[decay]
+deltas_s = [0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 30.0, 60.0, 300.0]
+
+[data]
+paid_s3 = false
+
+[d6]
+min_decision_agreement = 0.90
+max_median_abs_r_diff = 0.05
+max_mean_r_diff = 0.10
+max_median_fill_dev_bps = 3
+max_p90_fill_dev_bps = 10
+max_trade_count_dev = 0.10
+
+[kill]
+k1_min_trades = 100
+k2_min_trades = 150
+k6_decay_share = 0.50
+k7_min_eligible = 5
+k7_cycle_share = 0.50
+k8_unexecutable_share = 0.50

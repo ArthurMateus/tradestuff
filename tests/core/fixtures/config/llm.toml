@@ -1,0 +1,10 @@
+[llm]
+enabled = true
+monthly_budget_usd = 5.0
+timeout_s = 20
+max_output_chars = 600
+fallback = "ollama"
+
+[llm.price_usd_per_1k_tokens]
+input = 0.003
+output = 0.015

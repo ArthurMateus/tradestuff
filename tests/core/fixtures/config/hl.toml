@@ -1,0 +1,28 @@
+[hl]
+rest_weight_budget_per_min = 900
+scoring_weight_share = 0.5
+weight_userRole = 60
+weight_portfolio = 20
+rest_timeout_s = 10
+retry_max = 5
+backoff_base_s = 1
+backoff_max_s = 60
+ws_max_unique_users = 10
+ws_max_new_conns_per_min = 20
+ws_ping_interval_s = 20
+ws_reconnect_backoff_max_s = 30
+ws_connect_timeout_s = 10
+ws_max_message_bytes = 4194304
+
+[feed]
+stale_after_s = 30
+
+[access]
+degraded_error_count = 3
+degraded_window_min = 5
+degraded_min_success_rate = 0.5
+recover_min = 10
+
+[follow]
+clearinghouse_poll_s = 60
+max_leader_av_age_s = 300

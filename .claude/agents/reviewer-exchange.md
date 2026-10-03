@@ -2,7 +2,7 @@
 name: reviewer-exchange
 description: Review-panel member (runs in parallel when touches_money_path). Audits exchange/venue integration correctness (REST, WebSocket, precision, rate limits, order lifecycle). Read-only.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: sonnet
 effort: medium
 ---
 

@@ -1,0 +1,33 @@
+[filter]
+max_signal_age_ms = 5000
+max_slippage_pct_tier1 = 0.30
+max_slippage_pct_tier2 = 0.80
+max_spread_pct_tier1 = 0.10
+max_spread_pct_tier2 = 0.30
+max_depth_share = 0.01
+depth_band_pct = 0.5
+max_price_age_ms = 2000
+vol_window_h = 24
+vol_lookback_days = 90
+vol_halving_percentile = 90
+vol_size_mult = 0.5
+
+[filter.trend]
+mode = "record_only"
+ema_period_h = 50
+min_aligned_atr = "unset"
+
+[filter.funding]
+mode = "record_only"
+max_adverse_rate_per_h = "unset"
+
+[filter.oi_drop]
+mode = "record_only"
+max_drop_pct_24h = "unset"
+
+[filter.premium]
+mode = "record_only"
+max_abs_pct = "unset"
+
+[shadow]
+enabled = true

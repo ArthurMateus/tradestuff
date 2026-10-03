@@ -1,0 +1,11 @@
+[telegram]
+allowed_user_id = 111111111
+control_chat_id = 111111111
+alerts_chat_id = -1001111111111
+min_edit_interval_s = 5
+max_msgs_per_min_per_chat = 20
+queue_max_messages = 1000
+queue_max_age_h = 24
+pin_max_attempts = 3
+pin_lockout_min = 15
+unauthorized_alert_interval_min = 10

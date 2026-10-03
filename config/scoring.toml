@@ -1,0 +1,80 @@
+[scoring]
+candidates_k = 200
+interval_min = 60
+window_days = 180
+dsr_min_daily_days = 60
+stale_input_mult = 2
+
+[gate]
+min_account_age_days = 180
+min_round_trips = 150
+min_fill_span_days = 60
+min_positive_blocks = 4
+n_blocks = 6
+block_days = 30
+max_drawdown = 0.35
+min_profit_factor = 1.3
+min_dsr_prob = 0.95
+dsr_n_trials = 15000
+min_median_hold_min = 15
+hold_latency_mult = 20
+max_top_trade_share = 0.25
+max_top_asset_share = 0.50
+min_copy_edge_ratio = 3.0
+min_account_value_usd = 10000.0
+min_executable_share = 0.50
+max_maker_share = 0.70
+max_current_drawdown = 0.20
+exclude_roles = ["vault", "agent", "missing"]
+exclude_addresses = ["0xdfc24b077bc1425ad1dea75bcb6f8158e10df303"]
+
+[blowup]
+max_adds_while_losing_share = 0.20
+min_adds = 10
+max_size_after_loss_ratio = 1.5
+min_each = 20
+skew_win_rate = 0.85
+skew_loss_mult = 3.0
+max_worst_to_median_loss = 10.0
+min_losses = 10
+hidden_dd_mult = 2.0
+hidden_dd_floor = 0.15
+max_median_eff_leverage = 10
+max_open_unrealized_loss = 0.10
+any_liquidation = true
+
+[score]
+shrink_k_trades = 100
+shrink_k_days_recent = 30
+
+[score.weights]
+dsr_excess = 0.30
+copy_mean_r = 0.25
+pos_blocks = 0.15
+max_dd = 0.15
+recent_sr = 0.10
+executable = 0.05
+
+[score.anchors.dsr_excess]
+lo = 0.0
+hi = 0.15
+
+[score.anchors.copy_mean_r]
+lo = 0.0
+hi = 0.30
+
+[score.anchors.pos_blocks]
+lo = 0.5
+hi = 1.0
+
+[score.anchors.max_dd]
+lo = 0.35
+hi = 0.05
+
+[score.anchors.recent_sr]
+lo = 0.0
+hi = 0.30
+
+[score.anchors.executable]
+lo = 0.5
+hi = 1.0

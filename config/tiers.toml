@@ -1,0 +1,10 @@
+[tiers]
+lookback_days = 7
+recompute_interval_h = 24
+max_age_h = 48
+depth_band_pct = 0.5
+tier1_min_depth_usd = 1000000.0
+tier1_min_volume_usd = 200000000.0
+floor_min_depth_usd = 50000.0
+floor_min_volume_usd = 10000000.0
+min_coverage_fraction = 0.8

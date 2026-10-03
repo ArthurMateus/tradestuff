@@ -1,0 +1,12 @@
+[telegram]
+# PLACEHOLDERS: put your own numeric Telegram ids here (0 = not set; the runner refuses to start until you do).
+allowed_user_id = 0
+control_chat_id = 0
+alerts_chat_id = 0
+min_edit_interval_s = 5
+max_msgs_per_min_per_chat = 20
+queue_max_messages = 1000
+queue_max_age_h = 24
+pin_max_attempts = 3
+pin_lockout_min = 15
+unauthorized_alert_interval_min = 10

@@ -1,0 +1,7 @@
+# F1 test fixture: an engine path set with exactly the entries F1.AC7 requires.
+src/copytrade/**
+uv.lock
+pyproject.toml
+config/**
+data/inputs/**
+engine-path-set.txt

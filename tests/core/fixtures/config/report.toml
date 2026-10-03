@@ -1,0 +1,5 @@
+[report]
+daily_time_utc = "00:05"
+weekly_time_utc = "Mon 00:10"
+disclaimer = "Paper trading. Not investment advice. Past results do not guarantee future results."
+weekly_block_days = 7

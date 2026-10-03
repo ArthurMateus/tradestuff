@@ -1,0 +1,11 @@
+[replay]
+max_variants = 8
+sensitivity_cost_mults = [1.5, 2.0]
+sensitivity_delays_s = [1, 3, 5]
+
+[copyreplay]
+delay_ms = 3000
+
+[copyreplay.half_spread_bps]
+major = 2.0
+alt = 8.0

@@ -1,0 +1,23 @@
+# F1 test fixture: part of a complete, valid config tree (spec §3 defaults).
+# Not the committed engine config. okx.* keys are absent on purpose (F22 void, Amendment 3).
+mode = "paper"
+
+[storage]
+ledger_dir = "../copytrade-data/ledger"
+recordings_dir = "../copytrade-data/recordings"
+
+[clock]
+offset_interval_s = 600
+max_offset_uncertainty_ms = 100
+max_estimate_age_s = 1800
+
+[supervisor]
+restart_delay_s = 30
+max_restarts_per_hour = 5
+
+[live]
+min_wallet_usd = 300.0
+
+[latency]
+measure_hours = 24
+min_signals = 100
