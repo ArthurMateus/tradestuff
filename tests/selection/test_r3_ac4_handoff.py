@@ -83,6 +83,25 @@ def test_R3_AC4_a_full_screen_page_is_page_1_and_the_backfill_resumes_after_its_
     assert got is not None and len(got.fills) == 2300 and len({f.tid for f in got.fills}) == 2300
 
 
+def test_R3_AC4_page_2_of_a_handed_off_wallet_is_not_judged_by_the_first_page_exit(tmp_path: Path) -> None:
+    # R3-SD3: EX1 (a full first page inside a day) judges only the wallet's FIRST page, which the screen already did.
+    # Page 1 spans 50 days and passes; page 2 is full inside 17 hours: it must be absorbed, not dropped as too active.
+    r3 = make_r3(tmp_path)
+    tids = Tids(1_000_000)
+    page1 = page_ok_full(T0)
+    last = max(r["time"] for r in page1)
+    later = [fill("@107", "B", "0.000001", "2000", last + HOUR + k * 30_000, "0.0", tids, direction="Buy") for k in range(2_000)]
+    assert max(r["time"] for r in later) - min(r["time"] for r in later) < DAY
+    r3.serve(OK1, [*page1, *later])
+    r3.set_board([row(OK1)])
+    r3.cycle()
+    r3.drive_until_complete()
+    assert len(r3.screen_calls(OK1)) == 1 and len(r3.fills_calls(OK1)) >= 3  # page 1, the full page 2, the short page 3
+    assert r3.backfilled() == {OK1}  # not dropped as too_active_first_page
+    got = held(r3, OK1)
+    assert got is not None and len({f.tid for f in got.fills}) == 4_000
+
+
 def test_R3_AC4_a_full_page_that_failed_the_screen_gets_no_second_page(tmp_path: Path) -> None:
     r3 = make_r3(tmp_path)
     page = page_s6(T0)  # full, 12 000 fills per window at its rate
