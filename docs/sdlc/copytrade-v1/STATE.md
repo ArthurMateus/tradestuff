@@ -353,3 +353,6 @@ Developer (a462c12e): 44 R2 tests + 2 extra pass, full suite 5326 passed, ruff/f
 
 ## R2 REVIEW ROUND 1 DONE: BOTH CHANGES REQUIRED (2026-10-03)
 Consolidated batch: docs/sdlc/copytrade-v1/reviews/R2-r1-batch.md. senior-dev: 3 blocking (R2-SD1 heal accepts a wrong-qty stop: mutant survives; R2-SD2 Ledger.read_from partial-line guard unpinned; R2-SD3 trading thread still makes REST calls up to rest_timeout_s each: delistings, reconcile per leader under gate_lock, fill audit), mutants 12/14. reviewer-risk: RISK-73/74/75. Route: designer -> developer -> verify-only (round 2 = cap) -> merge. R2 not merged yet: do not leave the bot unattended for weeks.
+
+## PAUSED AGAIN BY USAGE LIMIT (2026-10-03, ~92%): R2 round-1 fix designer stopped
+R2 round-1 batch (reviews/R2-r1-batch.md + R2b.AC10 progress lines) NOT yet implemented: the designer was stopped (it commits per AC: check `git log origin/feat/copytrade-v1/R2-restart-safety`). R2 is NOT merged into the epic (the epic has R1, R1b, R1c only). NEXT SESSION: re-dispatch the designer for R2b.AC1..AC10, then developer, verify-only reviewer-risk + senior-dev, merge. Added docs/sdlc/copytrade-v1/research/scripts/hl_wallets_check.py (PO-side check: do the top leaderboard wallets return usable fills at all).
