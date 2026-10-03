@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from copytrade.hl.models import ClearinghouseState
 from copytrade.scoring.models import WalletInputs
@@ -52,6 +52,8 @@ REASON_STATE_UNAVAILABLE = "state_unavailable"  # a join or swap whose ``clearin
 GATE_CURRENT_DRAWDOWN = "G15"  # the F5 gate whose failure is a safety trigger (edge-hypothesis 10.6 step 2)
 HOUR_MS = 3_600_000
 MIN_LEADERBOARD_ROWS = 1000  # F6.AC5: fewer rows is an outage
+FILLS_PER_PAGE = 2_000  # Hyperliquid returns at most this many fills for one userFillsByTime request
+HL_FILLS_LIMIT = 10_000  # API fact: userFillsByTime makes only the 10 000 most recent fills of a wallet retrievable
 
 
 @dataclass(frozen=True)
@@ -173,4 +175,22 @@ class InputsProvider(Protocol):
 
     def inputs(self, wallet: str, t_ms: int) -> WalletInputs | None:
         """``None`` when nothing has been fetched for ``wallet``."""
+        ...
+
+
+@runtime_checkable
+class ScreeningInputs(InputsProvider, Protocol):
+    """An inputs provider that also runs the candidate screen (R3; ``Backfiller`` and ``PacedInputs`` do). The manager
+    gives it stage 1's list instead of a candidate list and asks it afterwards whom to score."""
+
+    def set_screen_plan(self, plan: CandidateList, *, keep: Iterable[str]) -> None:
+        """Start a cycle: screen ``plan`` in order; ``keep`` (followed wallets) is never screened, always fetched."""
+        ...
+
+    def candidates(self) -> list[str]:
+        """The wallets to refresh and score: ``keep`` plus those screened OK."""
+        ...
+
+    def rotate(self, wallets: Iterable[str]) -> None:
+        """RO1: cool the wallets down; they leave the candidates at the next ``set_screen_plan``."""
         ...

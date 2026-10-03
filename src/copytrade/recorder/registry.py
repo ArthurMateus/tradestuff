@@ -121,8 +121,17 @@ def _windows(raw: object) -> dict[str, WindowFigures]:
     return out
 
 
-def rows_in_leaderboard(body: bytes) -> tuple[LeaderboardRow, ...]:
-    """Every row of ``leaderboardRows`` that has an ``ethAddress``, in order.
+@dataclass(frozen=True)
+class Leaderboard:
+    """A parsed leaderboard: how many rows it has (``leaderboardRows`` entries, whatever they hold) and the rows that
+    have an ``ethAddress``, in order."""
+
+    row_count: int
+    rows: tuple[LeaderboardRow, ...]
+
+
+def parse_leaderboard(body: bytes) -> Leaderboard:
+    """Parse a leaderboard JSON body.
 
     Raises:
         ValueError: ``body`` is not JSON or has no ``leaderboardRows`` list.
@@ -134,14 +143,17 @@ def rows_in_leaderboard(body: bytes) -> tuple[LeaderboardRow, ...]:
     rows = document.get("leaderboardRows") if isinstance(document, dict) else None
     if not isinstance(rows, list):
         raise ValueError("the leaderboard body has no leaderboardRows list")  # noqa: TRY004 - ValueError is the contract
-    return tuple(
-        LeaderboardRow(
-            row["ethAddress"].lower(),
-            _finite_decimal(row.get("accountValue")),
-            _windows(row.get("windowPerformances")),
-        )
-        for row in rows
-        if isinstance(row, dict) and isinstance(row.get("ethAddress"), str)
+    return Leaderboard(
+        row_count=len(rows),
+        rows=tuple(
+            LeaderboardRow(
+                row["ethAddress"].lower(),
+                _finite_decimal(row.get("accountValue")),
+                _windows(row.get("windowPerformances")),
+            )
+            for row in rows
+            if isinstance(row, dict) and isinstance(row.get("ethAddress"), str)
+        ),
     )
 
 
@@ -151,4 +163,4 @@ def wallets_in_leaderboard(body: bytes) -> tuple[str, ...]:
     Raises:
         ValueError: ``body`` is not JSON or has no ``leaderboardRows`` list.
     """
-    return tuple(row.address for row in rows_in_leaderboard(body))
+    return tuple(row.address for row in parse_leaderboard(body).rows)

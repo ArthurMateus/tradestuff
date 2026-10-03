@@ -4,7 +4,7 @@ Read-only toward Hyperliquid (info requests only). Everything that touches the b
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from decimal import Decimal
 from itertools import pairwise
@@ -23,6 +23,7 @@ from copytrade.positions.types import CLOSED, ShareState
 from copytrade.recorder.ports import Backlog
 from copytrade.scoring.models import CycleResult, WalletInputs
 from copytrade.selection.backfill import Backfiller
+from copytrade.selection.models import CandidateList
 
 KIND_DOWNTIME = "downtime"
 KIND_SCORE_CYCLE = "score_cycle"
@@ -235,6 +236,7 @@ class PacedInputs:
     def __init__(self, backfiller: Backfiller) -> None:
         self._backfiller = backfiller
         self._candidates: list[str] = []
+        self._screening = False
         self._turn = 0
 
     @property
@@ -242,9 +244,24 @@ class PacedInputs:
         return self._backfiller.complete
 
     def set_candidates(self, wallets: Sequence[str]) -> None:
+        self._screening = False
         self._candidates = list(dict.fromkeys(wallet.lower() for wallet in wallets))
         self._turn = 0
         self._backfiller.set_candidates(self._candidates)
+
+    def set_screen_plan(self, plan: CandidateList, *, keep: Iterable[str]) -> None:
+        """Start a cycle of the candidate screen: ``work`` screens the list in order (one wallet a slice), and refreshes
+        the wallets that are kept or screened OK."""
+        self._screening = True
+        self._turn = 0
+        self._backfiller.set_screen_plan(plan, keep=keep)
+
+    def candidates(self) -> list[str]:
+        """The wallets to refresh and score: the kept ones plus those screened OK."""
+        return self._backfiller.candidates()
+
+    def rotate(self, wallets: Iterable[str]) -> None:
+        self._backfiller.rotate(wallets)
 
     def refresh(self, wallet: str) -> None:
         """The cycle's per-wallet refresh: nothing to do, ``work`` keeps the data fresh."""
@@ -256,9 +273,10 @@ class PacedInputs:
         """One slice: the next unfetched candidate, else the next candidate in turn. Never raises for a failed fetch."""
         if self._backfiller.step():
             return
-        if not self._candidates:
+        candidates = self._backfiller.candidates() if self._screening else self._candidates
+        if not candidates:
             return
-        wallet = self._candidates[self._turn % len(self._candidates)]
+        wallet = candidates[self._turn % len(candidates)]
         self._turn += 1
         try:
             self._backfiller.refresh(wallet)

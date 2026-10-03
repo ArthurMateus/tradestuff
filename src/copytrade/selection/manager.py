@@ -15,7 +15,7 @@ from copytrade.hl.errors import HlError, WsUserLimitError
 from copytrade.hl.wallet import normalize_wallet
 from copytrade.ledger.store import Ledger
 from copytrade.recorder.ports import SOURCE_FAILURES, LeaderboardSource
-from copytrade.recorder.registry import LeaderboardRow, rows_in_leaderboard
+from copytrade.recorder.registry import LeaderboardRow, parse_leaderboard
 from copytrade.scoring.cycle import run_cycle as score_and_persist
 from copytrade.scoring.models import CostModel, CycleResult, ScoreStore, WalletInputs
 from copytrade.selection.models import (
@@ -48,6 +48,7 @@ from copytrade.selection.models import (
     InputsProvider,
     OpenShareSource,
     PolicyOutcome,
+    ScreeningInputs,
     SelectionState,
     StateSource,
     WalletFeed,
@@ -180,8 +181,7 @@ class FollowManager:
         if found is None:
             return self._leaderboard_outage(started_ms, p95_latency_s)
         self._outage_alerted = False
-        candidates = [row.address for row in found.rows[: self._candidates_k]]
-        self._inputs.set_candidates(candidates)
+        candidates = self._set_candidates(found)
         if not self._inputs.complete:
             return self._finish(STATUS_BACKFILLING, (), started_ms)
         result = self._score([*candidates, *sorted(self._subscribed - set(candidates))], p95_latency_s)
@@ -199,38 +199,51 @@ class FollowManager:
         """Apply an already scored cycle (no leaderboard, no backfill gate, no overrun check)."""
         return self._apply(result, now_ms=now_ms)
 
+    def _set_candidates(self, found: CandidateList) -> list[str]:
+        """Hand stage 1's list to the inputs provider and return the wallets to score. A provider that runs the screen
+        gets the whole list (it screens in order until ``scoring.candidates_k`` wallets are OK) and the followed wallets
+        to keep; any other gets the first ``scoring.candidates_k`` rows."""
+        if isinstance(self._inputs, ScreeningInputs):
+            self._inputs.set_screen_plan(found, keep=sorted({*self._state.followed, *self._subscribed}))
+            return self._inputs.candidates()
+        candidates = [row.address for row in found.rows[: self._candidates_k]]
+        self._inputs.set_candidates(candidates)
+        return candidates
+
     def _fetch_candidates(self) -> CandidateList | None:
         """Stage 1 of the candidate screen over the leaderboard (no request besides the leaderboard itself), or ``None``
         on an outage. The row figures are self-reported: they only decide whom to look at, never who is followed."""
         try:
-            rows = rows_in_leaderboard(self._leaderboard.fetch())
+            board = parse_leaderboard(self._leaderboard.fetch())
         except _OUTAGE_ERRORS as exc:
             _log.warning(
                 "leaderboard unavailable", extra={"event": "leaderboard_failed", "error_type": type(exc).__name__}
             )
             return None
-        first_of: dict[str, LeaderboardRow] = {}
-        for row in rows:
-            if row.address not in first_of and _is_address(row.address):
-                first_of[row.address] = row  # the first row of an address wins, in served order
-        valid = list(first_of.values())
-        if len(valid) < MIN_LEADERBOARD_ROWS:
+        if board.row_count < MIN_LEADERBOARD_ROWS:
             _log.warning(
                 "leaderboard has too few rows",
-                extra={"event": "leaderboard_short", "rows": len(valid), "minimum": MIN_LEADERBOARD_ROWS},
+                extra={"event": "leaderboard_short", "rows": board.row_count, "minimum": MIN_LEADERBOARD_ROWS},
             )
             return None
+        valid = [row for row in board.rows if _is_address(row.address)]
+        first_of: dict[str, LeaderboardRow] = {}
+        for row in valid:
+            first_of.setdefault(row.address, row)  # the first row of an address wins, in served order
         found = candidate_list(
-            valid, excluded=self._excluded, min_account_value=self._min_account_value, k=self._candidates_k
+            list(first_of.values()),
+            excluded=self._excluded,
+            min_account_value=self._min_account_value,
+            k=self._candidates_k,
         )
         _log.info(
             "candidate prefilter: rows=%d ranked=%d candidates=%d",
-            len(valid),
+            board.row_count,
             found.ranked_count,
             len(found.rows),
             extra={
                 "event": "candidate_prefilter",
-                "rows": len(valid),
+                "rows": board.row_count,
                 "ranked": found.ranked_count,
                 "candidates": len(found.rows),
             },
