@@ -219,3 +219,23 @@ Stage 1 filters/ranks rows and the early exits change what a Backfiller does wit
 - Any Backfiller test whose wallet has NO fills in the window now gets dropped after one request (R3.AC5, 168 h) instead of being scored on empty data.
 Suggested fix route (CTO): the developer adapts the harness defaults (`board_body` default rows pass stage 1, synth wallets spread over more than a day) in a separate
 commit and reports each assertion that has to change; none of R3's assertions should be weakened to make an old test pass.
+
+## Superseded existing tests (R3 vs R1/F6 fixtures)
+The old tests keep their intent and assertion strength; fixtures were changed so they agree with R3. Verified only against today's src (all pass, nothing
+weakened); R3-compatibility is by analysis of the spec, the R3 files stay failing until the developer implements R3.
+| old test / file | what changed | why |
+|---|---|---|
+| `r1_world.board_body` (all R1 manager tests) | every row (and, by default, the filler) carries windowPerformances that pass P1, P4-P8 for any AV 10 000..200 000, identical on all rows; new `filler_passes=False` option | template windows fail P4 (month volume 0.8 x AV), so no row would be a candidate; identical figures keep the K1 order = address order |
+| `test_r1_ac3_prefilter::a_row_without_a_readable_account_value_is_kept` | filler built with `filler_passes=False` | L4: unrankable rows are appended only while fewer than K rows are ranked; 1 000 ranked filler rows would fill K first. Assertion unchanged |
+| `test_r1_ac3_prefilter::candidates_k_takes_the_first_k_survivors_in_served_order` renamed `..._in_rank_order` | w5 now has AV 20 000 (was: no AV); expected set unchanged | OBSOLETE "served order": K1 ranks (all rows tie, so address order, which equals the served order here); an unreadable w5 is no survivor once K rows are ranked, that case is the test above |
+| `test_r1_ac2_too_active` (setup, `just_inside_the_cap`, manager test) | heavy wallets use `spread` fills (1 a minute from 175 d ago) instead of 50 ms steps | a full first page inside a day now exits at page 1 (R3.AC5); 50-page cap assertions (`pages == 50`, 99 000 fills kept) unchanged. In the manager flow R3's screen rejects such a wallet (S6) before the cap: the manager assertions (never followed, not stuck, no refetch) hold either way, the cap itself is proved by the Backfiller tests |
+| `test_r1_ac7_truncated_window` (`recent`, `starting_at`) | one fill a minute (was 50 ms / 1 s) | 2 000 fills must span more than a day on page 1 so the R1 truncation rule, not R3's first-page exit, is tested |
+| `test_r1_ac1_visibility::incomplete_case_logs_pages_and_fills_fetched`, `test_r1b_ac1::incomplete_message...` | `stuck_fills()`: one fill 2 days old, then 2 500 in one ms; expected fills 2 000 -> 2 001 (pages still 2) | 2 500 fills in one ms is a full first page inside a day (R3 exit). Any stuck cursor with a first page that spans a day has at least 1 + 2 000 distinct fills, so the number is 2 001 by construction |
+| `test_r1_ac8_error_cooldown::make_cooling('too_active')`, `test_r1b_ac1::too_active_message...` | `spread_fills(20_000)` | same as R1.AC7 (truncation path) |
+| `test_r1_ac4_fairness` HEAVY 24 000 fills | `spread_fills` | same |
+| `test_ac4_backfill` (5 tests with empty wallets) | `one_fill(fr)`: one fill in the window for the fake server | R3.AC5: a wallet without a fill in the window is dropped after one request (168 h), so it could not be held/scored |
+| `tests/selection/helpers.leaderboard_body` | docstring only | rows pass P1-P8 and tie, so they rank by address; all callers pass `first` in ascending address order below the filler, so candidate lists are unchanged |
+
+Still failing ONLY because src lacks R3 (verified by the run below): none of the old tests (final run of tests/selection tests/hl tests/recorder tests/runner/test_wiring*: 932 passed, 127 failed = exactly the R3 files; `tests/hl/test_w0_connector.py::test_W0_e2e_feed_heartbeat_ping...` failed once in a first run, a timing flake, passed in the second). Of the old tests
+only `test_r1_ac3_prefilter` and `test_r1_ac2_too_active` manager flow exercise stage 1/screen through the real manager; they pass today and are expected to pass under R3
+by the analysis above, not demonstrated.
