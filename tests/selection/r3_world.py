@@ -342,6 +342,7 @@ class R3:
 
 def make_r3(tmp_path: Path, *, fail_fast: bool = True, k: int = K, **overrides: Any) -> R3:
     """The PO's wiring (fail-fast scoring client) with ``scoring.candidates_k`` = ``k``."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     mw = make_manager_world(tmp_path, fail_fast=fail_fast, scoring__candidates_k=k, **overrides)
     r3 = R3(mw)
     if fail_fast:
@@ -382,7 +383,9 @@ def id_set(text: str | None) -> set[str]:
 
 def verdict(caplog: pytest.LogCaptureFixture, wallet: str) -> dict[str, Any]:
     """The one screen line of ``wallet`` as {outcome, failed, not_evaluable}."""
-    (line,) = screen_lines(caplog, wallet)
+    lines = screen_lines(caplog, wallet)
+    assert len(lines) == 1, f"expected exactly one '{SCREEN_EVENT}' line for {wallet}, got {len(lines)}"
+    (line,) = lines
     return {
         "outcome": line.get("outcome"),
         "failed": id_set(line.get("failed")),
@@ -398,3 +401,88 @@ def ok_page(t: int = T0, **kw: Any) -> list[dict[str, Any]]:
     """A page that passes S1-S9 for a wallet with the default row (AV 50 000): 160 closed taker trips of 2 000 USD
     per fill, held 1 h, first core fill 100 days before ``t``, 320 rows."""
     return good_trips(t, **kw)
+
+
+# --- crafted pages: each fails exactly one screen rule (AV 50 000 row, screen at ``t``) ---------------------------
+
+
+def full_page(
+    t: int,
+    core_rows: list[dict[str, Any]],
+    tids: Tids,
+    *,
+    first_ago: int = 100 * DAY,
+    span_ms: int = 50 * DAY,
+) -> list[dict[str, Any]]:
+    """A FULL page (2 000 rows): ``core_rows`` plus tiny non-core padding so that the earliest row is at
+    ``t - first_ago`` and the latest exactly ``span_ms`` after it. ``core_rows`` must start at ``t - first_ago``."""
+    first = t - first_ago
+    assert min(r["time"] for r in core_rows) == first
+    assert max(r["time"] for r in core_rows) < first + span_ms
+    return pad_to_full(core_rows, tids, first + 1, first + span_ms)
+
+
+def trips_in(
+    t: int, n: int, *, first_ago: int, span_ms: int, hold_ms: int = HOUR, tids: Tids, coin: str = "BTC"
+) -> list[dict[str, Any]]:
+    """``n`` closed 2 000 USD trips from ``t - first_ago`` to two days before ``first + span``."""
+    return good_trips(
+        t, n, first_ago=first_ago, last_ago=first_ago - span_ms + 2 * DAY, hold_ms=hold_ms, tids=tids, coin=coin
+    )
+
+
+def page_ok_full(t: int, *, n_trips: int = 40, span_ms: int = 50 * DAY, hold_ms: int = HOUR) -> list[dict[str, Any]]:
+    """A full page that passes S1-S8 (S9 is not evaluable on a full page): rate 40 fills a day over 180 d < 10 000."""
+    tids = Tids()
+    core = trips_in(t, n_trips, first_ago=100 * DAY, span_ms=span_ms, hold_ms=hold_ms, tids=tids)
+    return full_page(t, core, tids, span_ms=span_ms)
+
+
+def page_s1(t: int) -> list[dict[str, Any]]:
+    return []
+
+
+def page_s2(t: int, span_ms: int = DAY - 1) -> list[dict[str, Any]]:
+    return full_short_page(t - 10 * DAY, span_ms)
+
+
+def page_s3(t: int, extra_usd: int = 642_000) -> list[dict[str, Any]]:
+    """Core notional 640 000 (160 trips x 2 fills x 2 000); the non-core fills add ``extra_usd`` (core share 0.4992)."""
+    tids = Tids()
+    rows = good_trips(t, tids=tids)
+    rows.append(non_core(tids, t - 50 * DAY, extra_usd))
+    return rows
+
+
+def page_s4(t: int, makers: int = 225) -> list[dict[str, Any]]:
+    """``makers`` of the 320 core fills are maker fills of 2 000 USD: 224 = exactly 0.70, 225 = 0.703."""
+    n_close = makers - 160
+    return good_trips(t, open_crossed=lambda k: False, close_crossed=lambda k: k >= n_close)
+
+
+def page_s5(t: int, first_ago: int = 59 * DAY) -> list[dict[str, Any]]:
+    return good_trips(t, first_ago=first_ago)
+
+
+def page_s6(t: int, span_ms: int = 30 * DAY) -> list[dict[str, Any]]:
+    """Full page over ``span_ms``: 2 000 / span x 180 d = 12 000 fills a window at 30 days (>= 10 000)."""
+    return page_ok_full(t, span_ms=span_ms)
+
+
+def page_s7(t: int, hold_ms: int = 899_999) -> list[dict[str, Any]]:
+    return good_trips(t, hold_ms=hold_ms)
+
+
+def page_s8(t: int, exec_trips: int = 79) -> list[dict[str, Any]]:
+    """160 trips, ``exec_trips`` of them 2 000 USD (>= the 1 667 USD an executable open needs at AV 50 000) and the rest
+    100 USD: 79 / 160 = 0.494 fails, 80 / 160 = 0.5 passes."""
+    return good_trips(t, open_px=lambda k: "2000" if k < exec_trips else "100")
+
+
+def page_s9(t: int, n: int = 149) -> list[dict[str, Any]]:
+    return good_trips(t, n)
+
+
+FAILING_PAGES: dict[str, Callable[[int], list[dict[str, Any]]]] = {
+    "S3": page_s3, "S4": page_s4, "S5": page_s5, "S6": page_s6, "S7": page_s7, "S8": page_s8, "S9": page_s9,
+}
