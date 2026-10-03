@@ -387,11 +387,8 @@ class Ledger:
         """The complete records stored at or after byte ``offset`` (only those of ``kinds`` when given; the other lines
         are not even parsed) and the offset after the last complete line (pass it to the next call). Read-only and NOT
         verified again: this process is the only writer and wrote them itself; an unterminated last line is left for
-        the next call. Costs what was appended since, never the whole ledger.
-
-        Raises:
-            ValueError: a stored line is not a well-formed record.
-        """
+        the next call. A line that cannot be decoded is logged (its position only) and skipped: a reader of the facts
+        must not stop for good at one bad line. Costs what was appended since, never the whole ledger."""
         try:
             with (self._directory / LEDGER_FILENAME).open("rb") as handle:
                 handle.seek(offset)
@@ -400,11 +397,18 @@ class Ledger:
             return [], offset
         complete = data[: data.rfind(b"\n") + 1]
         markers = None if kinds is None else tuple(f'"kind":"{kind}"'.encode("ascii") for kind in sorted(kinds))
-        wanted = [
-            decode_line(line)
-            for line in complete.splitlines()
-            if markers is None or any(marker in line for marker in markers)
-        ]
+        wanted: list[LedgerRecord] = []
+        position = offset
+        for line in complete.splitlines(keepends=True):
+            if markers is None or any(marker in line for marker in markers):
+                try:
+                    wanted.append(decode_line(line.rstrip(b"\r\n")))
+                except ValueError:
+                    _log.warning(
+                        "an undecodable ledger line was skipped",
+                        extra={"event": "ledger_line_skipped", "offset": position, "length": len(line)},
+                    )
+            position += len(line)
         return [r for r in wanted if kinds is None or r.kind in kinds], offset + len(complete)
 
     def verify(self) -> VerificationResult:
