@@ -260,7 +260,7 @@ def test_R3_AC1_unrankable_rows_that_violate_P2_or_P3_or_have_no_address_are_nev
 
 
 def test_R3_AC1_when_candidates_k_rows_are_ranked_no_unrankable_row_is_appended(tmp_path: Path) -> None:
-    ranked = [row(w(i), bps_m=10 + i % 40, bps_p=10 + i % 40) for i in range(1, K + 1)]
+    ranked = [row(w(100 + i), bps_m=10 + i % 40, bps_p=10 + i % 40) for i in range(1, K + 1)]
     unrankable = [r for _l, r in _unrankable()]
     r3, order = stage1(tmp_path, [*unrankable, *ranked], ticks=400)
     assert set(order) == {r["ethAddress"] for r in ranked}  # all K ranked rows were screened, nobody else

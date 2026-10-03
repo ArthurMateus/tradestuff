@@ -27,7 +27,7 @@ from copytrade.hl.budget import request_weight
 from tests.hl.support import T0, Call, ok
 from tests.selection.helpers import w
 from tests.selection.r1_world import (
-    DAY,
+    DAY as DAY,
     PAGE,
     ManagerWorld,
     make_manager_world,

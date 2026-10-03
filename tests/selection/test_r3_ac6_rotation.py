@@ -25,7 +25,7 @@ from copytrade.selection.models import STATUS_APPLIED
 from tests.hl.support import T0
 from tests.selection.helpers import cycle as scored_cycle
 from tests.selection.helpers import score, w
-from tests.selection.r3_world import HOUR, K, R3, make_r3, ok_page, ranked_rows, row
+from tests.selection.r3_world import K, R3, make_r3, ok_page, ranked_rows, row
 
 N = 55  # five more ranked wallets than slots
 

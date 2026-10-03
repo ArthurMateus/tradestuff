@@ -19,7 +19,6 @@ from copytrade.runner.logsetup import configure_logging
 from tests.selection.helpers import w
 from tests.selection.r3_world import (
     DAY,
-    HOUR,
     Tids,
     good_trips,
     make_r3,

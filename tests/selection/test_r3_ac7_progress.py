@@ -21,7 +21,6 @@ from pathlib import Path
 from tests.hl.support import T0
 from tests.selection.helpers import w
 from tests.selection.r3_world import (
-    DAY,
     HOUR,
     R3,
     Tids,

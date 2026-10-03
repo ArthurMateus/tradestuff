@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal as D
 from pathlib import Path
+from functools import partial
 from typing import Any, Callable
 
 import pytest
@@ -28,11 +29,9 @@ from tests.selection.helpers import w
 from tests.selection.r3_world import (
     DAY,
     HOUR,
-    R3,
     Tids,
     fill,
     full_page,
-    full_short_page,
     good_trips,
     make_r3,
     non_core,
@@ -225,10 +224,14 @@ def test_R3_AC2_S5_a_first_core_fill_59_days_back_fails_only_S5(tmp_path: Path, 
     assert_fails_only(screen(tmp_path, caplog, page_s5), "S5")
 
 
+def _trips_first_ago(ago: int, t: int) -> list[dict[str, Any]]:
+    return good_trips(t, first_ago=ago)
+
+
 def test_R3_AC2_S5_exactly_60_days_passes_one_millisecond_less_fails(tmp_path: Path) -> None:
     for ago, expect_pass in ((60 * DAY, True), (60 * DAY - 1, False)):
         r3 = make_r3(tmp_path / str(ago))
-        r3.serve_at(w(1), lambda t, ago=ago: good_trips(t, first_ago=ago))
+        r3.serve_at(w(1), partial(_trips_first_ago, ago))
         r3.set_board([row(w(1))])
         r3.cycle(40)
         assert (r3.backfilled() == {w(1)}) is expect_pass  # only a survivor gets the rest of the backfill

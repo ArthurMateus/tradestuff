@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -30,7 +31,7 @@ E, B, HEAVY = w(1), w(2), w(3)
 HOUR = 3_600_000
 
 
-def one(recs):  # type: ignore[no-untyped-def]
+def one(recs: list[Any]) -> Any:
     assert len(recs) == 1, f"expected exactly one record, got {len(recs)}"
     return recs[0]
 
@@ -43,7 +44,7 @@ def run_to_complete(world, limit: int = 30) -> None:  # type: ignore[no-untyped-
     raise AssertionError("the backfill did not complete")
 
 
-def per_wallet_other_calls(world, wallet: str) -> list:  # type: ignore[no-untyped-def]
+def per_wallet_other_calls(world, wallet: str) -> list[Any]:  # type: ignore[no-untyped-def]
     return [c for c in world.http.calls if c.body.get("user") == wallet and c.body["type"] != "userFillsByTime"]
 
 
