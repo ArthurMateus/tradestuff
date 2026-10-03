@@ -4,7 +4,7 @@ What the existing gates can decide from a leaderboard row alone (see the test pl
 (row ``accountValue``) and the address half of G13 (``gate.exclude_addresses``). Everything else (G1-G10, G12, G14,
 G15, the role half of G13) needs fills, portfolio, state or ``userRole`` and cannot run here: not pinned, no new rule.
 
-Pinned decisions: the prefilter applies to ALL leaderboard rows in the order served and ``scoring.candidates_k`` then
+Pinned decisions (R3 note: ranking by K1 replaced the served order, see 05-test-plan-R3.md): the prefilter applies to ALL leaderboard rows and ``scoring.candidates_k`` then
 takes the first k survivors (so prefiltered rows do not shrink the candidate set); a row whose ``accountValue`` is
 missing or unreadable is KEPT (the row cannot decide, the scorer's own gate will); the threshold is inclusive like
 G11 (exactly the minimum is kept). A prefiltered wallet receives no request of any kind.
@@ -22,9 +22,11 @@ EXCLUDED = "0xdfc24b077bc1425ad1dea75bcb6f8158e10df303"
 K = 50  # scoring.candidates_k floor
 
 
-def run(tmp_path: Path, rows: list[tuple[str, str | None]], **overrides: object) -> tuple[set[str], set[str], Any]:
+def run(
+    tmp_path: Path, rows: list[tuple[str, str | None]], *, filler_passes: bool = True, **overrides: object
+) -> tuple[set[str], set[str], Any]:
     mw = make_manager_world(tmp_path, fail_fast=False, **overrides)
-    mw.board.outcome = board_body(rows)
+    mw.board.outcome = board_body(rows, filler_passes=filler_passes)
     mw.manager.run_cycle(p95_latency_s=None)
     mw.work_until_complete(max_ticks=400)
     users = {c.body["user"] for c in mw.world.http.calls if "user" in c.body}
@@ -67,12 +69,17 @@ def test_R1_AC3_an_excluded_address_gets_no_request(tmp_path: Path) -> None:
 
 def test_R1_AC3_a_row_without_a_readable_account_value_is_kept(tmp_path: Path) -> None:
     no_field, junk, empty = w(1), w(2), w(3)
-    users, fetched, _ = run(tmp_path, [(no_field, None), (junk, "n/a"), (empty, "")])
+    # R3 L4: a row that cannot be read is unrankable and is appended after the ranked rows only while fewer than
+    # candidates_k rows are ranked, so the filler here fails stage 1 (else 1 000 ranked filler rows fill K first)
+    users, fetched, _ = run(tmp_path, [(no_field, None), (junk, "n/a"), (empty, "")], filler_passes=False)
     assert {no_field, junk, empty} <= fetched  # cannot decide from the row: the scorer decides
 
 
-def test_R1_AC3_candidates_k_takes_the_first_k_survivors_in_served_order(tmp_path: Path) -> None:
-    rows = [(w(1), "5.0"), (EXCLUDED, "90000.0"), (w(3), "9999.99"), (w(4), "10000.0"), (w(5), None)]
+def test_R1_AC3_candidates_k_takes_the_first_k_survivors_in_rank_order(tmp_path: Path) -> None:
+    # R3 K1: the survivors are ranked, not served in order; board_body rows have identical figures, so the rank order is
+    # the lower-case address, which here is also the served order. (Was: w5 without an account value as 5th row; an
+    # unreadable row is unrankable and is no longer a survivor once K rows are ranked, covered by the test above.)
+    rows = [(w(1), "5.0"), (EXCLUDED, "90000.0"), (w(3), "9999.99"), (w(4), "10000.0"), (w(5), "20000.0")]
     expected = [w(4), w(5), *filler(K - 2)]
     _, fetched, mw = run(tmp_path, rows, scoring__candidates_k=K)
     assert mw.world.cfg["scoring.candidates_k"] == K
