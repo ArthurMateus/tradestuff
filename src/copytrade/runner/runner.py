@@ -323,6 +323,7 @@ class Runner:
         Raises ``RuntimeError`` before ``start()`` (nothing is wired to the broker before the reload)."""
         if not self._started or self._stopped:
             raise RuntimeError("step() needs a started, not yet stopped runner")
+        self._parts.trading_sleeper.new_iteration()  # this iteration's REST time budget (RISK-75)
         self._parts.clock_worker.tick()
         self._section("hub", self._parts.hub_tap.drain)  # mids and books first, independent of the recorder (RISK-65)
         advanced, skipped = self._advance_and_mark()
@@ -347,8 +348,9 @@ class Runner:
             self._clock_alerts(reason)
             if target is None:
                 return None, reason  # no baseline at all: nothing is held yet (an unsynced start without positions)
-            self.manager.advance_to(target)
+            self.manager.advance_to(target)  # may spend the iteration's REST time (leader reconciliation, funding)
             self.last_advanced_ms = target
+            self._section("hub", self._parts.hub_tap.drain)  # the marks and books that arrived meanwhile
             self._mark(target)
         self._section("delistings", lambda: self._delistings(target))  # an unexpected failure must not end the loop
         with self.gate_lock:

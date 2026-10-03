@@ -14,6 +14,7 @@ from the ledger: F13/R0).
 from __future__ import annotations
 
 import logging
+import math
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
@@ -84,6 +85,7 @@ _ORPHAN_LEADER = "orphan"
 _RETRY_TID = 0  # appended to the tids of a retried close: real tids are positive, synthetic ones negative
 _RETRIED_REFUSALS = frozenset({"share_closed", "exceeds_position"})  # a fill got in first: the close is re-sized
 _MIN_WINDOW_MS = 3_600_000
+RECONCILE_RETRY_MS = 30_000  # a failed leader read is tried again after max(its wait hint, this), not a full interval
 SEEN_LIMIT = 20_000  # the oldest remembered signal id / broker event is forgotten beyond this
 CHECKPOINT_SEEN_SIGNALS = 500  # how many of the newest signal ids a checkpoint carries
 _SHARE_FIELDS = tuple(f.name for f in fields(ShareState))
@@ -207,6 +209,7 @@ class PositionManager:
         self._next_audit_ms: int | None = None if now is None else now + self._settings.fill_audit_interval_ms
         self._next_reconcile_ms: int | None = None
         self._reconcile_since: dict[str, int] = {}
+        self._leader_retry_ms: dict[str, int] = {}  # leader -> when its failed read is tried again
         self._audit_end: dict[str, int] = {}
         self._audit_leaders: set[str] = set()
         self._stretches: dict[str, _Stretch] = {}
@@ -891,6 +894,8 @@ class PositionManager:
             self._next_audit_ms = now_ms + self._settings.fill_audit_interval_ms
         if now_ms >= self._next_reconcile_ms:
             self._run_guarded(self.reconcile, "reconcile_failed")
+        elif self._leader_retry_ms and now_ms >= min(self._leader_retry_ms.values()):
+            self._run_guarded(self._retry_failed_leaders, "reconcile_failed")
         if now_ms >= self._next_audit_ms:
             self._run_guarded(self.run_fill_audit, "audit_failed")
         return events
@@ -1116,9 +1121,23 @@ class PositionManager:
         now = self._sync()
         self._next_reconcile_ms = now + self._settings.reconcile_interval_ms
         self._reconcile_broker()
-        leaders = sorted({s.leader for s in self._book.states() if s.status in (OPEN, PENDING_ENTRY)})
-        for leader in leaders:
+        for leader in self._leaders_with_shares():
             self._reconcile_leader(leader, now)
+
+    def _leaders_with_shares(self) -> list[str]:
+        held = {s.leader for s in self._book.states() if s.status in (OPEN, PENDING_ENTRY)}
+        self._leader_retry_ms = {leader: due for leader, due in self._leader_retry_ms.items() if leader in held}
+        return sorted(held)
+
+    def _retry_failed_leaders(self) -> None:
+        """The leaders whose read failed and whose retry time has come, the longest-waiting first (the broker side is
+        not compared again: the full reconciliation does that on its own schedule)."""
+        now = self._sync()
+        due = [(at, leader) for leader, at in self._leader_retry_ms.items() if at <= now]
+        held = set(self._leaders_with_shares())
+        for _at, leader in sorted(due):
+            if leader in held:
+                self._reconcile_leader(leader, now)
 
     def _reconcile_broker(self) -> None:
         held = {
@@ -1222,10 +1241,15 @@ class PositionManager:
         try:
             state = self._leader_state.clearinghouse_state(leader)
             fills = tuple(self._leader_fills.user_fills_by_time(leader, since, now))
-        except Exception:
+        except Exception as exc:
             _log.warning("leader reconciliation failed", extra={"event": "positions_reconcile_failed"}, exc_info=True)
-            self._alert("reconcile_failed", f"could not read leader {leader}: no share was changed")
+            if leader not in self._leader_retry_ms:  # one alert per stretch of failures, not one per retry
+                self._alert("reconcile_failed", f"could not read leader {leader}: no share was changed")
+            wait_s = getattr(exc, "wait_s", None)  # a rate-budget refusal says how long until it fits
+            wait_ms = math.ceil(wait_s * 1000) if isinstance(wait_s, int | float) else 0
+            self._leader_retry_ms[leader] = now + max(wait_ms, RECONCILE_RETRY_MS)
             return
+        self._leader_retry_ms.pop(leader, None)
         sizes = {p.coin: Decimal(p.szi) for p in state.positions}
         for share in [s for s in self._book.states() if s.leader == leader and s.status == OPEN]:
             self._reconcile_share(share.share_id, sizes.get(share.coin, Decimal(0)), fills, now)

@@ -75,6 +75,16 @@ class HttpResponse:
     body: str
 
 
+class CallLimit(Protocol):
+    """Bounds how long one request may take (``timeout_s``: the timeout of the next attempt, given the configured one).
+    Raises ``HlBudgetError`` when the caller has no time left (the request is not sent). ``finished`` is called after
+    every request that ``timeout_s`` let through, whatever its outcome (it accounts the time the request took)."""
+
+    def timeout_s(self, configured_s: float) -> float: ...
+
+    def finished(self) -> None: ...
+
+
 class HttpTransport(Protocol):
     """POSTs JSON text. An external boundary. Raises ``TimeoutError`` on timeout, ``OSError`` on connection failure."""
 
@@ -181,6 +191,7 @@ class HlRestClient:
         schema_monitor: SchemaFailureMonitor,
         info_url: str = MAINNET_INFO_URL,
         escalate_cooldown: bool = False,
+        call_limit: CallLimit | None = None,
     ) -> None:
         self._url = _validate_info_url(info_url)
         self._config = config
@@ -198,14 +209,15 @@ class HlRestClient:
         self._cooldown_until_ms: dict[str, int] = {}
         self._rate_limited_in_a_row: dict[str, int] = {}
         self._escalate_cooldown = escalate_cooldown
+        self._call_limit = call_limit
 
     def info(self, request_type: str, params: Mapping[str, Any], *, priority: Priority) -> Any:
         """Send one info request and return the validated, typed response (see ``schema.parse_response``).
 
         Budget is reserved before sending (waiting via the sleeper when needed); 429 and timeouts back off and
-        retry up to ``hl.retry_max`` times; every attempt uses ``hl.rest_timeout_s``; other non-2xx statuses raise
-        ``HlHttpError`` at once; every outcome is reported to the access monitor; a schema failure is reported to
-        the schema monitor and raises ``HlSchemaError``.
+        retry up to ``hl.retry_max`` times; every attempt uses ``hl.rest_timeout_s`` (or less when a ``call_limit``
+        says so); other non-2xx statuses raise ``HlHttpError`` at once; every outcome is reported to the access
+        monitor; a schema failure is reported to the schema monitor and raises ``HlSchemaError``.
 
         Raises:
             HlRequestError, HlHttpError, HlRateLimitedError, HlTimeoutError, HlConnectionError, HlBudgetError,
@@ -314,14 +326,24 @@ class HlRestClient:
         return result
 
     def _attempt(self, request_type: str, body: str, weight: int, priority: Priority) -> Timed:
+        limit = self._call_limit
+        if limit is None:
+            return self._send(request_type, body, weight, priority, self._timeout_s)
+        timeout_s = limit.timeout_s(self._timeout_s)
+        try:
+            return self._send(request_type, body, weight, priority, timeout_s)
+        finally:
+            limit.finished()
+
+    def _send(self, request_type: str, body: str, weight: int, priority: Priority, timeout_s: float) -> Timed:
         self._wait_for_cooldown(request_type)
         self._acquire(request_type, weight, priority)
         sent_ms = self._clock.now_ms()
         try:
-            response = self._transport.post(self._url, body, timeout_s=self._timeout_s)
+            response = self._transport.post(self._url, body, timeout_s=timeout_s)
         except TimeoutError as exc:
             self._access.record_timeout()
-            raise HlTimeoutError(f"{request_type}: no answer within {self._timeout_s:g} s") from exc
+            raise HlTimeoutError(f"{request_type}: no answer within {timeout_s:g} s") from exc
         except OSError as exc:
             self._access.record_timeout()
             raise HlConnectionError(f"{request_type}: connection failed ({type(exc).__name__})") from exc

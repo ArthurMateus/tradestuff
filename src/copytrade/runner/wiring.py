@@ -22,7 +22,7 @@ from copytrade.hl.access import AccessMonitor
 from copytrade.hl.budget import Priority, RateBudget, Sleeper
 from copytrade.hl.connector import WebsocketsConnector
 from copytrade.hl.errors import HlBudgetError
-from copytrade.hl.rest import HlRestClient, StdlibHttpTransport
+from copytrade.hl.rest import CallLimit, HlRestClient, StdlibHttpTransport
 from copytrade.hl.schema import SchemaFailureMonitor
 from copytrade.hl.ws import FillSink, HlWsFeed
 from copytrade.ledger.store import Ledger
@@ -199,13 +199,14 @@ def build_runner(root: Path, env: Mapping[str, str], deps: RunnerDeps) -> Runner
     return Runner(parts=parts, deps=deps)
 
 
-def _rest_client(
+def _rest_client(  # noqa: PLR0913 - the shared parts and the two optional behaviours of the clients
     config: Config,
     deps: RunnerDeps,
     sleeper: Sleeper,
     shared: tuple[RateBudget, AccessMonitor, SchemaFailureMonitor],
     *,
     escalate_cooldown: bool = False,
+    call_limit: CallLimit | None = None,
 ) -> HlRestClient:
     budget, access, schema_monitor = shared
     return HlRestClient(
@@ -219,6 +220,7 @@ def _rest_client(
         schema_monitor=schema_monitor,
         info_url=deps.endpoints.info_url,
         escalate_cooldown=escalate_cooldown,
+        call_limit=call_limit,
     )
 
 
@@ -250,7 +252,7 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
     schema_monitor = SchemaFailureMonitor(clock=clock, alerts=relay)
     shared = (budget, access, schema_monitor)
     trading_sleeper = TradingSleeper(deps.sleeper)
-    rest = _rest_client(config, deps, trading_sleeper, shared, escalate_cooldown=True)
+    rest = _rest_client(config, deps, trading_sleeper, shared, escalate_cooldown=True, call_limit=trading_sleeper)
     rest_clock = _rest_client(config, deps, deps.sleeper, shared)
     sync = ClockSync.from_config(
         config,
@@ -288,7 +290,7 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
     return _Exchange(
         rest=rest,
         rest_clock=rest_clock,
-        rest_scoring=_rest_client(config, deps, _FailFastSleeper(), shared),
+        rest_scoring=_rest_client(config, deps, _FailFastSleeper(), shared, call_limit=trading_sleeper),
         trading_sleeper=trading_sleeper,
         clock_worker=clock_worker,
         access=access,

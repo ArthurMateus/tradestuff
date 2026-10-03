@@ -32,6 +32,7 @@ _log = logging.getLogger(__name__)
 
 MAX_BOOKS_PER_COIN = 64
 SERVER_ERROR_STATUS = 500
+FUNDING_RETRY_MS = 10_000  # a funding rate that is not there yet is asked for again after this long
 ESTIMATE_SERVER_ERROR_RETRIES = 2  # extra clock-estimate attempts after an HTTP 5xx answer
 ESTIMATE_RETRY_PAUSE_S = 0.5
 CONFIRMING_BOOKS = 2  # distinct books that must be at least this recent before a catch-up trusts a book time
@@ -330,11 +331,15 @@ class MarketHub:
 
 class RestMarketSource:
     """``recorder.ports.MarketSource`` over ``metaAndAssetCtxs`` and ``fundingHistory`` (CRITICAL priority), and
-    ``paper.ports.FundingSource`` over the same two requests. ``clock`` is part of the pinned signature; the
-    exchange timestamps here come from the responses, so it is not used."""
+    ``paper.ports.FundingSource`` over the same two requests. The exchange timestamps come from the responses;
+    ``clock`` (local time) only paces the retries of a funding rate that is not available: ``funding_at`` asks the
+    exchange for one coin and hour at most once per ``FUNDING_RETRY_MS`` (it is two REST requests on the trading
+    thread) and answers ``None`` (missing, retried later) in between."""
 
-    def __init__(self, *, rest: HlRestClient, clock: Clock) -> None:  # noqa: ARG002 - pinned signature
+    def __init__(self, *, rest: HlRestClient, clock: Clock) -> None:
         self._rest = rest
+        self._clock = clock
+        self._funding_tried_ms: dict[tuple[str, int], int] = {}
 
     def asset_contexts(self) -> Sequence[AssetContext]:
         snapshot = self._rest.meta_and_asset_ctxs(priority=Priority.CRITICAL)
@@ -365,6 +370,11 @@ class RestMarketSource:
     def funding_at(self, coin: str, hour_ms: int) -> FundingSnapshot | None:
         """The funding rate paid for the hour starting at ``hour_ms`` (the exchange stamps it inside that hour) and the
         CURRENT oracle price of the coin (the exchange does not serve the hour's own oracle). ``OSError`` on failure."""
+        key, now = (coin, hour_ms), self._clock.now_ms()
+        tried = self._funding_tried_ms.get(key)
+        if tried is not None and 0 <= now - tried < FUNDING_RETRY_MS:
+            return None
+        self._funding_tried_ms[key] = now
         try:
             points = self.funding_history(coin, hour_ms)
             oracle = next((c.oracle for c in self.asset_contexts() if c.coin == coin), None)
@@ -373,6 +383,7 @@ class RestMarketSource:
         point = next((p for p in points if p.time_ms < hour_ms + _HOUR_MS), None)
         if point is None or oracle is None:
             return None
+        del self._funding_tried_ms[key]
         return FundingSnapshot(coin=coin, hour_ms=hour_ms, rate=point.rate, oracle_px=oracle)
 
 
