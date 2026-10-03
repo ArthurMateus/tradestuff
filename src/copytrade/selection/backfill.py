@@ -266,7 +266,9 @@ class Backfiller:
     def _start_cooldown(self, wallet: str, exc: Exception) -> None:
         """A 429 waits ``hl.backoff_max_s``; any other failure waits ``hl.backoff_base_s`` doubled for every consecutive
         failure of the wallet, up to ``hl.backoff_max_s``. A budget refusal is not about one wallet (the scoring
-        share is shared): it cools every wallet down, so one refusal is one record, not one per candidate."""
+        share is shared): it cools every wallet down, so one refusal is one record, not one per candidate. A refusal
+        that states how long the budget needs (``wait_s``) cools down for at least that long: nothing is sent before
+        the budget has room."""
         now = self._clock.now_ms()
         if isinstance(exc, HlRateLimitedError):
             self._rate_limited_until[wallet] = now + self._rate_limit_cooldown_ms
@@ -275,6 +277,8 @@ class Backfiller:
         streak = self._error_streak.get(key, 0) + 1
         self._error_streak[key] = streak
         wait_ms = min(self._error_base_ms * 2 ** min(streak - 1, 62), self._rate_limit_cooldown_ms)
+        if isinstance(exc, HlBudgetError) and exc.wait_s is not None:
+            wait_ms = min(max(wait_ms, math.ceil(exc.wait_s * 1000)), self._rate_limit_cooldown_ms)
         self._error_until[key] = now + wait_ms
 
     def _reset_errors(self, wallet: str) -> None:

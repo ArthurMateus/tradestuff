@@ -84,7 +84,9 @@ class _FailFastSleeper:
     fails at once instead of blocking the trading thread; the caller tries again on a later slice."""
 
     def sleep(self, seconds: float) -> None:
-        raise HlBudgetError(f"the rate budget has no room for this request now (would wait {seconds:.1f} s)")
+        raise HlBudgetError(
+            f"the rate budget has no room for this request now (would wait {seconds:.1f} s)", wait_s=seconds
+        )
 
 
 class AlertRelay:

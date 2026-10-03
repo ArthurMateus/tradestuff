@@ -46,7 +46,18 @@ class HlConnectionError(HlError):
 
 
 class HlBudgetError(HlError):
-    """The request can never fit the rate budget of its priority class (for example scoring weight above its share)."""
+    """The request can never fit the rate budget of its priority class (for example scoring weight above its share), or
+    does not fit it now and the caller does not wait.
+
+    Attributes:
+        wait_s: how long the caller would have had to wait before the request fits; None when it never fits.
+    """
+
+    wait_s: float | None
+
+    def __init__(self, message: str, *, wait_s: float | None = None) -> None:
+        super().__init__(message)
+        self.wait_s = wait_s
 
 
 class HlSchemaError(HlError):
