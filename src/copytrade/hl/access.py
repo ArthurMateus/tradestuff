@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from collections import deque
 from collections.abc import Mapping
 from decimal import Decimal
@@ -70,6 +71,7 @@ class AccessMonitor:
         self._bucket_successes = 0
         self._bucket_failures = 0
         self._healthy_minutes = 0
+        self._lock = threading.RLock()  # the trading thread and the clock worker both record outcomes
 
     def record_response(self, status: int, body: str = "") -> None:
         """Record one HTTP response."""
@@ -87,14 +89,15 @@ class AccessMonitor:
 
     def tick(self) -> None:
         """Called at least once per second: re-evaluates recovery and sends the alert. Never raises."""
-        if not self._degraded:
-            return
-        now = self._clock.now_ms()
-        self._advance_bucket(now)
-        if not self._alert_sent:
-            self._send_alert()
-        if self._healthy_minutes >= self._recover_min:
-            self._clear(now)
+        with self._lock:
+            if not self._degraded:
+                return
+            now = self._clock.now_ms()
+            self._advance_bucket(now)
+            if not self._alert_sent:
+                self._send_alert()
+            if self._healthy_minutes >= self._recover_min:
+                self._clear(now)
 
     @property
     def degraded(self) -> bool:
@@ -105,20 +108,21 @@ class AccessMonitor:
         return ACCESS_DEGRADED if self._degraded and action in _ENTRY_ACTIONS else None
 
     def _observe(self, *, success: bool, access_error: bool) -> None:
-        now = self._clock.now_ms()
-        if self._degraded:
-            self._advance_bucket(now)
-            if success:
-                self._bucket_successes += 1
-            else:
-                self._bucket_failures += 1
-            return
-        self._expire(now)
-        self._outcomes.append((now, success))
-        self._successes += success
-        if access_error:
-            self._access_errors.append(now)
-        self._evaluate_trip(now)
+        with self._lock:
+            now = self._clock.now_ms()
+            if self._degraded:
+                self._advance_bucket(now)
+                if success:
+                    self._bucket_successes += 1
+                else:
+                    self._bucket_failures += 1
+                return
+            self._expire(now)
+            self._outcomes.append((now, success))
+            self._successes += success
+            if access_error:
+                self._access_errors.append(now)
+            self._evaluate_trip(now)
 
     def _expire(self, now: int) -> None:
         while self._outcomes and now - self._outcomes[0][0] >= self._window_ms:

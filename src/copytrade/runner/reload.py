@@ -26,7 +26,7 @@ from copytrade.paper.restore import BROKER_STATE_KINDS, BrokerSnapshot, replay_b
 from copytrade.paper.settings import PaperSettings
 from copytrade.paper.types import CoinMeta
 from copytrade.positions.book import PositionBook
-from copytrade.positions.manager import PositionManager
+from copytrade.positions.manager import CHECKPOINT_SEEN_SIGNALS, PositionManager
 from copytrade.positions.types import CLOSED, OPEN
 from copytrade.risk.errors import RiskStateError
 from copytrade.risk.gate import RiskGate
@@ -45,6 +45,7 @@ ALERT_STARTUP_UNCERTAIN = "startup_uncertain"
 KIND_CHECKPOINT = "runner_checkpoint"
 KIND_RUNNER_START = "runner_start"
 KIND_RUNNER_STOP = "runner_stop"
+KIND_RECORDING_PRUNED = "recording_pruned"
 
 TID_WINDOW_MS = 72 * 3_600_000  # leader fills older than this are never re-read by a reconciliation or audit
 DOWNTIME_MARGIN_MS = 60_000  # the resync of a restart starts this long before the last record of the old run
@@ -79,12 +80,15 @@ class LedgerScan:
     snapshot: BrokerSnapshot | None = None
     checkpoint: Mapping[str, Any] | None = None
     tail_state_records: int = 0
+    tail_shares: dict[str, list[tuple[int, Mapping[str, Any]]]] = field(default_factory=dict)  # share_state since then
     had_previous_run: bool = False
     followed: tuple[str, ...] = ()
     follow_started: dict[str, int] = field(default_factory=dict)
     paused: set[str] = field(default_factory=set)
     order_times: deque[int] = field(default_factory=lambda: deque(maxlen=_ORDER_TIMES_KEPT))
     signal_tids: dict[str, set[int]] = field(default_factory=lambda: defaultdict(set))
+    seen_signals: list[str] = field(default_factory=list)  # the newest signal ids, from the checkpoints' deltas
+    pruned_paths: set[str] = field(default_factory=set)  # recordings already pruned (retention keeps them in memory)
     last_seq: int = 0
     last_ts_ms: int = 0
 
@@ -94,8 +98,12 @@ class LedgerScan:
         self.last_ts_ms = record.ts.ms
         if kind == KIND_CHECKPOINT:
             self.checkpoint, self.tail_state_records = payload, 0
+            self.tail_shares = {}
+            self._observe_seen(payload)
         elif kind in _STATE_KINDS:
             self.tail_state_records += 1
+            if kind == "share_state":
+                self.tail_shares.setdefault(payload["share_id"], []).append((record.ts.ms, payload))
         if kind == KIND_RUNNER_START:
             self.had_previous_run = True
         elif kind == "paper_order":
@@ -110,6 +118,20 @@ class LedgerScan:
             self.followed = tuple(w.lower() for w in payload["followed"])
         elif kind == "leader_paused":
             self.paused.add(payload["wallet"].lower())
+        elif kind == KIND_RECORDING_PRUNED:
+            self.pruned_paths.add(payload["path"])
+
+    def _observe_seen(self, payload: Mapping[str, Any]) -> None:
+        """A checkpoint carries the signal ids added since the previous one (``full`` when it starts a chain); older
+        checkpoints carry the whole list inside the manager state."""
+        delta = payload.get("seen_signals")
+        if delta is None:
+            self.seen_signals = list(payload["manager"]["state"].get("seen_signals", ()))
+        elif delta["full"]:
+            self.seen_signals = list(delta["ids"])
+        else:
+            self.seen_signals.extend(delta["ids"])
+        del self.seen_signals[:-CHECKPOINT_SEEN_SIGNALS]
 
 
 def scan_ledger(ledger: Ledger, settings: PaperSettings, *, now_ms: int) -> LedgerScan:
@@ -125,16 +147,20 @@ def scan_ledger(ledger: Ledger, settings: PaperSettings, *, now_ms: int) -> Ledg
     return scan
 
 
-def checkpoint_payload(
+def checkpoint_payload(  # noqa: PLR0913 - the fields of one record
     *,
     run_id: str,
     last_advanced_ms: int | None,
     risk_state_expected: bool,
     manager: Mapping[str, Any],
     gate_entries: list[dict[str, Any]],
+    seen_signals: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """The ledger payload of a ``runner_checkpoint`` record (see ``Runner``)."""
+    """The ledger payload of a ``runner_checkpoint`` record (see ``Runner``). ``seen_signals`` is ``{"full": bool,
+    "ids": [...]}``: the signal ids added since the previous checkpoint, or all of them when ``full``; the manager's
+    own state in ``manager`` does not carry them (see ``LedgerScan``)."""
     return {
+        "seen_signals": seen_signals,
         "run_id": run_id,
         "last_advanced_ms": last_advanced_ms,
         "risk_state_expected": risk_state_expected,
@@ -200,10 +226,17 @@ def reload_state(parts: ReloadParts, scan: LedgerScan, *, now_ms: int) -> Reload
     )
     cid_map = {r.old_client_order_id: r.new_client_order_id for r in (*result.stops, *result.exits)}
     if checkpoint:
-        parts.manager.restore_state(checkpoint["manager"], cid_map=cid_map, tids_done=scan.signal_tids)
+        manager_state = checkpoint["manager"]
+        manager_state = {**manager_state, "state": {**manager_state["state"], "seen_signals": scan.seen_signals}}
+        parts.manager.restore_state(manager_state, cid_map=cid_map, tids_done=scan.signal_tids)
         parts.manager.verify_protection()
+    if parts.manager.adopt_unbooked_shares(scan.tail_shares):
+        parts.manager.verify_protection()  # the adopted shares' stops (registered again by the broker replay)
     _restore_follow(parts, scan)
+    if checkpoint:
+        parts.manager.heal_pending_entries()
     uncertain = _uncertainties(parts, scan, result_unknown=result.unknown_coins, dropped=result.dropped_exits)
+    parts.manager.drop_ghost_shares()  # flagged above, then settled now rather than at the next reconciliation
     return ReloadResult(
         restored_positions=len(snapshot.positions),
         restored_stops=len(result.stops),

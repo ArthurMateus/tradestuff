@@ -14,6 +14,7 @@ from the ledger: F13/R0).
 from __future__ import annotations
 
 import logging
+import math
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
@@ -84,6 +85,8 @@ _ORPHAN_LEADER = "orphan"
 _RETRY_TID = 0  # appended to the tids of a retried close: real tids are positive, synthetic ones negative
 _RETRIED_REFUSALS = frozenset({"share_closed", "exceeds_position"})  # a fill got in first: the close is re-sized
 _MIN_WINDOW_MS = 3_600_000
+_SHARE_PREFIX = "share:"  # a share id is "share:" + the id of the signal that opened it
+RECONCILE_RETRY_MS = 30_000  # a failed leader read is tried again after max(its wait hint, this), not a full interval
 SEEN_LIMIT = 20_000  # the oldest remembered signal id / broker event is forgotten beyond this
 CHECKPOINT_SEEN_SIGNALS = 500  # how many of the newest signal ids a checkpoint carries
 _SHARE_FIELDS = tuple(f.name for f in fields(ShareState))
@@ -207,6 +210,7 @@ class PositionManager:
         self._next_audit_ms: int | None = None if now is None else now + self._settings.fill_audit_interval_ms
         self._next_reconcile_ms: int | None = None
         self._reconcile_since: dict[str, int] = {}
+        self._leader_retry_ms: dict[str, int] = {}  # leader -> when its failed read is tried again
         self._audit_end: dict[str, int] = {}
         self._audit_leaders: set[str] = set()
         self._stretches: dict[str, _Stretch] = {}
@@ -762,13 +766,24 @@ class PositionManager:
         if share.status != OPEN:
             return
         track = self._tracks[share_id]
-        cid = self._place_stop(share, "sl", share.qty, share.current_stop_px)
+        held = [s for s in self._broker.stops() if s.share_id == share_id]
+        standing = [s for s in held if s.kind == "sl" and s.qty == share.qty]
+        cid: str | None
+        if standing:  # a healed entry whose stop the broker already has (the kill came after it was recorded)
+            cid = standing[0].client_order_id
+            share = self._take_broker_stop(share, Decimal(standing[0].trigger_px))
+        else:
+            cid = self._place_stop(share, "sl", share.qty, share.current_stop_px)
         if cid is None:
             self._alert("stop_failed", f"{share.coin}: no stop could be placed for {share_id}; closing it")
             self._close_for_cause(share_id, REASON_STOP_FAILED)
             return
         track.sl_cid, track.sl_qty = cid, Decimal(share.qty)
-        if self._settings.tp_enabled:
+        for stale in (s for s in held if s.kind == "sl" and s.client_order_id != cid):
+            self._broker.cancel_stop(
+                stale.client_order_id
+            )  # a stop of another size never protects the share (after the new one)
+        if self._settings.tp_enabled and not any(s.kind == "tp" for s in held):
             self._place_take_profit(share)
 
     def _place_take_profit(self, share: ShareState) -> None:
@@ -884,6 +899,8 @@ class PositionManager:
             self._next_audit_ms = now_ms + self._settings.fill_audit_interval_ms
         if now_ms >= self._next_reconcile_ms:
             self._run_guarded(self.reconcile, "reconcile_failed")
+        elif self._leader_retry_ms and now_ms >= min(self._leader_retry_ms.values()):
+            self._run_guarded(self._retry_failed_leaders, "reconcile_failed")
         if now_ms >= self._next_audit_ms:
             self._run_guarded(self.run_fill_audit, "audit_failed")
         return events
@@ -944,8 +961,9 @@ class PositionManager:
         only when something structural does (a share, a stop, a pending close); ``volatile`` holds the cursors and the
         per-share best price that move all the time, so a caller that writes a checkpoint when ``state`` changed does
         not write one per mark. Only shares that are not closed are carried: closed ones live in the ledger.
-        Not carried, by design: pending entries (dropped at a restart), deferred leader signals of a pending entry, a
-        flip's waiting open leg (the position is flat then; a missed re-entry is safe) and the entry-order map."""
+        Not carried, by design: pending entries whose fill the broker does not hold (dropped at a restart), deferred
+        leader signals of a pending entry, a flip's waiting open leg (the position is flat then; a missed re-entry is
+        safe) and the entry-order map."""
         live = [state for state in self._book.states() if state.status != CLOSED]
         live_ids = {state.share_id for state in live}
         return {
@@ -980,7 +998,9 @@ class PositionManager:
 
         ``cid_map`` maps the client order ids of stops the broker registered again to their new ids (a share's stop
         bookkeeping follows them); ``tids_done`` is every leader fill tid already ledgered as a signal. A share that
-        was a pending entry is booked as closed with nothing held (the broker dropped the order) and ledgered so.
+        was a pending entry is booked as closed with nothing held (the broker dropped the order) and ledgered so,
+        unless the broker holds its fill (the kill came before the checkpoint): it stays pending and
+        ``heal_pending_entries`` books it open.
         A share is ``closing`` only while the broker really holds an exit for it. Time cursors are loaded last.
 
         Raises:
@@ -990,11 +1010,12 @@ class PositionManager:
             raise ValueError("restore_state needs a fresh manager")
         state, volatile = exported["state"], exported["volatile"]
         exiting = {order.share_id for order in self._broker.pending_exits()}
+        held = {share_id for view in self._broker.positions() for share_id in view.share_ids}
         for payload in state["shares"]:
             share = _share_from_payload(
                 payload, Price(volatile["best_px"].get(payload["share_id"], payload["entry_px"]))
             )
-            if share.status == PENDING_ENTRY:
+            if share.status == PENDING_ENTRY and share.share_id not in held:
                 self._book.add(replace(share, status=CLOSED, qty=Qty(0), open_risk_usd=Decimal(0)))
                 self._append_share("restart_dropped", self._share(share.share_id), reason="entry_pending_at_restart")
                 continue
@@ -1016,41 +1037,153 @@ class PositionManager:
 
     def verify_protection(self) -> tuple[str, ...]:
         """After ``restore_state``: every open share held by the broker must have ONE live stop-loss on the opposite
-        side for EXACTLY its quantity (a stop is lost when a kill -9 tears a restore, or is larger than the position
-        after a kill -9 between a take-profit fill and the stop resize). The share's ``sl_cid`` is taken from the
-        broker's stops by share id, not from the checkpoint. A missing or wrong stop is re-placed through the gate (the
-        wrong one is cancelled after); when none can be placed the share is closed. Returns the share ids that needed
-        repair."""
-        repaired: list[str] = []
-        for share in self._book.states():
-            if share.status != OPEN:
-                continue
-            view = self._broker.position(share.coin)
-            if view is None or share.share_id not in view.share_ids:
-                continue
-            track = self._tracks[share.share_id]
-            side = "sell" if share.is_long else "buy"
-            mine = [
-                s for s in self._broker.stops() if s.share_id == share.share_id and s.kind == "sl" and s.side == side
-            ]
-            exact = [s for s in mine if s.qty == share.qty]
-            if exact:
-                track.sl_cid, track.sl_qty = exact[0].client_order_id, Decimal(share.qty)
-                continue
-            repaired.append(share.share_id)
-            cid = self._place_stop(share, "sl", share.qty, share.current_stop_px)
-            if cid is None:
-                track.sl_cid = None
-                self._alert("stop_failed", f"{share.coin}: no stop for {share.share_id} after the restart; closing it")
-                self._close_for_cause(share.share_id, REASON_STOP_FAILED)
-                continue
+        side for EXACTLY its quantity. The checkpoint can be older than the broker's ledger records (kill -9 between
+        a fill and the next checkpoint), so the BROKER is the truth: the share's quantity is taken from the broker's
+        share quantity and its current stop from the broker's tightest stop-loss. A stop-loss whose quantity equals
+        the broker's is never cancelled; the others (stale sizes) are cancelled once a correct one stands. A missing
+        or wrong stop is re-placed through the gate before anything is cancelled; when none can be placed the share
+        is closed. Returns the share ids that needed repair."""
+        return tuple(
+            share_id
+            for share_id in [s.share_id for s in self._book.states() if s.status == OPEN]
+            if self._verify_share(share_id)
+        )
+
+    def _verify_share(self, share_id: str) -> bool:
+        """``verify_protection`` for one share; ``True`` when its stop had to be re-placed."""
+        share = self._share(share_id)
+        view = self._broker.position(share.coin)
+        if view is None or share_id not in view.share_ids:
+            return False
+        share = self._take_broker_quantity(share, Decimal(view.share_qtys[view.share_ids.index(share_id)]))
+        track = self._tracks[share_id]
+        side = "sell" if share.is_long else "buy"
+        mine = [s for s in self._broker.stops() if s.share_id == share_id and s.kind == "sl" and s.side == side]
+        tightest = max if share.is_long else min
+        exact = [s for s in mine if s.qty == share.qty]
+        if exact:
+            keep = tightest(exact, key=lambda s: s.trigger_px)
+            self._take_broker_stop(share, Decimal(keep.trigger_px))
+            track.sl_cid, track.sl_qty = keep.client_order_id, Decimal(share.qty)
             for stale in mine:
-                self._broker.cancel_stop(stale.client_order_id)
-            track.sl_cid, track.sl_qty = cid, Decimal(share.qty)
-            self._alert(
-                "stop_replaced", f"{share.coin}: the stop of {share.share_id} was missing or wrong after the restart"
-            )
-        return tuple(repaired)
+                if stale.client_order_id != keep.client_order_id:
+                    self._broker.cancel_stop(stale.client_order_id)
+            return False
+        if mine:
+            share = self._take_broker_stop(share, Decimal(tightest(s.trigger_px for s in mine)))
+        cid = self._place_stop(share, "sl", share.qty, share.current_stop_px)
+        if cid is None:
+            track.sl_cid = None
+            self._alert("stop_failed", f"{share.coin}: no stop for {share_id} after the restart; closing it")
+            self._close_for_cause(share_id, REASON_STOP_FAILED)
+            return True
+        for stale in mine:
+            self._broker.cancel_stop(stale.client_order_id)
+        track.sl_cid, track.sl_qty = cid, Decimal(share.qty)
+        self._alert("stop_replaced", f"{share.coin}: the stop of {share_id} was missing or wrong after the restart")
+        return True
+
+    def _take_broker_quantity(self, share: ShareState, broker_qty: Decimal) -> ShareState:
+        """The restored share's quantity is the broker's (the checkpoint may predate an add or a take-profit)."""
+        if share.qty == broker_qty:
+            return share
+        updated = self._book.update(share.share_id, qty=Qty(broker_qty))
+        self._append_share("reduced" if broker_qty < share.qty else "added", updated, reason="restart_broker_qty")
+        return updated
+
+    def _take_broker_stop(self, share: ShareState, trigger_px: Decimal) -> ShareState:
+        """The restored share's current stop is the broker's stop-loss trigger (the checkpoint may predate a trail)."""
+        if share.current_stop_px == trigger_px:
+            return share
+        return self._book.update(share.share_id, current_stop_px=Price(trigger_px))
+
+    def heal_pending_entries(self) -> None:
+        """The reload ends with it: a share the checkpoint has as pending whose fill the broker holds (the kill came
+        before the next checkpoint) is booked open from the broker's quantity and price and protected at once, instead
+        of up to ``reconcile_interval`` later. Nothing else is reconciled here (ghosts and orphans stay flagged by the
+        reload and are handled by the periodic reconciliation)."""
+        held = {
+            (view.coin, share_id): (view, qty)
+            for view in self._broker.positions()
+            for share_id, qty in zip(view.share_ids, view.share_qtys, strict=True)
+        }
+        for share in [s for s in self._book.states() if s.status == PENDING_ENTRY]:
+            found = held.get((share.coin, share.share_id))
+            if found is not None:
+                view, qty = found
+                self._heal_entry(share, Decimal(qty), share.entry_px if len(view.share_ids) > 1 else view.avg_entry_px)
+
+    def adopt_unbooked_shares(self, tail: Mapping[str, Sequence[tuple[int, Mapping[str, Any]]]]) -> tuple[str, ...]:
+        """The reload's second pass over what the broker holds: a share the checkpoint did not know (it was opened and
+        filled inside the checkpoint gap, or after a checkpoint write failed) is booked open again from its own
+        ``share_state`` records, ``tail`` = ``{share_id: [(ledger time ms, payload), ...]}`` in ledger order for the
+        records written after the last checkpoint, so the first periodic reconciliation does not close a valid copy as
+        an orphan. Quantity comes from the broker, the entry price and the initial stop from the ``opened`` record, the
+        ATR from the initial stop distance (the trail only reads it), the side from the position. A share with no
+        usable ``opened`` record stays unbooked (the reload flags it, the reconciliation closes it). Returns the
+        adopted share ids; the caller runs ``verify_protection`` for their stops."""
+        adopted = []
+        for view in self._broker.positions():
+            for share_id, qty in zip(view.share_ids, view.share_qtys, strict=True):
+                if self._book.state(share_id) is None:
+                    share = self._share_from_tail(
+                        view.qty > 0, view.coin, share_id, Decimal(qty), tail.get(share_id, ())
+                    )
+                    if share is not None:
+                        self._adopt(share, tail[share_id][0][0])
+                        adopted.append(share_id)
+        return tuple(adopted)
+
+    def _share_from_tail(
+        self, is_long: bool, coin: str, share_id: str, qty: Decimal, records: Sequence[tuple[int, Mapping[str, Any]]]
+    ) -> ShareState | None:
+        opened = next((payload for _ms, payload in records if payload.get("event") == "opened"), None)
+        mult = self._settings.stop_atr_mult
+        if opened is None or not share_id.startswith(_SHARE_PREFIX) or mult <= 0 or opened["coin"] != coin:
+            return None
+        entry, initial_stop = Price(Decimal(opened["entry_px"])), Price(Decimal(opened["stop_px"]))
+        if entry <= 0 or initial_stop <= 0:
+            return None
+        signal_id = share_id[len(_SHARE_PREFIX) :]
+        current = Price(Decimal(records[-1][1]["stop_px"]) or initial_stop)
+        return ShareState(
+            share_id=share_id,
+            trade_id=f"trade:{signal_id}",
+            signal_id=signal_id,
+            leader=str(opened["leader"]),
+            coin=coin,
+            is_long=is_long,
+            status=OPEN,
+            qty=Qty(qty),
+            entry_px=entry,
+            initial_stop_px=initial_stop,
+            current_stop_px=current,
+            initial_risk_usd=Decimal(opened["open_risk_usd"]),
+            open_risk_usd=rules.open_risk_usd(is_long=is_long, qty=qty, entry_px=entry, stop_px=current),
+            max_committed_risk_usd=max(Decimal(payload["open_risk_usd"]) for _ms, payload in records),
+            atr=MONEY_CONTEXT.divide(abs(MONEY_CONTEXT.subtract(entry, initial_stop)), mult),
+            best_px=entry,
+            tp_done=any(payload.get("event") == "tp_filled" for _ms, payload in records),
+        )
+
+    def _adopt(self, share: ShareState, opened_ms: int) -> None:
+        self._book.add(share)
+        self._tracks[share.share_id] = _Track(open_ms=opened_ms, evidence_ms=opened_ms)
+        _remember(self._seen_signals, share.signal_id)
+        self._audit_leaders.add(share.leader)
+        self._alert(
+            "position_mismatch", f"{share.coin}: {share.share_id} was held but not in the checkpoint; booked again"
+        )
+        self._append_share("adopted", share, reason="checkpoint_gap")
+
+    def drop_ghost_shares(self) -> tuple[str, ...]:
+        """The reload's last step: a share booked open that the broker no longer holds (its stop-loss or exit filled
+        after the last checkpoint) is dropped from the book now, not at the next periodic reconciliation."""
+        held = {share_id for view in self._broker.positions() for share_id in view.share_ids}
+        ghosts = [s for s in self._book.states() if s.status == OPEN and s.share_id not in held]
+        for share in ghosts:
+            self._drop_ghost(share, "the broker holds no such share")
+        return tuple(s.share_id for s in ghosts)
 
     # ======================================================================================== reconciliation
 
@@ -1065,9 +1198,23 @@ class PositionManager:
         now = self._sync()
         self._next_reconcile_ms = now + self._settings.reconcile_interval_ms
         self._reconcile_broker()
-        leaders = sorted({s.leader for s in self._book.states() if s.status in (OPEN, PENDING_ENTRY)})
-        for leader in leaders:
+        for leader in self._leaders_with_shares():
             self._reconcile_leader(leader, now)
+
+    def _leaders_with_shares(self) -> list[str]:
+        held = {s.leader for s in self._book.states() if s.status in (OPEN, PENDING_ENTRY)}
+        self._leader_retry_ms = {leader: due for leader, due in self._leader_retry_ms.items() if leader in held}
+        return sorted(held)
+
+    def _retry_failed_leaders(self) -> None:
+        """The leaders whose read failed and whose retry time has come, the longest-waiting first (the broker side is
+        not compared again: the full reconciliation does that on its own schedule)."""
+        now = self._sync()
+        due = [(at, leader) for leader, at in self._leader_retry_ms.items() if at <= now]
+        held = set(self._leaders_with_shares())
+        for _at, leader in sorted(due):
+            if leader in held:
+                self._reconcile_leader(leader, now)
 
     def _reconcile_broker(self) -> None:
         held = {
@@ -1171,10 +1318,15 @@ class PositionManager:
         try:
             state = self._leader_state.clearinghouse_state(leader)
             fills = tuple(self._leader_fills.user_fills_by_time(leader, since, now))
-        except Exception:
+        except Exception as exc:
             _log.warning("leader reconciliation failed", extra={"event": "positions_reconcile_failed"}, exc_info=True)
-            self._alert("reconcile_failed", f"could not read leader {leader}: no share was changed")
+            if leader not in self._leader_retry_ms:  # one alert per stretch of failures, not one per retry
+                self._alert("reconcile_failed", f"could not read leader {leader}: no share was changed")
+            wait_s = getattr(exc, "wait_s", None)  # a rate-budget refusal says how long until it fits
+            wait_ms = math.ceil(wait_s * 1000) if isinstance(wait_s, int | float) else 0
+            self._leader_retry_ms[leader] = now + max(wait_ms, RECONCILE_RETRY_MS)
             return
+        self._leader_retry_ms.pop(leader, None)
         sizes = {p.coin: Decimal(p.szi) for p in state.positions}
         for share in [s for s in self._book.states() if s.leader == leader and s.status == OPEN]:
             self._reconcile_share(share.share_id, sizes.get(share.coin, Decimal(0)), fills, now)

@@ -19,18 +19,23 @@ from urllib.parse import urlsplit
 from copytrade.core.clock import Clock, OffsetEstimate
 from copytrade.core.money import Price
 from copytrade.hl.backoff import backoff_delay_s
-from copytrade.hl.budget import Priority
-from copytrade.hl.errors import HlError, HlSchemaError
+from copytrade.hl.budget import Priority, Sleeper
+from copytrade.hl.errors import HlError, HlHttpError, HlSchemaError
 from copytrade.hl.models import CoinSpec, L2Book
-from copytrade.hl.rest import HlRestClient
+from copytrade.hl.rest import HlRestClient, Timed
 from copytrade.hl.schema import parse_response
-from copytrade.hl.ws import RECONNECT_BASE_S, WsConnection, WsConnector
+from copytrade.hl.ws import RECONNECT_BASE_S, ConnectPendingError, WsConnection, WsConnector
 from copytrade.paper.types import CoinMeta, FundingSnapshot
 from copytrade.recorder.ports import AssetContext, FeedEvent, FundingPoint, MidsUpdate
 
 _log = logging.getLogger(__name__)
 
 MAX_BOOKS_PER_COIN = 64
+SERVER_ERROR_STATUS = 500
+FUNDING_RETRY_MS = 10_000  # a funding rate that is not there yet is asked for again after this long
+ESTIMATE_SERVER_ERROR_RETRIES = 2  # extra clock-estimate attempts after an HTTP 5xx answer
+ESTIMATE_RETRY_PAUSE_S = 0.5
+CONFIRMING_BOOKS = 2  # distinct books that must be at least this recent before a catch-up trusts a book time
 BOOK_RETENTION_FACTOR = 4
 RECONNECT_MAX_S = 30.0
 PING_INTERVAL_MS = 20_000
@@ -50,26 +55,44 @@ def _oserror(exc: HlError) -> OSError:
 class ExchangeOffsetSource:
     """``core.clock.OffsetSource``. One estimate = one ``l2Book`` info request for ``probe_coin`` at CRITICAL priority:
     ``offset_ms = book.time_ms - midpoint(local before, local after)`` and ``uncertainty_ms = max(1, ceil((after -
-    before) / 2))`` plus 1 ms of exchange timestamp granularity. ``OSError`` / ``HlError`` from the request propagate
-    as ``OSError`` (ClockSync treats that as a failed estimate)."""
+    before) / 2))`` plus 1 ms of exchange timestamp granularity, where before/after bracket the FINAL attempt only
+    (never the retries or waits). ``OSError`` / ``HlError`` from the request propagate as ``OSError`` (ClockSync
+    treats that as a failed estimate)."""
 
-    def __init__(self, *, rest: HlRestClient, clock: Clock, probe_coin: str) -> None:
+    def __init__(self, *, rest: HlRestClient, clock: Clock, probe_coin: str, sleeper: Sleeper | None = None) -> None:
         self._rest = rest
         self._clock = clock
         self._probe_coin = probe_coin
+        self._sleeper = sleeper
 
     def estimate(self) -> OffsetEstimate:
-        before = self._clock.now_ms()
-        try:
-            book = self._rest.l2_book(self._probe_coin, priority=Priority.CRITICAL)
-        except HlError as exc:
-            raise _oserror(exc) from exc
-        after = self._clock.now_ms()
+        timed = self._fetch()
+        book: L2Book = timed.value
+        before, after = (
+            timed.sent_ms,
+            timed.received_ms,
+        )  # the final attempt only: retries and waits are not the round trip
         round_trip = max(0, after - before)
         return OffsetEstimate(
             offset_ms=book.time_ms - (before + after) // 2,
             uncertainty_ms=max(1, (round_trip + 1) // 2) + 1,
         )
+
+    def _fetch(self) -> Timed:
+        """The REST client retries 429 and timeouts itself; a server error (5xx) is retried here, a few times and after
+        a short pause (the clock decides whether entries run, so one bad answer must not leave it unsynced)."""
+        attempt = 0
+        while True:
+            try:
+                return self._rest.l2_book_timed(self._probe_coin, priority=Priority.CRITICAL)
+            except HlHttpError as exc:
+                if exc.status < SERVER_ERROR_STATUS or attempt >= ESTIMATE_SERVER_ERROR_RETRIES:
+                    raise _oserror(exc) from exc
+            except HlError as exc:
+                raise _oserror(exc) from exc
+            attempt += 1
+            if self._sleeper is not None:
+                self._sleeper.sleep(ESTIMATE_RETRY_PAUSE_S)
 
 
 def _positive(value: Price) -> bool:
@@ -166,6 +189,16 @@ class MarketHub:
             qualifying = [book for book in self._books.get(coin, ()) if book.time_ms >= time_ms]
         return min(qualifying, key=lambda book: book.time_ms, default=None)
 
+    def confirmed_book_time_ms(self) -> int | None:
+        """The exchange timestamp of the newest book that a SECOND book (another coin, or another snapshot of the same
+        coin) does not contradict: the second-newest distinct book time across all coins, so one bogus frame stamped in
+        the future is never taken. ``None`` until two distinct books have arrived."""
+        with self._lock:
+            times = {(coin, book.time_ms) for coin, books in self._books.items() for book in books}
+        if len(times) < CONFIRMING_BOOKS:
+            return None
+        return sorted((t for _, t in times), reverse=True)[CONFIRMING_BOOKS - 1]
+
     def mids(self) -> Mapping[str, Price]:
         with self._lock:
             return dict(self._mids)
@@ -197,6 +230,8 @@ class MarketHub:
             return None
         try:
             self._conn = self._connector.connect()
+        except ConnectPendingError:
+            return None  # the attempt runs on in the background: asked again on the next poll
         except OSError as exc:
             self._schedule_retry(exc)
             return None
@@ -298,11 +333,15 @@ class MarketHub:
 
 class RestMarketSource:
     """``recorder.ports.MarketSource`` over ``metaAndAssetCtxs`` and ``fundingHistory`` (CRITICAL priority), and
-    ``paper.ports.FundingSource`` over the same two requests. ``clock`` is part of the pinned signature; the
-    exchange timestamps here come from the responses, so it is not used."""
+    ``paper.ports.FundingSource`` over the same two requests. The exchange timestamps come from the responses;
+    ``clock`` (local time) only paces the retries of a funding rate that is not available: ``funding_at`` asks the
+    exchange for one coin and hour at most once per ``FUNDING_RETRY_MS`` (it is two REST requests on the trading
+    thread) and answers ``None`` (missing, retried later) in between."""
 
-    def __init__(self, *, rest: HlRestClient, clock: Clock) -> None:  # noqa: ARG002 - pinned signature
+    def __init__(self, *, rest: HlRestClient, clock: Clock) -> None:
         self._rest = rest
+        self._clock = clock
+        self._funding_tried_ms: dict[tuple[str, int], int] = {}
 
     def asset_contexts(self) -> Sequence[AssetContext]:
         snapshot = self._rest.meta_and_asset_ctxs(priority=Priority.CRITICAL)
@@ -333,6 +372,11 @@ class RestMarketSource:
     def funding_at(self, coin: str, hour_ms: int) -> FundingSnapshot | None:
         """The funding rate paid for the hour starting at ``hour_ms`` (the exchange stamps it inside that hour) and the
         CURRENT oracle price of the coin (the exchange does not serve the hour's own oracle). ``OSError`` on failure."""
+        key, now = (coin, hour_ms), self._clock.now_ms()
+        tried = self._funding_tried_ms.get(key)
+        if tried is not None and 0 <= now - tried < FUNDING_RETRY_MS:
+            return None
+        self._funding_tried_ms[key] = now
         try:
             points = self.funding_history(coin, hour_ms)
             oracle = next((c.oracle for c in self.asset_contexts() if c.coin == coin), None)
@@ -341,6 +385,7 @@ class RestMarketSource:
         point = next((p for p in points if p.time_ms < hour_ms + _HOUR_MS), None)
         if point is None or oracle is None:
             return None
+        del self._funding_tried_ms[key]
         return FundingSnapshot(coin=coin, hour_ms=hour_ms, rate=point.rate, oracle_px=oracle)
 
 

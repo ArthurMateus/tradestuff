@@ -60,9 +60,29 @@ def _status_text(exc: Exception) -> str:
 
 
 @dataclass(frozen=True)
+class Timed:
+    """A decoded response and the local window (``sent_ms`` .. ``received_ms``) of the ATTEMPT that produced it: not the
+    retries, back-off sleeps or budget waits before it (what a clock estimate has to measure)."""
+
+    value: Any
+    sent_ms: int
+    received_ms: int
+
+
+@dataclass(frozen=True)
 class HttpResponse:
     status: int
     body: str
+
+
+class CallLimit(Protocol):
+    """Bounds how long one request may take (``timeout_s``: the timeout of the next attempt, given the configured one).
+    Raises ``HlBudgetError`` when the caller has no time left (the request is not sent). ``finished`` is called after
+    every request that ``timeout_s`` let through, whatever its outcome (it accounts the time the request took)."""
+
+    def timeout_s(self, configured_s: float) -> float: ...
+
+    def finished(self) -> None: ...
 
 
 class HttpTransport(Protocol):
@@ -170,6 +190,8 @@ class HlRestClient:
         access: AccessMonitor,
         schema_monitor: SchemaFailureMonitor,
         info_url: str = MAINNET_INFO_URL,
+        escalate_cooldown: bool = False,
+        call_limit: CallLimit | None = None,
     ) -> None:
         self._url = _validate_info_url(info_url)
         self._config = config
@@ -185,19 +207,26 @@ class HlRestClient:
         self._access = access
         self._schema_monitor = schema_monitor
         self._cooldown_until_ms: dict[str, int] = {}
+        self._rate_limited_in_a_row: dict[str, int] = {}
+        self._escalate_cooldown = escalate_cooldown
+        self._call_limit = call_limit
 
     def info(self, request_type: str, params: Mapping[str, Any], *, priority: Priority) -> Any:
         """Send one info request and return the validated, typed response (see ``schema.parse_response``).
 
         Budget is reserved before sending (waiting via the sleeper when needed); 429 and timeouts back off and
-        retry up to ``hl.retry_max`` times; every attempt uses ``hl.rest_timeout_s``; other non-2xx statuses raise
-        ``HlHttpError`` at once; every outcome is reported to the access monitor; a schema failure is reported to
-        the schema monitor and raises ``HlSchemaError``.
+        retry up to ``hl.retry_max`` times; every attempt uses ``hl.rest_timeout_s`` (or less when a ``call_limit``
+        says so); other non-2xx statuses raise ``HlHttpError`` at once; every outcome is reported to the access
+        monitor; a schema failure is reported to the schema monitor and raises ``HlSchemaError``.
 
         Raises:
             HlRequestError, HlHttpError, HlRateLimitedError, HlTimeoutError, HlConnectionError, HlBudgetError,
             HlSchemaError.
         """
+        return self.info_timed(request_type, params, priority=priority).value
+
+    def info_timed(self, request_type: str, params: Mapping[str, Any], *, priority: Priority) -> Timed:
+        """``info`` plus the local send/receive times of the final attempt (same checks, retries and errors)."""
         if request_type not in INFO_REQUEST_TYPES:
             raise HlRequestError("request type is not an allowed info request")
         if "type" in params:
@@ -241,6 +270,10 @@ class HlRestClient:
     def l2_book(self, coin: str, *, priority: Priority) -> L2Book:
         result: L2Book = self.info("l2Book", {"coin": _name(coin, "coin")}, priority=priority)
         return result
+
+    def l2_book_timed(self, coin: str, *, priority: Priority) -> Timed:
+        """The book and the local window of the attempt that fetched it (``Timed.value`` is the ``L2Book``)."""
+        return self.info_timed("l2Book", {"coin": _name(coin, "coin")}, priority=priority)
 
     def clearinghouse_state(self, user: str, *, priority: Priority) -> ClearinghouseState:
         result: ClearinghouseState = self.info(
@@ -292,24 +325,48 @@ class HlRestClient:
         result: dict[str, PortfolioWindow] = self.info("portfolio", {"user": normalize_wallet(user)}, priority=priority)
         return result
 
-    def _attempt(self, request_type: str, body: str, weight: int, priority: Priority) -> Any:
+    def _attempt(self, request_type: str, body: str, weight: int, priority: Priority) -> Timed:
+        limit = self._call_limit
+        if limit is None:
+            return self._send(request_type, body, weight, priority, self._timeout_s)
+        timeout_s = limit.timeout_s(self._timeout_s)
+        try:
+            return self._send(request_type, body, weight, priority, timeout_s)
+        finally:
+            limit.finished()
+
+    def _send(self, request_type: str, body: str, weight: int, priority: Priority, timeout_s: float) -> Timed:
         self._wait_for_cooldown(request_type)
         self._acquire(request_type, weight, priority)
+        sent_ms = self._clock.now_ms()
         try:
-            response = self._transport.post(self._url, body, timeout_s=self._timeout_s)
+            response = self._transport.post(self._url, body, timeout_s=timeout_s)
         except TimeoutError as exc:
             self._access.record_timeout()
-            raise HlTimeoutError(f"{request_type}: no answer within {self._timeout_s:g} s") from exc
+            raise HlTimeoutError(f"{request_type}: no answer within {timeout_s:g} s") from exc
         except OSError as exc:
             self._access.record_timeout()
             raise HlConnectionError(f"{request_type}: connection failed ({type(exc).__name__})") from exc
+        received_ms = self._clock.now_ms()
         self._access.record_response(response.status, response.body)
         if 200 <= response.status < 300:
-            return self._decode(request_type, response.body, weight, priority)
+            self._rate_limited_in_a_row.pop(request_type, None)
+            return Timed(self._decode(request_type, response.body, weight, priority), sent_ms, received_ms)
         if response.status == 429:
-            self._cooldown_until_ms[request_type] = self._clock.now_ms() + math.ceil(self._backoff_base_s * 1000)
+            self._cooldown_until_ms[request_type] = self._clock.now_ms() + self._rate_limit_cooldown_ms(request_type)
             raise HlRateLimitedError(f"{request_type}: HTTP 429")
         raise HlHttpError(f"{request_type}: HTTP {response.status}", status=response.status)
+
+    def _rate_limit_cooldown_ms(self, request_type: str) -> int:
+        """One base backoff after a 429. With ``escalate_cooldown`` (a client whose sleeper never waits, so its callers
+        fail and ask again later) it doubles for every further 429 in a row, up to ``hl.backoff_max_s``, so those
+        callers never turn a 429 into a retry storm; a success resets it."""
+        if not self._escalate_cooldown:
+            return math.ceil(self._backoff_base_s * 1000)
+        streak = self._rate_limited_in_a_row.get(request_type, 0) + 1
+        self._rate_limited_in_a_row[request_type] = streak
+        delay_s: float = min(self._backoff_base_s * 2 ** min(streak - 1, 62), self._backoff_max_s)
+        return math.ceil(delay_s * 1000)
 
     def _wait_for_cooldown(self, request_type: str) -> None:
         """After a 429, nothing more goes to that endpoint for one base backoff (at least the 1 request/s rule)."""

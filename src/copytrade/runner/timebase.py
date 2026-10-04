@@ -32,6 +32,10 @@ def _no_resample() -> bool:
     return False
 
 
+def _no_live_time() -> int | None:
+    return None
+
+
 class TimeBase:
     """Turns ``ExchangeTime.exchange_now()`` into the broker time of one loop iteration (F11 Amendment 13).
 
@@ -45,7 +49,7 @@ class TimeBase:
     projection onto the exchange (one forward jump, or a hold of broker time while the exchange is behind it).
     The wall clock is only used by the offset estimate; a wall step never moves broker time."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the injected boundaries of one object
         self,
         *,
         exchange_time: ExchangeTime,
@@ -53,12 +57,14 @@ class TimeBase:
         max_offset_uncertainty_ms: int,
         monotonic_ms: Callable[[], int] = _real_monotonic_ms,
         resample: Callable[[], bool] = _no_resample,
+        live_time_ms: Callable[[], int | None] = _no_live_time,
     ) -> None:
         self._exchange_time = exchange_time
         self._clock = clock
         self._allowance_ms = 2 * max_offset_uncertainty_ms
         self._mono = monotonic_ms
         self._resample = resample
+        self._live_time_ms = live_time_ms
         self._base_target_ms: int | None = None
         self._base_mono_ms = 0
         self._frozen = False  # broker time is held flat (the exchange is behind it after a backward rebase)
@@ -66,6 +72,7 @@ class TimeBase:
         self._in_doubt = False
         self._reason: str | None = None
         self._next_resample_ms = 0
+        self._resampled: bool | None = None  # the outcome of a forced resample taken ahead of ``next_target_ms``
         self._fresh_offsets: list[int] = []
         self.rebase_count = 0
 
@@ -87,6 +94,20 @@ class TimeBase:
         self._set_base(ms)
         self._unverified = True
 
+    def seed(self, ms: int) -> None:
+        """After a restart with positions and a TRUSTED exchange clock: ``ms`` (the restored broker time, never behind
+        the exchange) is the verified baseline, projected with monotonic time, so the jump guard holds from the first
+        iteration (a wall-clock step before it is refused, not accepted)."""
+        self._set_base(ms)
+
+    def resample_if_due(self) -> None:
+        """The forced resample of a clock in doubt (``DOUBT_RESAMPLE_S``) when it is due, taken NOW so the loop can call
+        this outside ``gate_lock``: the wait for the clock worker must not hold the lock the Telegram thread needs. The
+        outcome is used by the next ``next_target_ms``."""
+        if self._in_doubt and not self._frozen and self._resampled is None and self._mono() >= self._next_resample_ms:
+            self._next_resample_ms = self._mono() + DOUBT_RESAMPLE_S * 1000
+            self._resampled = self._resample()
+
     def next_target_ms(self) -> tuple[int | None, str | None]:
         """``(broker_target, doubt_reason)``. The target is ``None`` only while no baseline exists at all; the reason is
         ``None`` when the exchange clock is trusted (entries allowed)."""
@@ -103,18 +124,33 @@ class TimeBase:
             self._in_doubt = True
             self._fresh_offsets = []
             self._next_resample_ms = self._mono() + DOUBT_RESAMPLE_S * 1000
-        if not self._frozen and self._mono() >= self._next_resample_ms:
-            self._next_resample_ms = self._mono() + DOUBT_RESAMPLE_S * 1000
-            if self._resample():
-                candidate = self._candidate()
-                if candidate is not None and self._trusts(candidate, projection):
-                    return self._accept(candidate, projection), None
-                rebased = self._take_fresh_estimate(candidate, projection)
-                if rebased is not None:
-                    return rebased, None
-                projection = self._projection()
+        self.resample_if_due()  # already taken by the loop outside the lock, normally
+        resampled, self._resampled = self._resampled, None
+        if resampled:
+            candidate = self._candidate()
+            if candidate is not None and self._trusts(candidate, projection):
+                return self._accept(candidate, projection), None
+            rebased = self._take_fresh_estimate(candidate, projection)
+            if rebased is not None:
+                return rebased, None
+            projection = self._projection()
         self._reason = SKIP_CLOCK_UNSYNCED if candidate is None else SKIP_CLOCK_JUMP
-        return projection, self._reason
+        return self._caught_up(projection), self._reason
+
+    def _caught_up(self, projection: int) -> int:
+        """While the restart baseline is unverified the projection runs from the REPLAYED time, which lags the live
+        exchange by the downtime, and the paper broker fills only from books at or before broker time (the hub keeps
+        seconds of them): a triggered stop or exit would stay pending. So broker time catches up, forward only, to
+        ``live_time_ms`` (the newest exchange-stamped book that a second book confirms; never the raw clock estimate:
+        a retried request or a wall-clock step would put it ahead of the exchange for good). Entries stay refused:
+        the clock is still in doubt."""
+        if not self._unverified:
+            return projection
+        live = self._live_time_ms()
+        if live is None or live <= projection:
+            return projection
+        self._set_base(live)
+        return live
 
     def projected_ms(self) -> int | None:
         """The broker-time projection while the exchange clock is trusted, else ``None`` (the gate refuses entries and

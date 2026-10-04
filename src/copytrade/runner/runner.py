@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -25,15 +26,19 @@ from copytrade.paper.types import MarkUpdate
 from copytrade.positions.book import PositionBook
 from copytrade.positions.manager import PositionManager
 from copytrade.recorder.service import Recorder
+from copytrade.recorder.store import RecordingStore
 from copytrade.risk.gate import STATE_FILENAME, RiskGate
 from copytrade.runner.adapters import HubTap, MarketHub, RestMarketSource, RestMetaSource
+from copytrade.runner.clockwork import BackgroundClock
 from copytrade.runner.deps import RunnerDeps
+from copytrade.runner.failfast import TradingSleeper
 from copytrade.runner.flatten import (
     ALERT_FLATTEN_INCOMPLETE,
     FLATTEN_RERUN_INTERVAL_S,
     FLATTEN_RERUN_MAX,
     FlattenSupervisor,
 )
+from copytrade.runner.offthread import BackgroundConnector, BackgroundLeaderboard
 from copytrade.runner.policy import RunnerEntryPolicy
 from copytrade.runner.reload import (
     KIND_CHECKPOINT,
@@ -67,7 +72,7 @@ _log = logging.getLogger(__name__)
 
 SELECTION_WORK_INTERVAL_S = 10  # one paced scoring-input slice (see ``PacedInputs``) per this much local time
 CHECKPOINT_MIN_INTERVAL_S = 1  # a changed state is written at most once per second ...
-CHECKPOINT_FORCE_INTERVAL_S = 60  # ... and an unchanged one at least once per minute (cursors, best prices)
+CHECKPOINT_FORCE_INTERVAL_S = 600  # ... and an unchanged one at least every 10 min (cursors, best prices)
 HOURLY_MS = 3_600_000  # retention pruning and the recording-universe refresh
 POSTS_INTERVAL_MS = 1_000  # trade posts are synced on a timer, not only when a command arrives
 THREAD_JOIN_TIMEOUT_S = 8.0
@@ -126,6 +131,10 @@ class RunnerParts:
     run_id: str
     ledger: Ledger
     sync: ClockSync
+    clock_worker: BackgroundClock
+    follow_leaderboard: BackgroundLeaderboard  # the follow cycle's download, off the trading thread (R2c.AC2)
+    offthread: tuple[BackgroundConnector | BackgroundLeaderboard, ...]  # every off-thread worker, closed at the stop
+    trading_sleeper: TradingSleeper
     timebase: TimeBase
     hub: MarketHub
     hub_tap: HubTap
@@ -137,6 +146,7 @@ class RunnerParts:
     manager: PositionManager
     bot: TelegramBot
     recorder: Recorder
+    store: RecordingStore
     follow: FollowManager
     detector: SignalDetector
     feed: HlWsFeed
@@ -198,8 +208,7 @@ class Runner:
         self._tail: LedgerTail | None = None
         self._doubt_alerted = False
         self._next_doubt_alert_ms = 0
-        self._seen_rebases = 0
-        self._stale_marks = 0
+        self._seen_rebases = self._stale_marks = 0
         self._next_marks_alert_ms = 0
         self._known_followed: frozenset[str] = frozenset()
         self._last_step_ms = self._clock.now_ms()
@@ -207,10 +216,12 @@ class Runner:
         self._last_fingerprint: bytes | None = None
         self._last_checkpoint_ms = 0
         self._next_selection_ms = 0
-        self._next_delist_ms = 0
-        self._next_hourly_ms = 0
-        self._next_posts_ms = 0
+        self._next_delist_ms = self._next_hourly_ms = self._next_posts_ms = 0
         self._section_alerted: dict[str, int] = {}
+        self._section_alert_lock = threading.Lock()  # sections run on the loop, the retention thread and the bot
+        self._pruned: set[str] = set()  # recordings already pruned; extended by the retention thread
+        self._retention: threading.Thread | None = None
+        self._seen_written: list[str] = []  # the signal ids the checkpoints written so far carry (the chain)
         self._mark_interval_ms = int(parts.config["eval.mark_interval_s"]) * 1000
         self._stall_ms = 3 * int(parts.config["ledger.heartbeat_interval_s"]) * 1000
         self._stall_alerted = False
@@ -242,8 +253,13 @@ class Runner:
         parts.sync.tick()
         with self.gate_lock:
             result = self._reload()
-            if result.restored_positions and self._exchange_now_ms() == 0:
-                self._timebase.seed_unverified(result.restore_ms)  # unsynced restart: project the replayed time
+            if result.restored_positions:
+                if self._exchange_now_ms() == 0:
+                    # the clock is not trusted: project the replayed time and accept the first synced sample without
+                    # the jump guard (a clock that drops before the first iteration must not leave positions unmanaged)
+                    self._timebase.seed_unverified(result.restore_ms)
+                else:
+                    self._timebase.seed(result.restore_ms)  # trusted: the jump guard holds from the first iteration
             self._known_followed = self.follow.followed
         self._section(
             "feed", self.feed.tick, strict=True
@@ -251,10 +267,9 @@ class Runner:
         self._section(
             "mids", lambda: self.hub.seed_mids(parts.market.all_mids()), strict=True
         )  # marks before the first frame
-        prune_recordings(
-            self.config, recordings_dir=self.paths.recordings_dir, ledger=self.ledger, now_ms=self._clock.now_ms()
-        )
+        self._prune_now(self._clock.now_ms())
         parts.recorder.start()
+        self._section("hub", parts.hub_tap.drain)  # connect and subscribe now: books flow before the first iteration
         with self.gate_lock:
             self.ledger.append(
                 KIND_RUNNER_START,
@@ -269,6 +284,7 @@ class Runner:
             )
             self._write_checkpoint(force=True)
         self._tail = LedgerTail(self.paths.ledger_dir)
+        self._parts.trading_sleeper.fail_fast()  # from here on no REST call waits on the trading thread
         self._start_threads()
         self._last_step_ms = self._clock.now_ms()
         return StartReport(
@@ -294,6 +310,7 @@ class Runner:
         )
         now_ms = self._exchange_now_ms()
         scan = scan_ledger(self.ledger, self._paper, now_ms=self._clock.now_ms())
+        self._pruned = scan.pruned_paths
         result = reload_state(reload_parts, scan, now_ms=now_ms)
         announce_and_pause(reload_parts, result.uncertain)
         return result
@@ -313,7 +330,8 @@ class Runner:
         Raises ``RuntimeError`` before ``start()`` (nothing is wired to the broker before the reload)."""
         if not self._started or self._stopped:
             raise RuntimeError("step() needs a started, not yet stopped runner")
-        self._parts.sync.tick()
+        self._parts.trading_sleeper.new_iteration()  # this iteration's REST time budget (RISK-75)
+        self._parts.clock_worker.tick()
         self._section("hub", self._parts.hub_tap.drain)  # mids and books first, independent of the recorder (RISK-65)
         advanced, skipped = self._advance_and_mark()
         self._section(
@@ -332,15 +350,17 @@ class Runner:
     def _advance_and_mark(self) -> tuple[int | None, str | None]:
         """Broker time is the time base's monotonic projection and is advanced on EVERY iteration (Amendment 13); a
         clock in doubt (the returned reason) refuses entries only, exits, stops, marks and delistings go on."""
+        self._timebase.resample_if_due()  # waits for the clock worker: never under the lock the Telegram thread needs
         with self.gate_lock:
             target, reason = self._timebase.next_target_ms()
             self._clock_alerts(reason)
             if target is None:
                 return None, reason  # no baseline at all: nothing is held yet (an unsynced start without positions)
-            self.manager.advance_to(target)
+            self.manager.advance_to(target)  # may spend the iteration's REST time (leader reconciliation, funding)
             self.last_advanced_ms = target
+            self._section("hub", self._parts.hub_tap.drain)  # the marks and books that arrived meanwhile
             self._mark(target)
-        self._delistings(target)
+        self._section("delistings", lambda: self._delistings(target))  # an unexpected failure must not end the loop
         with self.gate_lock:
             if self._last_mark_ms is None or target - self._last_mark_ms >= self._mark_interval_ms:
                 self._last_mark_ms = target
@@ -460,11 +480,11 @@ class Runner:
 
     def _alert_section(self, name: str, detail: str) -> None:
         now = self._clock.now_ms()
-        if now - self._section_alerted.get(name, -SECTION_ALERT_INTERVAL_MS) >= SECTION_ALERT_INTERVAL_MS:
+        with self._section_alert_lock:
+            if now - self._section_alerted.get(name, -SECTION_ALERT_INTERVAL_MS) < SECTION_ALERT_INTERVAL_MS:
+                return
             self._section_alerted[name] = now
-            self._parts.relay.send(
-                Alert(kind=ALERT_SECTION_FAILED, message=f"{name} failed ({detail}); trading goes on")
-            )
+        self._parts.relay.send(Alert(kind=ALERT_SECTION_FAILED, message=f"{name} failed ({detail}); trading goes on"))
 
     def _selection(self) -> None:
         """The follow cycle when due and one paced scoring-input slice every ``SELECTION_WORK_INTERVAL_S``."""
@@ -472,7 +492,7 @@ class Runner:
         if now >= self._next_selection_ms:
             self._next_selection_ms = now + SELECTION_WORK_INTERVAL_S * 1000
             self._section("scoring_inputs", self._parts.inputs.work)
-        if self.follow.due():
+        if self.follow.due() and self._parts.follow_leaderboard.ready():  # the download runs off this thread (R2c.AC2)
             self._section("follow_cycle", lambda: self.follow.run_cycle(p95_latency_s=None))
         self._section("follow_tick", self.follow.tick)
         self._section("dropped_leaders", self._tell_dropped_leaders)
@@ -505,14 +525,36 @@ class Runner:
             return
         first = self._next_hourly_ms == 0
         self._next_hourly_ms = now + HOURLY_MS
-        self._section(
-            "retention",
-            lambda: prune_recordings(
-                self.config, recordings_dir=self.paths.recordings_dir, ledger=self.ledger, now_ms=now
-            ),
-        )
+        self._section("retention", lambda: self._start_retention(now))
         if not first:
             self._section("recording_universe", self.recorder.refresh_universe)
+
+    def _prune_now(self, now_ms: int) -> None:
+        """One retention pass from memory (the recorder's live index of closed files and the set of pruned paths): it
+        reads nothing from the ledger. Hashing a file to be pruned can take a while, so the loop runs it on a thread."""
+        prune_recordings(
+            self.config,
+            recordings_dir=self.paths.recordings_dir,
+            ledger=self.ledger,
+            now_ms=now_ms,
+            closed_files=self._parts.store.files,
+            already=self._pruned,
+        )
+
+    def _start_retention(self, now_ms: int) -> None:
+        """Start the hourly retention pass on its own thread (never two at once); the trading thread does not wait for
+        the hashing and deleting."""
+        if self._retention is not None and self._retention.is_alive():
+            return
+
+        def work() -> None:
+            try:
+                self._prune_now(now_ms)
+            except Exception as exc:
+                self._section_failed("retention", exc)
+
+        self._retention = threading.Thread(target=work, name="r0-retention", daemon=True)
+        self._retention.start()
 
     # ------------------------------------------------------------------------------------------ checkpoints
     def _write_checkpoint(self, *, force: bool = False) -> None:
@@ -520,8 +562,10 @@ class Runner:
         ``CHECKPOINT_MIN_INTERVAL_S``), at least once per ``CHECKPOINT_FORCE_INTERVAL_S``, or when forced. The caller
         holds the gate lock."""
         exported = self.manager.export_state()
+        seen = exported["state"].pop("seen_signals")
+        delta = self._seen_delta(seen)
         entries = self.gate.export_entries()
-        fingerprint = dumps(encode_value({"state": exported["state"], "entries": entries}))
+        fingerprint = dumps(encode_value({"state": exported["state"], "entries": entries, "seen": delta}))
         now = self._clock.now_ms()
         since_ms = now - self._last_checkpoint_ms
         changed = fingerprint != self._last_fingerprint
@@ -539,9 +583,19 @@ class Runner:
                 risk_state_expected=(self.paths.state_dir / STATE_FILENAME).exists(),
                 manager=exported,
                 gate_entries=entries,
+                seen_signals=delta,
             ),
         )
+        self._seen_written = seen
         self._last_fingerprint, self._last_checkpoint_ms = fingerprint, now
+
+    def _seen_delta(self, seen: list[str]) -> dict[str, Any]:
+        """The signal ids a checkpoint must carry: those after the newest id the checkpoints already carry; all of them
+        (``full``) when there is no such chain (the first checkpoint of a run) or more than the list's length is new."""
+        written = self._seen_written
+        if written and written[-1] in seen:
+            return {"full": False, "ids": seen[seen.index(written[-1]) + 1 :]}
+        return {"full": True, "ids": list(seen)}
 
     # ------------------------------------------------------------------------------------------------ threads
     def _start_threads(self) -> None:
@@ -627,10 +681,22 @@ class Runner:
                 self._best_effort("the recorder shutdown", self.recorder.shutdown)
             self.hub.close()
         self._threads_stop.set()
-        for thread in self.threads:
-            thread.join(timeout=THREAD_JOIN_TIMEOUT_S)
+        self._parts.clock_worker.join(THREAD_JOIN_TIMEOUT_S)
+        self._stop_offthread_workers()
+        for thread in (*self.threads, self._retention):
+            if thread is not None:
+                thread.join(timeout=THREAD_JOIN_TIMEOUT_S)
         self._best_effort("closing the ledger", self.ledger.close)
         return 0
+
+    def _stop_offthread_workers(self) -> None:
+        """Abandon the off-thread leaderboard downloads and connects (a late connection is closed, not leaked) and wait
+        for their threads, all within one ``THREAD_JOIN_TIMEOUT_S``."""
+        for worker in self._parts.offthread:
+            worker.close()
+        deadline = time.monotonic() + THREAD_JOIN_TIMEOUT_S
+        for worker in self._parts.offthread:
+            worker.join(deadline)
 
     @staticmethod
     def _best_effort(what: str, work: Callable[[], Any]) -> None:

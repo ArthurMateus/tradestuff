@@ -6,13 +6,13 @@ import random
 import secrets
 import sys
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 import copytrade
-from copytrade.core.clock import ClockSync
+from copytrade.core.clock import Clock, ClockSync
 from copytrade.core.config import Config
 from copytrade.core.errors import ConfigError, CopytradeError
 from copytrade.core.events import Alert, AlertSink
@@ -22,7 +22,7 @@ from copytrade.hl.access import AccessMonitor
 from copytrade.hl.budget import Priority, RateBudget, Sleeper
 from copytrade.hl.connector import WebsocketsConnector
 from copytrade.hl.errors import HlBudgetError
-from copytrade.hl.rest import HlRestClient, StdlibHttpTransport
+from copytrade.hl.rest import CallLimit, HlRestClient, StdlibHttpTransport
 from copytrade.hl.schema import SchemaFailureMonitor
 from copytrade.hl.ws import FillSink, HlWsFeed
 from copytrade.ledger.store import Ledger
@@ -45,9 +45,12 @@ from copytrade.runner.adapters import (
     RestMarketSource,
     RestMetaSource,
 )
+from copytrade.runner.clockwork import BackgroundClock
 from copytrade.runner.deps import RunnerDeps
 from copytrade.runner.disk import SystemDiskProbe, check_start_disk
+from copytrade.runner.failfast import TradingSleeper
 from copytrade.runner.flatten import FlattenSupervisor
+from copytrade.runner.offthread import BackgroundConnector, BackgroundLeaderboard
 from copytrade.runner.policy import RunnerEntryPolicy
 from copytrade.runner.runner import Runner, RunnerParts, RunnerPaths
 from copytrade.runner.sources import (
@@ -71,6 +74,7 @@ from copytrade.telegram.api import TelegramApi
 from copytrade.telegram.bot import TelegramBot
 
 _PROBE_COIN = "BTC"
+CATCH_UP_MAX_AHEAD_MS = 30_000  # a book stamped further ahead of the local clock is not a live exchange time
 _TELEGRAM_ID_KEYS = ("telegram.allowed_user_id", "telegram.control_chat_id", "telegram.alerts_chat_id")
 _LEADERBOARD_TIMEOUT_FACTOR = 3  # the leaderboard body is large: three REST timeouts for the whole GET
 
@@ -84,7 +88,9 @@ class _FailFastSleeper:
     fails at once instead of blocking the trading thread; the caller tries again on a later slice."""
 
     def sleep(self, seconds: float) -> None:
-        raise HlBudgetError(f"the rate budget has no room for this request now (would wait {seconds:.1f} s)")
+        raise HlBudgetError(
+            f"the rate budget has no room for this request now (would wait {seconds:.1f} s)", wait_s=seconds
+        )
 
 
 class AlertRelay:
@@ -134,14 +140,18 @@ class _LockedSignals:
 class _Exchange:
     """Everything that talks to Hyperliquid or tells the time."""
 
-    rest: HlRestClient
+    rest: HlRestClient  # the trading thread's: fail-fast once the runner is started
+    rest_clock: HlRestClient  # the clock estimates' (they run on a worker thread, so they may wait out a back-off)
     rest_scoring: HlRestClient
+    trading_sleeper: TradingSleeper
+    clock_worker: BackgroundClock
     access: AccessMonitor
     schema_monitor: SchemaFailureMonitor
     sync: ClockSync
     timebase: TimeBase
     guarded: GuardedExchangeTime
-    connector: WebsocketsConnector
+    connector: BackgroundConnector  # the leader feed's
+    hub_connector: BackgroundConnector
     hub: MarketHub
     market: RestMarketSource
     meta: RestMetaSource
@@ -191,8 +201,14 @@ def build_runner(root: Path, env: Mapping[str, str], deps: RunnerDeps) -> Runner
     return Runner(parts=parts, deps=deps)
 
 
-def _rest_client(
-    config: Config, deps: RunnerDeps, sleeper: Sleeper, shared: tuple[RateBudget, AccessMonitor, SchemaFailureMonitor]
+def _rest_client(  # noqa: PLR0913 - the shared parts and the two optional behaviours of the clients
+    config: Config,
+    deps: RunnerDeps,
+    sleeper: Sleeper,
+    shared: tuple[RateBudget, AccessMonitor, SchemaFailureMonitor],
+    *,
+    escalate_cooldown: bool = False,
+    call_limit: CallLimit | None = None,
 ) -> HlRestClient:
     budget, access, schema_monitor = shared
     return HlRestClient(
@@ -205,7 +221,24 @@ def _rest_client(
         access=access,
         schema_monitor=schema_monitor,
         info_url=deps.endpoints.info_url,
+        escalate_cooldown=escalate_cooldown,
+        call_limit=call_limit,
     )
+
+
+def _live_exchange_ms(hub: MarketHub, clock: Clock) -> Callable[[], int | None]:
+    """The live exchange time a restart with an unverified clock catches broker time up to: ONLY the newest hub book
+    time that a second book confirms (RISK-73: never the raw clock estimate, which a retried request or a wall-clock
+    step can put ahead of the exchange for good), and never one that is more than ``CATCH_UP_MAX_AHEAD_MS`` ahead of
+    the local clock (a bogus future stamp)."""
+
+    def live() -> int | None:
+        confirmed = hub.confirmed_book_time_ms()
+        if confirmed is None or confirmed > clock.now_ms() + CATCH_UP_MAX_AHEAD_MS:
+            return None
+        return confirmed
+
+    return live
 
 
 def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: AlertRelay) -> _Exchange:
@@ -220,16 +253,32 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
     access = AccessMonitor(config=config, clock=clock, alerts=relay, ledger=LedgerDowntime(ledger))
     schema_monitor = SchemaFailureMonitor(clock=clock, alerts=relay)
     shared = (budget, access, schema_monitor)
-    rest = _rest_client(config, deps, deps.sleeper, shared)
+    trading_sleeper = TradingSleeper(deps.sleeper)
+    rest = _rest_client(config, deps, trading_sleeper, shared, escalate_cooldown=True, call_limit=trading_sleeper)
+    rest_clock = _rest_client(config, deps, deps.sleeper, shared)
     sync = ClockSync.from_config(
-        config, clock=clock, source=ExchangeOffsetSource(rest=rest, clock=clock, probe_coin=_PROBE_COIN), alerts=relay
+        config,
+        clock=clock,
+        source=ExchangeOffsetSource(rest=rest_clock, clock=clock, probe_coin=_PROBE_COIN, sleeper=deps.sleeper),
+        alerts=relay,
     )
+    connector = WebsocketsConnector(
+        deps.endpoints.ws_url,
+        connect_timeout_s=float(config["hl.ws_connect_timeout_s"]),
+        max_message_bytes=int(config["hl.ws_max_message_bytes"]),
+    )
+    hub_connector = BackgroundConnector(connector, name="hub-connect")
+    hub = MarketHub(
+        connector=hub_connector, clock=clock, max_book_age_ms=config["paper.max_book_age_ms"], seed=secrets.randbits(32)
+    )
+    clock_worker = BackgroundClock(sync)
     timebase = (
         TimeBase(
             exchange_time=SyncedExchangeTime(sync),
             clock=clock,
             max_offset_uncertainty_ms=sync.max_offset_uncertainty_ms,
-            resample=sync.resample,
+            resample=clock_worker,
+            live_time_ms=_live_exchange_ms(hub, clock),
         )
         if deps.monotonic_ms is None
         else TimeBase(
@@ -237,26 +286,24 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
             clock=clock,
             max_offset_uncertainty_ms=sync.max_offset_uncertainty_ms,
             monotonic_ms=deps.monotonic_ms,
-            resample=sync.resample,
+            resample=clock_worker,
+            live_time_ms=_live_exchange_ms(hub, clock),
         )
-    )
-    connector = WebsocketsConnector(
-        deps.endpoints.ws_url,
-        connect_timeout_s=float(config["hl.ws_connect_timeout_s"]),
-        max_message_bytes=int(config["hl.ws_max_message_bytes"]),
     )
     return _Exchange(
         rest=rest,
-        rest_scoring=_rest_client(config, deps, _FailFastSleeper(), shared),
+        rest_clock=rest_clock,
+        rest_scoring=_rest_client(config, deps, _FailFastSleeper(), shared, call_limit=trading_sleeper),
+        trading_sleeper=trading_sleeper,
+        clock_worker=clock_worker,
         access=access,
         schema_monitor=schema_monitor,
         sync=sync,
         timebase=timebase,
         guarded=GuardedExchangeTime(timebase),
-        connector=connector,
-        hub=MarketHub(
-            connector=connector, clock=clock, max_book_age_ms=config["paper.max_book_age_ms"], seed=secrets.randbits(32)
-        ),
+        connector=BackgroundConnector(connector, name="feed-connect"),
+        hub_connector=hub_connector,
+        hub=hub,
         market=RestMarketSource(rest=rest, clock=clock),
         meta=RestMetaSource(rest=rest),
     )
@@ -329,9 +376,11 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         alerts=relay,
         schema_monitor=ex.schema_monitor,
     )
-    leaderboard = HttpLeaderboardSource(
+    leaderboard_source = HttpLeaderboardSource(
         url=deps.endpoints.leaderboard_url, timeout_s=float(config["hl.rest_timeout_s"]) * _LEADERBOARD_TIMEOUT_FACTOR
     )
+    leaderboard = BackgroundLeaderboard(leaderboard_source.fetch, name="follow-leaderboard")
+    recorder_leaderboard = BackgroundLeaderboard(leaderboard_source.fetch, name="recorder-leaderboard")
     inputs = PacedInputs(
         Backfiller(config=config, clock=clock, rest=ex.rest_scoring, candles=RestCandles(ex.rest_scoring))
     )
@@ -361,7 +410,7 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         ports=RecorderPorts(
             feed=hub_tap,
             source=ex.market,
-            leaderboard=leaderboard,
+            leaderboard=recorder_leaderboard,
             universe=FollowedUniverse(
                 rest=ex.rest,
                 clock=clock,
@@ -422,6 +471,10 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         run_id=run_id,
         ledger=ledger,
         sync=ex.sync,
+        clock_worker=ex.clock_worker,
+        follow_leaderboard=leaderboard,
+        offthread=(ex.connector, ex.hub_connector, leaderboard, recorder_leaderboard),
+        trading_sleeper=ex.trading_sleeper,
         timebase=ex.timebase,
         hub=ex.hub,
         hub_tap=hub_tap,
@@ -433,6 +486,7 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         manager=manager,
         bot=bot,
         recorder=recorder,
+        store=store,
         follow=follow,
         detector=detector,
         feed=feed,
