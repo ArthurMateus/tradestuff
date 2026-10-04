@@ -12,14 +12,10 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from copytrade.core.coins import is_core_perp
 from copytrade.scoring.models import Fill, FundingPayment, Reconstruction, RoundTrip, TripEvent
 
 _ZERO = Decimal(0)
-
-
-def is_core_perp(coin: str) -> bool:
-    """Spot (``@n``, ``A/B``) and HIP-3 builder-dex perps (``dex:COIN``) are outside v1's universe."""
-    return not (coin.startswith("@") or "/" in coin or ":" in coin)
 
 
 def dedupe_fills(fills: Iterable[Fill]) -> list[Fill]:

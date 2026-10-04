@@ -21,10 +21,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
+from copytrade.core.coins import is_core_perp, is_pseudo_coin
 from copytrade.core.config import Config
 from copytrade.scoring.metrics import maker_share
 from copytrade.scoring.models import DAY_MS, MINUTE_MS, Fill, Reconstruction
-from copytrade.scoring.reconstruct import dedupe_fills, is_core_perp, reconstruct
+from copytrade.scoring.reconstruct import dedupe_fills, reconstruct
 from copytrade.scoring.series import median
 from copytrade.selection.models import FILLS_PER_PAGE, HL_FILLS_LIMIT
 from copytrade.selection.prefilter import MIN_CORE_PERP_SHARE, SCREEN_MIN_TRIPS
@@ -118,9 +119,10 @@ def screen_page(
     """
     th = thresholds
     page = dedupe_fills(fills)
-    core = [f for f in page if is_core_perp(f.coin)]
+    real = [f for f in page if not is_pseudo_coin(f.coin)]  # #N fills are in neither side of S3
+    core = [f for f in real if is_core_perp(f.coin)]
     span_ms = page[-1].time - page[0].time if page else 0
-    total, core_total = _notional(page), _notional(core)
+    total, core_total = _notional(real), _notional(core)
     maker = maker_share(core)
     trips = reconstruct(core, ())
     failed_trips, not_evaluable = _trip_rules(trips, account_value, th)
