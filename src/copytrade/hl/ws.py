@@ -50,8 +50,14 @@ class WsConnection(Protocol):
     def close(self) -> None: ...
 
 
+class ConnectPendingError(Exception):
+    """``connect`` has not finished: the attempt runs on in the background (R2c.AC2). Not a failure: the caller returns,
+    counts nothing and asks again on its next tick."""
+
+
 class WsConnector(Protocol):
-    """Opens connections. An external boundary. ``connect`` raises ``OSError`` on failure."""
+    """Opens connections. An external boundary. ``connect`` raises ``OSError`` on failure, or ``ConnectPendingError``
+    when the attempt continues in the background."""
 
     def connect(self) -> WsConnection: ...
 
@@ -232,15 +238,18 @@ class HlWsFeed:
             self._connect_attempts.popleft()
         if len(self._connect_attempts) >= self._max_new_conns_per_min:
             return
-        self._connect_attempts.append(now)
         try:
             connection = self._connector.connect()
+        except ConnectPendingError:
+            return
         except OSError as exc:
+            self._connect_attempts.append(now)
             _log.warning(
                 "websocket connect failed", extra={"event": "ws_connect_failed", "error_type": type(exc).__name__}
             )
             self._schedule_reconnect(now)
             return
+        self._connect_attempts.append(now)
         self._conn = connection
         self._subscribed = set()
         self._last_activity_ms = now

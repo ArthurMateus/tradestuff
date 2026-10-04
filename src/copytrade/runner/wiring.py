@@ -50,6 +50,7 @@ from copytrade.runner.deps import RunnerDeps
 from copytrade.runner.disk import SystemDiskProbe, check_start_disk
 from copytrade.runner.failfast import TradingSleeper
 from copytrade.runner.flatten import FlattenSupervisor
+from copytrade.runner.offthread import BackgroundConnector, BackgroundLeaderboard
 from copytrade.runner.policy import RunnerEntryPolicy
 from copytrade.runner.runner import Runner, RunnerParts, RunnerPaths
 from copytrade.runner.sources import (
@@ -149,7 +150,8 @@ class _Exchange:
     sync: ClockSync
     timebase: TimeBase
     guarded: GuardedExchangeTime
-    connector: WebsocketsConnector
+    connector: BackgroundConnector  # the leader feed's
+    hub_connector: BackgroundConnector
     hub: MarketHub
     market: RestMarketSource
     meta: RestMetaSource
@@ -265,8 +267,9 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
         connect_timeout_s=float(config["hl.ws_connect_timeout_s"]),
         max_message_bytes=int(config["hl.ws_max_message_bytes"]),
     )
+    hub_connector = BackgroundConnector(connector, name="hub-connect")
     hub = MarketHub(
-        connector=connector, clock=clock, max_book_age_ms=config["paper.max_book_age_ms"], seed=secrets.randbits(32)
+        connector=hub_connector, clock=clock, max_book_age_ms=config["paper.max_book_age_ms"], seed=secrets.randbits(32)
     )
     clock_worker = BackgroundClock(sync)
     timebase = (
@@ -298,7 +301,8 @@ def _build_exchange(config: Config, deps: RunnerDeps, ledger: Ledger, relay: Ale
         sync=sync,
         timebase=timebase,
         guarded=GuardedExchangeTime(timebase),
-        connector=connector,
+        connector=BackgroundConnector(connector, name="feed-connect"),
+        hub_connector=hub_connector,
         hub=hub,
         market=RestMarketSource(rest=rest, clock=clock),
         meta=RestMetaSource(rest=rest),
@@ -372,9 +376,11 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         alerts=relay,
         schema_monitor=ex.schema_monitor,
     )
-    leaderboard = HttpLeaderboardSource(
+    leaderboard_source = HttpLeaderboardSource(
         url=deps.endpoints.leaderboard_url, timeout_s=float(config["hl.rest_timeout_s"]) * _LEADERBOARD_TIMEOUT_FACTOR
     )
+    leaderboard = BackgroundLeaderboard(leaderboard_source.fetch, name="follow-leaderboard")
+    recorder_leaderboard = BackgroundLeaderboard(leaderboard_source.fetch, name="recorder-leaderboard")
     inputs = PacedInputs(
         Backfiller(config=config, clock=clock, rest=ex.rest_scoring, candles=RestCandles(ex.rest_scoring))
     )
@@ -404,7 +410,7 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         ports=RecorderPorts(
             feed=hub_tap,
             source=ex.market,
-            leaderboard=leaderboard,
+            leaderboard=recorder_leaderboard,
             universe=FollowedUniverse(
                 rest=ex.rest,
                 clock=clock,
@@ -466,6 +472,8 @@ def _assemble(config: Config, secrets_in: Secrets, paths: RunnerPaths, ledger: L
         ledger=ledger,
         sync=ex.sync,
         clock_worker=ex.clock_worker,
+        follow_leaderboard=leaderboard,
+        offthread=(ex.connector, ex.hub_connector, leaderboard, recorder_leaderboard),
         trading_sleeper=ex.trading_sleeper,
         timebase=ex.timebase,
         hub=ex.hub,

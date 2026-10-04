@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -37,6 +38,7 @@ from copytrade.runner.flatten import (
     FLATTEN_RERUN_MAX,
     FlattenSupervisor,
 )
+from copytrade.runner.offthread import BackgroundConnector, BackgroundLeaderboard
 from copytrade.runner.policy import RunnerEntryPolicy
 from copytrade.runner.reload import (
     KIND_CHECKPOINT,
@@ -130,6 +132,8 @@ class RunnerParts:
     ledger: Ledger
     sync: ClockSync
     clock_worker: BackgroundClock
+    follow_leaderboard: BackgroundLeaderboard  # the follow cycle's download, off the trading thread (R2c.AC2)
+    offthread: tuple[BackgroundConnector | BackgroundLeaderboard, ...]  # every off-thread worker, closed at the stop
     trading_sleeper: TradingSleeper
     timebase: TimeBase
     hub: MarketHub
@@ -488,7 +492,7 @@ class Runner:
         if now >= self._next_selection_ms:
             self._next_selection_ms = now + SELECTION_WORK_INTERVAL_S * 1000
             self._section("scoring_inputs", self._parts.inputs.work)
-        if self.follow.due():
+        if self.follow.due() and self._parts.follow_leaderboard.ready():  # the download runs off this thread (R2c.AC2)
             self._section("follow_cycle", lambda: self.follow.run_cycle(p95_latency_s=None))
         self._section("follow_tick", self.follow.tick)
         self._section("dropped_leaders", self._tell_dropped_leaders)
@@ -678,11 +682,21 @@ class Runner:
             self.hub.close()
         self._threads_stop.set()
         self._parts.clock_worker.join(THREAD_JOIN_TIMEOUT_S)
+        self._stop_offthread_workers()
         for thread in (*self.threads, self._retention):
             if thread is not None:
                 thread.join(timeout=THREAD_JOIN_TIMEOUT_S)
         self._best_effort("closing the ledger", self.ledger.close)
         return 0
+
+    def _stop_offthread_workers(self) -> None:
+        """Abandon the off-thread leaderboard downloads and connects (a late connection is closed, not leaked) and wait
+        for their threads, all within one ``THREAD_JOIN_TIMEOUT_S``."""
+        for worker in self._parts.offthread:
+            worker.close()
+        deadline = time.monotonic() + THREAD_JOIN_TIMEOUT_S
+        for worker in self._parts.offthread:
+            worker.join(deadline)
 
     @staticmethod
     def _best_effort(what: str, work: Callable[[], Any]) -> None:

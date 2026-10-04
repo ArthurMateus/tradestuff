@@ -24,7 +24,7 @@ from copytrade.hl.errors import HlError, HlHttpError, HlSchemaError
 from copytrade.hl.models import CoinSpec, L2Book
 from copytrade.hl.rest import HlRestClient, Timed
 from copytrade.hl.schema import parse_response
-from copytrade.hl.ws import RECONNECT_BASE_S, WsConnection, WsConnector
+from copytrade.hl.ws import RECONNECT_BASE_S, ConnectPendingError, WsConnection, WsConnector
 from copytrade.paper.types import CoinMeta, FundingSnapshot
 from copytrade.recorder.ports import AssetContext, FeedEvent, FundingPoint, MidsUpdate
 
@@ -230,6 +230,8 @@ class MarketHub:
             return None
         try:
             self._conn = self._connector.connect()
+        except ConnectPendingError:
+            return None  # the attempt runs on in the background: asked again on the next poll
         except OSError as exc:
             self._schedule_retry(exc)
             return None
