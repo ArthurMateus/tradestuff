@@ -32,6 +32,12 @@ HANGING = ("clearinghouseState", "userFillsByTime", "metaAndAssetCtxs", "funding
 WALLETS = ["0x" + c * 40 for c in "abcde"]
 
 
+def _shares(runner: Any) -> int:
+    """How many shares our paper SOL position holds (0 while there is none)."""
+    position = runner.broker.position("SOL")
+    return 0 if position is None else len(position.share_ids)
+
+
 def five_leaders(new_world: Any) -> tuple[World, Any, SleepLog]:
     """Five followed leaders; the first three open SOL (our paper copy holds three shares, protected)."""
     world: World = new_world()
@@ -82,15 +88,9 @@ def five_leaders(new_world: Any) -> tuple[World, Any, SleepLog]:
                 )
             ],
         )
-        world.run_until(
-            runner,
-            lambda t=tid: len(runner.broker.position("SOL").share_ids) >= t if runner.broker.position("SOL") else False,
-            max_steps=60,
-        )  # noqa: E501
+        world.run_until(runner, lambda: _shares(runner) >= tid, max_steps=60)  # noqa: E501
     world.step(runner, 3, ms=500)
-    assert len(runner.broker.position("SOL").share_ids) == 3, (
-        "the scenario needs three open shares (three reconciled leaders)"
-    )
+    assert _shares(runner) == 3, "the scenario needs three open shares (three reconciled leaders)"
     assert runner.broker.stops()
     return world, runner, log
 
