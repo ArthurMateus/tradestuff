@@ -55,3 +55,12 @@ Run: 4 tests, 2 fail (AssertionError: score 0.6645 vs 0.6574 today), 2 pass (gua
 Limit: with `n_rt` unchanged, a wallet with only SOME measured trips (fewer than `gate.min_round_trips`) is not made
 ineligible by any existing gate; (b) pins only the case where none is measurable. Copy_edge_ratio (M15) still uses all
 closed trips and is not asserted.
+
+## R4.AC3 cooldown tests: scoring budget cap lifted (test-only)
+
+`test_R4_AC3_the_coin_is_asked_again_only_after_backoff_max_s` and `test_R4_AC3_one_log_line_per_coin_per_cooldown_...`
+build their world with `hl.scoring_weight_share = 0.8` (the config maximum, cap 720/min instead of 450/min). Three
+backfills (312) plus six refreshes at +50 s and +65 s (42 each) need 466 weight inside the window, so at the default cap
+the fail-fast sleeper raised `HlBudgetError` before any candle code ran. Only the budget cap changes; `hl.backoff_max_s`,
+the retries and the fake clock are untouched, so the failing-coin timing stays exact. Checked: with the per-coin failure
+cache removed from a copy, all 14 of these tests (including the failfast-500/503/404 ones) still fail.

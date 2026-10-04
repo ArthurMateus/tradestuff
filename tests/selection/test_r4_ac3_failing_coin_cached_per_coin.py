@@ -33,8 +33,19 @@ CASES = [(False, 500), (True, 500), (False, 503), (True, 503), (False, 404), (Tr
 IDS = [f"{'failfast' if ff else 'sleeping'}-{code}" for ff, code in CASES]
 
 
-def build(fail_fast: bool, code: int, *, bad_wallets: tuple[str, ...] = (A, B, C), ok_wallets: tuple[str, ...] = ()) -> World:
-    world = make_world(fail_fast=fail_fast)
+def build(
+    fail_fast: bool,
+    code: int,
+    *,
+    bad_wallets: tuple[str, ...] = (A, B, C),
+    ok_wallets: tuple[str, ...] = (),
+    whole_budget: bool = False,
+) -> World:
+    # ``whole_budget``: the scoring client may spend the largest share the config allows (0.8, cap 720/min instead of 450).
+    # The cooldown tests refresh six times at +50 s/+65 s on top of three backfills; at the default share the fail-fast
+    # sleeper would raise HlBudgetError for budget reasons before any candle code runs. Only the budget cap changes: the
+    # failing-coin timing (hl.backoff_max_s, retries, the fake clock) is untouched.
+    world = make_world(fail_fast=fail_fast, **({"hl__scoring_weight_share": 0.8} if whole_budget else {}))
     install(world, {BAD: code})
     for wallet in bad_wallets:
         tids = Tids()
@@ -47,7 +58,8 @@ def build(fail_fast: bool, code: int, *, bad_wallets: tuple[str, ...] = (A, B, C
 
 def coin_lines(caplog: pytest.LogCaptureFixture, coin: str = BAD) -> list[logging.LogRecord]:
     return [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.name.startswith("copytrade.selection") and re.search(rf"coin={re.escape(coin)}\b", r.getMessage())
     ]
 
@@ -74,7 +86,7 @@ def test_R4_AC3_the_failure_is_cached_per_coin_not_per_wallet(fail_fast: bool, c
 
 @pytest.mark.parametrize(("fail_fast", "code"), CASES, ids=IDS)
 def test_R4_AC3_the_coin_is_asked_again_only_after_backoff_max_s(fail_fast: bool, code: int) -> None:
-    world = build(fail_fast, code)
+    world = build(fail_fast, code, whole_budget=True)
     drive(world, max_steps=30)
     cooldown_ms = int(world.cfg["hl.backoff_max_s"] * 1000)
     seen = len(candle_calls(world, BAD))
@@ -98,7 +110,7 @@ def test_R4_AC3_the_coin_is_asked_again_only_after_backoff_max_s(fail_fast: bool
 def test_R4_AC3_one_log_line_per_coin_per_cooldown_names_coin_window_and_status(
     fail_fast: bool, code: int, caplog: pytest.LogCaptureFixture
 ) -> None:
-    world = build(fail_fast, code)
+    world = build(fail_fast, code, whole_budget=True)
     with caplog.at_level(logging.INFO):
         drive(world, max_steps=30)
         lines = coin_lines(caplog)
