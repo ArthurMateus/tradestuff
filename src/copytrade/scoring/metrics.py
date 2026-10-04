@@ -170,9 +170,14 @@ def copy_replay_r(inputs: WalletInputs, *, cfg: Config, t_ms: int, costs: CostMo
     return _replay(_Prepared(inputs, cfg, t_ms), costs)
 
 
+def _measured(p: _Prepared, costs: CostModel) -> list[tuple[RoundTrip, Decimal]]:
+    """The closed trips that have an ``R_copy``, each with it. A trip in a coin without bars has none (no ATR stop)."""
+    pairs = ((t, replay_r(t, book=p.book, cfg=p.cfg, costs=costs)) for t in p.closed)
+    return [(t, r) for t, r in pairs if r is not None]
+
+
 def _replay(p: _Prepared, costs: CostModel) -> list[Decimal]:
-    rs = (replay_r(t, book=p.book, cfg=p.cfg, costs=costs) for t in p.closed)
-    return [r for r in rs if r is not None]
+    return [r for _, r in _measured(p, costs)]
 
 
 # --- the metrics ------------------------------------------------------------------------------------------------
@@ -269,15 +274,15 @@ def _executable_share(p: _Prepared, records: Sequence[TripRecord]) -> Decimal | 
     return Decimal(executable) / counted if counted else None
 
 
-def _copy_edge_ratio(p: _Prepared, costs: CostModel) -> Decimal | None:
-    """M15: mean gross bps of a trip (closedPnl / peak notional) over mean cost bps (two taker fees, two half spreads,
-    the copy delay)."""
-    if not p.closed:
+def _copy_edge_ratio(trips: Sequence[RoundTrip], costs: CostModel) -> Decimal | None:
+    """M15: mean gross bps of a measured trip (closedPnl / peak notional) over mean cost bps (two taker fees, two half
+    spreads, the copy delay). Trips without bars are left out, as they are from M14 and M16."""
+    if not trips:
         return None
-    gross = [t.gross_pnl / t.peak_notional * _BPS for t in p.closed]
+    gross = [t.gross_pnl / t.peak_notional * _BPS for t in trips]
     taker = costs.taker_fee_bps()
     cost = [
-        2 * taker + 2 * costs.half_spread_bps(t.coin, t.open_ms) + costs.delay_bps(t.coin, t.open_ms) for t in p.closed
+        2 * taker + 2 * costs.half_spread_bps(t.coin, t.open_ms) + costs.delay_bps(t.coin, t.open_ms) for t in trips
     ]
     mean_cost = mean(cost)
     mean_gross = mean(gross)
@@ -325,7 +330,8 @@ def compute_metrics(inputs: WalletInputs, *, cfg: Config, t_ms: int, costs: Cost
 
     top_trade, top_asset = _concentration(p.closed)
     holds = [Decimal((t.close_ms or 0) - t.open_ms) / _MINUTE_MS for t in p.closed]
-    replayed = _replay(p, costs)
+    measured = _measured(p, costs)
+    replayed = [r for _, r in measured]
     realised_dd = _realised_drawdown(p)
     curve = _mtm_curve(p)
     mtm_dd = None if curve is None else max_drawdown(curve)
@@ -352,7 +358,7 @@ def compute_metrics(inputs: WalletInputs, *, cfg: Config, t_ms: int, costs: Cost
         top_asset_share=top_asset,
         maker_share=maker_share(p.fills),
         copy_mean_r=mean(replayed),
-        copy_edge_ratio=_copy_edge_ratio(p, costs),
+        copy_edge_ratio=_copy_edge_ratio([t for t, _ in measured], costs),
         executable_share=_executable_share(p, records),
         recent_sr=recent_sr,
         current_dd=None if curve is None else current_drawdown(curve),
@@ -360,4 +366,5 @@ def compute_metrics(inputs: WalletInputs, *, cfg: Config, t_ms: int, costs: Cost
         account_value=None if p.clearinghouse is None else p.clearinghouse.account_value,
         open_loss_fraction=_open_loss_fraction(p.clearinghouse),
         liquidation_fills=sum(1 for f in p.fills if f.liquidation),
+        n_measured=len(replayed),
     )

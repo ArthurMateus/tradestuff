@@ -30,7 +30,7 @@ def _hold_gate(m: Metrics, cfg: Config, p95_latency_s: Decimal | None) -> bool:
 def _copy_gate(m: Metrics, cfg: Config) -> bool:
     if m.copy_edge_ratio is None or m.copy_mean_r is None:
         return False
-    shrunk = shrink_toward_zero(m.copy_mean_r, m.n_rt, cfg["score.shrink_k_trades"])
+    shrunk = shrink_toward_zero(m.copy_mean_r, m.shrink_n, cfg["score.shrink_k_trades"])
     return m.copy_edge_ratio >= cfg["gate.min_copy_edge_ratio"] and shrunk > 0
 
 

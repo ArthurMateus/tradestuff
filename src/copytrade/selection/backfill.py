@@ -13,6 +13,7 @@ from enum import Enum
 from typing import NamedTuple
 
 from copytrade.core.clock import Clock
+from copytrade.core.coins import is_core_perp
 from copytrade.core.config import Config
 from copytrade.hl import models as hl
 from copytrade.hl.budget import Priority
@@ -20,7 +21,6 @@ from copytrade.hl.errors import HlBudgetError, HlError, HlRateLimitedError, HlSc
 from copytrade.hl.rest import HlRestClient
 from copytrade.recorder.ports import CandleSource
 from copytrade.scoring import models as sc
-from copytrade.scoring.reconstruct import is_core_perp
 from copytrade.selection.models import FILLS_PER_PAGE, HL_FILLS_LIMIT, CandidateList, ScreenRow
 from copytrade.selection.prefilter import (
     EMPTY_COOLDOWN_H,
@@ -36,6 +36,7 @@ _log = logging.getLogger(__name__)
 
 _DAY_MS = 86_400_000
 _HOUR_MS = 3_600_000
+_HTTP_TOO_MANY_REQUESTS = 429
 _CANDLE_INTERVAL = "1h"
 _MAX_FILL_PAGES = 50  # 100 000 fills: a wallet with more in the window is too active to copy: dropped for a day
 _FIRST_SLICE_PAGES = 2  # first slice of a wallet with others waiting: 240 of the 450 share, the light ones still fit
@@ -108,6 +109,20 @@ def _clearinghouse(raw: hl.ClearinghouseState, fetched_ms: int) -> sc.Clearingho
     return sc.ClearinghouseState(
         fetched_ms=fetched_ms, account_value=Decimal(raw.account_value), positions=tuple(positions)
     )
+
+
+def _http_status(exc: BaseException) -> int | None:
+    """The HTTP status behind a failed request. The fail-fast client raises ``HlBudgetError`` from its retry sleep, so
+    the status is on the exception it replaced (``__cause__`` or ``__context__``): the chain is followed."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status = getattr(current, "status", None)
+        if isinstance(status, int):
+            return status
+        current = current.__cause__ or current.__context__
+    return None
 
 
 class _FillsOutcome(Enum):
@@ -229,6 +244,7 @@ class Backfiller:
         self._pass: _Pass | None = None  # the pass in progress, if any
         self._bars: dict[str, tuple[sc.Candle, ...]] = {}
         self._bars_hour: dict[str, int] = {}
+        self._coin_failed_until: dict[str, int] = {}  # coin -> end of the cooldown after its candles failed
 
     @property
     def complete(self) -> bool:
@@ -796,15 +812,48 @@ class Backfiller:
         return _FillsOutcome.CAPPED
 
     def _bars_for(self, coin: str) -> tuple[sc.Candle, ...]:
-        """The coin's 1h bars of the window, fetched when the coin has not been fetched in the current UTC hour."""
+        """The coin's 1h bars of the window, fetched when the coin has not been fetched in the current UTC hour.
+
+        A coin whose candles fail with an HTTP status (other than 429) is cached as failing for ``hl.backoff_max_s``,
+        for every wallet: nothing is requested for it inside that cooldown and the bars held so far (none for a coin
+        never fetched) are returned, so the wallet's backfill completes without them. Any other failure (rate limit,
+        timeout, connection, rate budget) is not about the coin and propagates to the wallet's own handling.
+        """
         now = self._clock.now_ms()
+        if self._coin_failed_until.get(coin, 0) > now:
+            return self._bars.get(coin, ())
         if self._bars_hour.get(coin) != now // _HOUR_MS:
             window_start = now - self._window_ms
             held = {b.open_ms: b for b in self._bars.get(coin, ()) if b.open_ms >= window_start}
             start = max((b.open_ms for b in held.values()), default=window_start)  # the last bar may have been partial
             for chunk_start in range(start, now + 1, _MAX_BARS_PER_REQUEST * _HOUR_MS):
                 chunk_end = min(chunk_start + _MAX_BARS_PER_REQUEST * _HOUR_MS - 1, now)
-                for raw in self._candle_source.fetch(coin, _CANDLE_INTERVAL, chunk_start, chunk_end):
+                try:
+                    raws = self._candle_source.fetch(coin, _CANDLE_INTERVAL, chunk_start, chunk_end)
+                except HlError as exc:
+                    status = _http_status(exc)
+                    if status is None or status == _HTTP_TOO_MANY_REQUESTS:
+                        raise
+                    self._bars[coin] = tuple(sorted(held.values(), key=lambda b: b.open_ms))
+                    self._coin_failed_until[coin] = now + self._rate_limit_cooldown_ms
+                    _log.warning(
+                        "candles of a coin failed, no bars for it until its cooldown ends: "
+                        "coin=%s window=%d..%d status=%d",
+                        coin,
+                        chunk_start,
+                        chunk_end,
+                        status,
+                        extra={
+                            "event": "backfill_coin_candles_failed",
+                            "coin": coin,
+                            "window_start_ms": chunk_start,
+                            "window_end_ms": chunk_end,
+                            "status": status,
+                            "cooldown_until_ms": self._coin_failed_until[coin],
+                        },
+                    )
+                    return self._bars[coin]
+                for raw in raws:
                     held[raw.open_ms] = _candle(raw)
             self._bars[coin] = tuple(sorted(held.values(), key=lambda b: b.open_ms))
             self._bars_hour[coin] = now // _HOUR_MS
