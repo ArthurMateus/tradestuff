@@ -41,7 +41,7 @@ _CANDLE_INTERVAL = "1h"
 _MAX_FILL_PAGES = 50  # 100 000 fills: a wallet with more in the window is too active to copy: dropped for a day
 _FIRST_SLICE_PAGES = 2  # first slice of a wallet with others waiting: 240 of the 450 share, the light ones still fit
 _MAX_PAGES_PER_STEP = 3  # 3 full pages (weight 120 each) fit one minute of the 450 scoring weight share
-_MAX_BARS_PER_REQUEST = 4_800  # below the 5 000-candle cap of candleSnapshot
+_MAX_BARS_PER_REQUEST = 721  # 30 days of 1h bars and the one a closed range adds: a small, quick request (2 s limit)
 _BUDGET_KEY = ""  # the cooldown after a budget refusal belongs to no wallet
 _WOULD_WAIT = re.compile(
     r"would wait (\d+(?:\.\d+)?) s"
@@ -145,7 +145,27 @@ class _Progress:
     requests: int = 0  # every page asked for in this fetch, for the log (``pages`` restarts at the end of a fetch)
     last_page_ms: int = 0  # when the latest page came back: the fills are current as of then
     handoff: bool = False  # the first page is the candidate screen's page, absorbed without a second request
-    page_done: _FillsOutcome | None = None  # how that page ended the fetch, if it did (a page that is not full)
+    page_done: _FillsOutcome | None = None  # how the fills fetch ended, once it has (the fills are not asked again)
+    # the results of the calls after the fills, each kept as soon as it arrives: a retry never asks for them again
+    fills: tuple[sc.Fill, ...] | None = None
+    portfolio: sc.PortfolioSnapshot | None = None
+    clearinghouse: sc.ClearinghouseState | None = None
+    role: str | None = None
+    candles: dict[str, tuple[sc.Candle, ...]] = field(default_factory=dict)
+
+
+@dataclass
+class _CoinFetch:
+    """One coin's candle fetch of a UTC hour, kept across steps, failures and wallets: the bars got so far and where the
+    next chunk starts. Its end is fixed when it starts, so a chunk asked again is the same request."""
+
+    hour: int
+    end_ms: int
+    held: dict[int, sc.Candle]
+    next_ms: int
+
+    def bars(self) -> tuple[sc.Candle, ...]:
+        return tuple(sorted(self.held.values(), key=lambda bar: bar.open_ms))
 
 
 @dataclass
@@ -245,6 +265,7 @@ class Backfiller:
         self._bars: dict[str, tuple[sc.Candle, ...]] = {}
         self._bars_hour: dict[str, int] = {}
         self._coin_failed_until: dict[str, int] = {}  # coin -> end of the cooldown after its candles failed
+        self._fetches: dict[str, _CoinFetch] = {}  # coin -> the candle fetch of the current hour, while unfinished
 
     @property
     def complete(self) -> bool:
@@ -643,21 +664,31 @@ class Backfiller:
             return None
         fetched_ms = progress.last_page_ms  # the fills are current as of the latest page, not of the requests after it
         fills_fetched_ms: int | None = fetched_ms
-        window_start = fetched_ms - self._window_ms
-        held_fills = dict(progress.held)
-        for raw in progress.fetched.values():
-            held_fills.setdefault(raw.tid, _fill(raw))
-        fills = tuple(sorted((f for f in held_fills.values() if f.time >= window_start), key=lambda f: (f.time, f.tid)))
+        if progress.fills is None:
+            window_start = fetched_ms - self._window_ms
+            held_fills = dict(progress.held)
+            for raw in progress.fetched.values():
+                held_fills.setdefault(raw.tid, _fill(raw))
+            progress.fills = tuple(
+                sorted((f for f in held_fills.values() if f.time >= window_start), key=lambda f: (f.time, f.tid))
+            )
+        fills = progress.fills
 
-        portfolio = _portfolio(self._rest.portfolio(wallet, priority=Priority.SCORING), self._clock.now_ms())
-        clearinghouse = _clearinghouse(
-            self._rest.clearinghouse_state(wallet, priority=Priority.SCORING), self._clock.now_ms()
-        )
-        role = previous.role if previous is not None else None
-        if role is None:
-            role = self._rest.user_role(wallet, priority=Priority.SCORING)
-        coins = sorted({f.coin for f in fills if is_core_perp(f.coin)})
-        candles = {coin: self._bars_for(coin) for coin in coins}
+        if progress.portfolio is None:
+            progress.portfolio = _portfolio(
+                self._rest.portfolio(wallet, priority=Priority.SCORING), self._clock.now_ms()
+            )
+        if progress.clearinghouse is None:
+            progress.clearinghouse = _clearinghouse(
+                self._rest.clearinghouse_state(wallet, priority=Priority.SCORING), self._clock.now_ms()
+            )
+        if progress.role is None:
+            progress.role = previous.role if previous is not None else None
+        if progress.role is None:
+            progress.role = self._rest.user_role(wallet, priority=Priority.SCORING)
+        for coin in sorted({f.coin for f in fills if is_core_perp(f.coin)}):
+            if coin not in progress.candles:
+                progress.candles[coin] = self._bars_for(coin)
         candles_fetched_ms = self._clock.now_ms()
 
         if outcome is _FillsOutcome.STUCK:
@@ -691,12 +722,12 @@ class Backfiller:
             fills=fills,
             fills_fetched_ms=fills_fetched_ms,
             funding=(),
-            portfolios=(portfolio,),
-            clearinghouse=(clearinghouse,),
+            portfolios=(progress.portfolio,),
+            clearinghouse=(progress.clearinghouse,),
             own_snapshots=(),
-            candles_1h=candles,
+            candles_1h=progress.candles,
             candles_fetched_ms=candles_fetched_ms,
-            role=role,
+            role=progress.role,
             leaderboard_row=None,
         )
 
@@ -808,11 +839,16 @@ class Backfiller:
                 return _FillsOutcome.DROPPED
             outcome = self._absorb(progress, page)
             if outcome is not None:
+                progress.page_done = outcome  # the fetch is over: a later step resumes after it, not at its pages
                 return outcome
         return _FillsOutcome.CAPPED
 
     def _bars_for(self, coin: str) -> tuple[sc.Candle, ...]:
         """The coin's 1h bars of the window, fetched when the coin has not been fetched in the current UTC hour.
+
+        The window is asked for in chunks of at most ``_MAX_BARS_PER_REQUEST`` bars (a request is a small, quick one).
+        Every chunk that arrives is kept in the coin's fetch, which is shared by all wallets: a failure (or the end of a
+        step) leaves the fetch where it was, and the next call resumes at the chunk that did not arrive.
 
         A coin whose candles fail with an HTTP status (other than 429) is cached as failing for ``hl.backoff_max_s``,
         for every wallet: nothing is requested for it inside that cooldown and the bars held so far (none for a coin
@@ -822,39 +858,48 @@ class Backfiller:
         now = self._clock.now_ms()
         if self._coin_failed_until.get(coin, 0) > now:
             return self._bars.get(coin, ())
-        if self._bars_hour.get(coin) != now // _HOUR_MS:
+        hour = now // _HOUR_MS
+        if self._bars_hour.get(coin) == hour:
+            return self._bars[coin]
+        fetch = self._fetches.get(coin)
+        if fetch is None or fetch.hour != hour:  # a fetch of an earlier hour keeps its chunks and asks the new bars
             window_start = now - self._window_ms
-            held = {b.open_ms: b for b in self._bars.get(coin, ()) if b.open_ms >= window_start}
-            start = max((b.open_ms for b in held.values()), default=window_start)  # the last bar may have been partial
-            for chunk_start in range(start, now + 1, _MAX_BARS_PER_REQUEST * _HOUR_MS):
-                chunk_end = min(chunk_start + _MAX_BARS_PER_REQUEST * _HOUR_MS - 1, now)
-                try:
-                    raws = self._candle_source.fetch(coin, _CANDLE_INTERVAL, chunk_start, chunk_end)
-                except HlError as exc:
-                    status = _http_status(exc)
-                    if status is None or status == _HTTP_TOO_MANY_REQUESTS:
-                        raise
-                    self._bars[coin] = tuple(sorted(held.values(), key=lambda b: b.open_ms))
-                    self._coin_failed_until[coin] = now + self._rate_limit_cooldown_ms
-                    _log.warning(
-                        "candles of a coin failed, no bars for it until its cooldown ends: "
-                        "coin=%s window=%d..%d status=%d",
-                        coin,
-                        chunk_start,
-                        chunk_end,
-                        status,
-                        extra={
-                            "event": "backfill_coin_candles_failed",
-                            "coin": coin,
-                            "window_start_ms": chunk_start,
-                            "window_end_ms": chunk_end,
-                            "status": status,
-                            "cooldown_until_ms": self._coin_failed_until[coin],
-                        },
-                    )
-                    return self._bars[coin]
-                for raw in raws:
-                    held[raw.open_ms] = _candle(raw)
-            self._bars[coin] = tuple(sorted(held.values(), key=lambda b: b.open_ms))
-            self._bars_hour[coin] = now // _HOUR_MS
+            earlier = fetch.held.values() if fetch is not None else self._bars.get(coin, ())
+            held = {b.open_ms: b for b in earlier if b.open_ms >= window_start}
+            # the last bar held may have been partial: it is asked for again
+            fetch = self._fetches[coin] = _CoinFetch(hour, now, held, max(held, default=window_start))
+        while fetch.next_ms <= fetch.end_ms:
+            chunk_start = fetch.next_ms
+            chunk_end = min(chunk_start + _MAX_BARS_PER_REQUEST * _HOUR_MS - 1, fetch.end_ms)
+            try:
+                raws = self._candle_source.fetch(coin, _CANDLE_INTERVAL, chunk_start, chunk_end)
+            except HlError as exc:
+                status = _http_status(exc)
+                if status is None or status == _HTTP_TOO_MANY_REQUESTS:
+                    raise
+                del self._fetches[coin]
+                self._bars[coin] = fetch.bars()
+                self._coin_failed_until[coin] = now + self._rate_limit_cooldown_ms
+                _log.warning(
+                    "candles of a coin failed, no bars for it until its cooldown ends: coin=%s window=%d..%d status=%d",
+                    coin,
+                    chunk_start,
+                    chunk_end,
+                    status,
+                    extra={
+                        "event": "backfill_coin_candles_failed",
+                        "coin": coin,
+                        "window_start_ms": chunk_start,
+                        "window_end_ms": chunk_end,
+                        "status": status,
+                        "cooldown_until_ms": self._coin_failed_until[coin],
+                    },
+                )
+                return self._bars[coin]
+            for raw in raws:
+                fetch.held[raw.open_ms] = _candle(raw)
+            fetch.next_ms = chunk_end + 1
+        del self._fetches[coin]
+        self._bars[coin] = fetch.bars()
+        self._bars_hour[coin] = hour
         return self._bars[coin]
