@@ -32,7 +32,9 @@ def score_components(m: Metrics, *, cfg: Config, recent_sr_unmeasurable_is_worst
     """``u_k = clip((x_k - lo_k) / (hi_k - lo_k), 0, 1)`` and ``S = sum w_k * u_k`` (10.4).
 
     ``x`` for ``copy_mean_r`` is shrunk: ``copy_mean_r * n / (n + score.shrink_k_trades)`` with n the measured
-    trips (``Metrics.shrink_n``); for ``pos_blocks`` it is ``pos_blocks / gate.n_blocks``. Weights and anchors come from ``score.weights.*`` and ``score.anchors.*``.
+    trips (``Metrics.shrink_n``); for ``pos_blocks``
+    it is ``pos_blocks / gate.n_blocks``.
+    Weights and anchors come from ``score.weights.*`` and ``score.anchors.*``.
     The weights sum to 1 only within 1e-9, so S is capped at 1.
 
     ``recent_sr`` is the one input no gate covers. With ``recent_sr_unmeasurable_is_worst`` and ``m.recent_sr`` None
