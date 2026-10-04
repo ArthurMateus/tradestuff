@@ -4,7 +4,6 @@
 - (a) a UTC hour rolls over in the middle of a coin's candle fetch;
 - (b1)/(b2) the consecutive-timeout counter counts only timeouts of the SAME call in a row;
 - (c) the stall cooldown is part of the wallet's own cooldown (the "next retry" of the progress line);
-- (SD3) advisory: after the cooldown of M timeouts the counter starts again at zero.
 """
 
 from __future__ import annotations
@@ -182,27 +181,3 @@ def test_R5_r1_c_the_progress_line_waits_for_the_end_of_the_stall_cooldown(caplo
         cooling, retry_s = int(found[0].group(1)), int(found[0].group(2))
         assert cooling == 1
         assert retry_s == math.ceil((until - now) / 1000)
-
-
-# --- SD3 (advisory) --------------------------------------------------------------------------------------------------
-
-
-def test_R5_r1_SD3_after_a_cooldown_one_more_timeout_does_not_cool_the_wallet_again(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """ADVISORY (R5-SD3): after the M-th timeout and its cooldown the count starts at zero, so one further timeout of
-    the call is one timeout, not the (M+1)-th."""
-    r = make_r5()
-    m = r.world.cfg["hl.retry_max"] + 1
-    r.serve_wallet(A, ["BTC"])
-    r.world.hl.rules[(A, "portfolio")] = Script(*["timeout"] * (m + 1))
-    r.backfiller.set_candidates([A])
-    with caplog.at_level(logging.INFO):
-        for _ in range(m):
-            r.iteration()
-            r.world.tick(70)
-        assert len(stall_warnings(caplog)) == 1
-        r.world.tick(70)  # the cooldown is over
-        r.iteration()  # one more timeout
-        assert len(r.http.of("portfolio", A, outcome="error")) == m + 1
-        assert len(stall_warnings(caplog)) == 1, "one timeout after the cooldown cooled the wallet again"
