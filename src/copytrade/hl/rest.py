@@ -210,6 +210,7 @@ class HlRestClient:
         self._rate_limited_in_a_row: dict[str, int] = {}
         self._escalate_cooldown = escalate_cooldown
         self._call_limit = call_limit
+        self._transport_ms = 0
 
     def info(self, request_type: str, params: Mapping[str, Any], *, priority: Priority) -> Any:
         """Send one info request and return the validated, typed response (see ``schema.parse_response``).
@@ -335,12 +336,26 @@ class HlRestClient:
         finally:
             limit.finished()
 
+    @property
+    def transport_ms(self) -> int:
+        """Milliseconds this client has spent in the transport (sending requests and waiting for answers, timeouts
+        included; not the retry and rate budget waits). A caller reads it before and after its work to learn how much
+        REST time the work took."""
+        return self._transport_ms
+
+    def _post(self, body: str, timeout_s: float) -> HttpResponse:
+        started_ms = self._clock.now_ms()
+        try:
+            return self._transport.post(self._url, body, timeout_s=timeout_s)
+        finally:
+            self._transport_ms += max(0, self._clock.now_ms() - started_ms)
+
     def _send(self, request_type: str, body: str, weight: int, priority: Priority, timeout_s: float) -> Timed:
         self._wait_for_cooldown(request_type)
         self._acquire(request_type, weight, priority)
         sent_ms = self._clock.now_ms()
         try:
-            response = self._transport.post(self._url, body, timeout_s=timeout_s)
+            response = self._post(body, timeout_s)
         except TimeoutError as exc:
             self._access.record_timeout()
             raise HlTimeoutError(f"{request_type}: no answer within {timeout_s:g} s") from exc

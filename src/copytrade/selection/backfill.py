@@ -6,18 +6,19 @@ import logging
 import math
 import re
 from collections import deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
-from typing import NamedTuple
+from functools import partial
+from typing import NamedTuple, TypeVar
 
 from copytrade.core.clock import Clock
 from copytrade.core.coins import is_core_perp
 from copytrade.core.config import Config
 from copytrade.hl import models as hl
 from copytrade.hl.budget import Priority
-from copytrade.hl.errors import HlBudgetError, HlError, HlRateLimitedError, HlSchemaError
+from copytrade.hl.errors import HlBudgetError, HlError, HlRateLimitedError, HlSchemaError, HlTimeoutError
 from copytrade.hl.rest import HlRestClient
 from copytrade.recorder.ports import CandleSource
 from copytrade.scoring import models as sc
@@ -34,6 +35,8 @@ from copytrade.selection.screen import ScreenThresholds, screen_page
 
 _log = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 _DAY_MS = 86_400_000
 _HOUR_MS = 3_600_000
 _HTTP_TOO_MANY_REQUESTS = 429
@@ -42,6 +45,7 @@ _MAX_FILL_PAGES = 50  # 100 000 fills: a wallet with more in the window is too a
 _FIRST_SLICE_PAGES = 2  # first slice of a wallet with others waiting: 240 of the 450 share, the light ones still fit
 _MAX_PAGES_PER_STEP = 3  # 3 full pages (weight 120 each) fit one minute of the 450 scoring weight share
 _MAX_BARS_PER_REQUEST = 721  # 30 days of 1h bars and the one a closed range adds: a small, quick request (2 s limit)
+_STEP_REST_MS = 1_000  # a step starts no new request after this long: half of the 2 s the trading thread may spend
 _BUDGET_KEY = ""  # the cooldown after a budget refusal belongs to no wallet
 _WOULD_WAIT = re.compile(
     r"would wait (\d+(?:\.\d+)?) s"
@@ -111,18 +115,45 @@ def _clearinghouse(raw: hl.ClearinghouseState, fetched_ms: int) -> sc.Clearingho
     )
 
 
-def _http_status(exc: BaseException) -> int | None:
-    """The HTTP status behind a failed request. The fail-fast client raises ``HlBudgetError`` from its retry sleep, so
-    the status is on the exception it replaced (``__cause__`` or ``__context__``): the chain is followed."""
+def _chain(exc: BaseException) -> Iterator[BaseException]:
+    """``exc`` and the exceptions behind it (``__cause__`` or ``__context__``). The fail-fast client raises
+    ``HlBudgetError`` from its retry sleep, so what really failed (a timeout, an HTTP status) is further down."""
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        status = getattr(current, "status", None)
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _http_status(exc: BaseException) -> int | None:
+    """The HTTP status behind a failed request."""
+    for link in _chain(exc):
+        status = getattr(link, "status", None)
         if isinstance(status, int):
             return status
-        current = current.__cause__ or current.__context__
     return None
+
+
+def _timed_out(exc: BaseException) -> bool:
+    return any(isinstance(link, HlTimeoutError) for link in _chain(exc))
+
+
+def _iteration_spent(exc: HlError) -> bool:
+    """The trading thread's REST time of this loop iteration is used up (``wait_s`` 0: nothing to wait for, the next
+    iteration has a fresh budget). Not a failure of the wallet or the exchange."""
+    return isinstance(exc, HlBudgetError) and exc.wait_s == 0.0
+
+
+class _StepFullError(Exception):
+    """Signal inside a step: no further request fits it. The progress is kept and the step ends without a failure."""
+
+
+class _Call(NamedTuple):
+    """A request of a wallet's backfill, as the log names it: the kind and what it asks (coin and window, say)."""
+
+    name: str
+    detail: str
 
 
 class _FillsOutcome(Enum):
@@ -152,6 +183,8 @@ class _Progress:
     clearinghouse: sc.ClearinghouseState | None = None
     role: str | None = None
     candles: dict[str, tuple[sc.Candle, ...]] = field(default_factory=dict)
+    stalled: _Call | None = None  # the call that timed out in the latest attempt(s) ...
+    timeouts: int = 0  # ... and how many attempts in a row
 
 
 @dataclass
@@ -232,6 +265,9 @@ class Backfiller:
         self._window_ms: int = config["scoring.window_days"] * _DAY_MS
         self._rate_limit_cooldown_ms = math.ceil(config["hl.backoff_max_s"] * 1000)
         self._error_base_ms = math.ceil(config["hl.backoff_base_s"] * 1000)
+        self._timeout_limit: int = config["hl.retry_max"] + 1  # the attempts a request gets in a patient client
+        self._step_transport_ms = 0  # ``rest.transport_ms`` when the step began
+        self._step_calls = 0
         self._clock = clock
         self._rest = rest
         self._candle_source = candles
@@ -244,6 +280,7 @@ class Backfiller:
         self._rejected_until: dict[str, int] = {}  # a screen rule S3-S9 failed
         self._rotated_until: dict[str, int] = {}  # RO1: ineligible in too many scored cycles
         self._error_until: dict[str, int] = {}
+        self._stalled_until: dict[str, int] = {}  # a call of the wallet kept timing out
         self._error_streak: dict[str, int] = {}  # consecutive failed attempts (not 429) of a wallet
         self._skip_logged: dict[
             str, int
@@ -506,7 +543,7 @@ class Backfiller:
         budget_until = self._error_until.get(_BUDGET_KEY, 0)
         cooling, wakes = scan.cooling, [scan.wake_ms] if scan.pending else []
         for wallet in self._undone:
-            until = max(self._rate_limited_until.get(wallet, 0), self._error_until.get(wallet, 0))
+            until = self._own_until(wallet)
             cooling += until > now
             wakes.append(max(until, budget_until))
         retry_s = math.ceil(max(min(wakes, default=now) - now, 0) / 1000)
@@ -545,7 +582,7 @@ class Backfiller:
         for wallet in self._ranked:
             if wallet in self._ok or wallet in self._keep or self._screen_blocked(wallet, now):
                 continue
-            own = max(self._rate_limited_until.get(wallet, 0), self._error_until.get(wallet, 0))
+            own = self._own_until(wallet)
             if own > now:
                 cooling += 1
                 wake = min(wake or own, max(own, budget_until))
@@ -554,6 +591,14 @@ class Backfiller:
             else:
                 return _Scan(wallet, cooling, True, now)
         return _Scan(None, cooling, wake is not None, wake or 0)
+
+    def _own_until(self, wallet: str) -> int:
+        """When the cooldowns that belong to the wallet itself (not the shared budget one) end."""
+        return max(
+            self._rate_limited_until.get(wallet, 0),
+            self._error_until.get(wallet, 0),
+            self._stalled_until.get(wallet, 0),
+        )
 
     def _cooldown(self, wallet: str) -> tuple[str, int] | None:
         """The cooldown the wallet is in now as ``(reason, until_ms)``, the one that lasts longest; None when free."""
@@ -565,6 +610,7 @@ class Backfiller:
                 ("empty", self._empty_until, wallet),
                 ("screen_rejected", self._rejected_until, wallet),
                 ("rate_limited", self._rate_limited_until, wallet),
+                ("call_timeouts", self._stalled_until, wallet),
                 ("error_cooldown", self._error_until, wallet),
                 ("error_cooldown", self._error_until, _BUDGET_KEY),
             )
@@ -646,24 +692,81 @@ class Backfiller:
         )
 
     def _collect(self, wallet: str, max_pages: int) -> sc.WalletInputs | None:
-        """One fetch of one wallet, resuming its fills progress. ``None`` when the fills are not finished (progress
-        kept) or the wallet was dropped as too active. Nothing is stored until every request has succeeded."""
+        """One step of one wallet's fetch, resuming its progress: the fills pages, then portfolio, clearinghouse state,
+        role and each coin's candle chunks, each kept when it arrives and never asked again. The step asks only for what
+        fits its share of the iteration's REST time (``_STEP_REST_MS``). ``None`` when the wallet is not finished
+        (progress kept) or was dropped as too active."""
+        self._step_transport_ms, self._step_calls = self._rest.transport_ms, 0
         previous = self._held.get(wallet)
         progress = self._progress.get(wallet)
         if progress is None:
             progress = self._start_progress(wallet, self._clock.now_ms())
         judge_first_page = previous is None and progress.requests == 0 and wallet not in self._keep
-        outcome = self._fetch_fills(wallet, progress, max_pages, judge_first_page=judge_first_page)
-        if outcome is _FillsOutcome.PAUSED or outcome is _FillsOutcome.DROPPED:
+        try:
+            outcome = self._fetch_fills(wallet, progress, max_pages, judge_first_page=judge_first_page)
+            if outcome is _FillsOutcome.PAUSED or outcome is _FillsOutcome.DROPPED:
+                return None
+            if outcome is _FillsOutcome.CAPPED:
+                self._drop_too_active(wallet, progress.pages)
+                return None
+            if outcome is _FillsOutcome.DONE and self._truncated(progress):
+                self._drop_too_active(wallet, progress.requests, reason="too_active_truncated")
+                return None
+            fills, portfolio, clearinghouse = self._fetch_state(wallet, progress, previous)
+        except _StepFullError:
             return None
-        if outcome is _FillsOutcome.CAPPED:
-            self._drop_too_active(wallet, progress.pages)
-            return None
-        if outcome is _FillsOutcome.DONE and self._truncated(progress):
-            self._drop_too_active(wallet, progress.requests, reason="too_active_truncated")
-            return None
+        return self._finish(wallet, progress, previous, outcome, (fills, portfolio, clearinghouse))
+
+    def _ask(self, wallet: str, progress: _Progress, call: _Call, request: Callable[[], _T]) -> _T:
+        """One request of the wallet's backfill. The first request of a step always goes; the next ones only while the
+        REST time the step has used is under ``_STEP_REST_MS`` (``_StepFullError`` otherwise, as when the iteration's
+        REST time is spent). Timeouts of the same call in a row are counted: ``hl.retry_max`` + 1 of them put the wallet
+        into a cooldown."""
+        if self._step_calls and self._rest.transport_ms - self._step_transport_ms >= _STEP_REST_MS:
+            raise _StepFullError
+        self._step_calls += 1
+        try:
+            result = request()
+        except HlError as exc:
+            if _iteration_spent(exc):
+                raise _StepFullError from exc
+            if _timed_out(exc):
+                self._count_timeout(wallet, progress, call)
+            else:
+                progress.stalled, progress.timeouts = None, 0
+            raise
+        progress.stalled, progress.timeouts = None, 0
+        return result
+
+    def _count_timeout(self, wallet: str, progress: _Progress, call: _Call) -> None:
+        progress.timeouts = progress.timeouts + 1 if progress.stalled == call else 1
+        progress.stalled = call
+        if progress.timeouts < self._timeout_limit:
+            return
+        until = self._clock.now_ms() + self._rate_limit_cooldown_ms
+        self._stalled_until[wallet] = until
+        _log.warning(
+            "a backfill call kept timing out, the wallet cools down: wallet=%s call=%s %s status=timeout",
+            wallet,
+            call.name,
+            call.detail,
+            extra={
+                "event": "backfill_call_timeouts",
+                "wallet": wallet,
+                "call": call.name,
+                "detail": call.detail,
+                "status": "timeout",
+                "timeouts": progress.timeouts,
+                "cooldown_until_ms": until,
+            },
+        )
+
+    def _fetch_state(
+        self, wallet: str, progress: _Progress, previous: sc.WalletInputs | None
+    ) -> tuple[tuple[sc.Fill, ...], sc.PortfolioSnapshot, sc.ClearinghouseState]:
+        """The fills are all in: the calls after them, each once (``_StepFullError`` when the step has no room left).
+        Returns the fills, the portfolio and the clearinghouse state of the wallet."""
         fetched_ms = progress.last_page_ms  # the fills are current as of the latest page, not of the requests after it
-        fills_fetched_ms: int | None = fetched_ms
         if progress.fills is None:
             window_start = fetched_ms - self._window_ms
             held_fills = dict(progress.held)
@@ -673,24 +776,45 @@ class Backfiller:
                 sorted((f for f in held_fills.values() if f.time >= window_start), key=lambda f: (f.time, f.tid))
             )
         fills = progress.fills
-
         if progress.portfolio is None:
-            progress.portfolio = _portfolio(
-                self._rest.portfolio(wallet, priority=Priority.SCORING), self._clock.now_ms()
+            raw_portfolio = self._ask(
+                wallet,
+                progress,
+                _Call("portfolio", ""),
+                lambda: self._rest.portfolio(wallet, priority=Priority.SCORING),
             )
+            progress.portfolio = _portfolio(raw_portfolio, self._clock.now_ms())
         if progress.clearinghouse is None:
-            progress.clearinghouse = _clearinghouse(
-                self._rest.clearinghouse_state(wallet, priority=Priority.SCORING), self._clock.now_ms()
+            raw_state = self._ask(
+                wallet,
+                progress,
+                _Call("clearinghouseState", ""),
+                lambda: self._rest.clearinghouse_state(wallet, priority=Priority.SCORING),
             )
+            progress.clearinghouse = _clearinghouse(raw_state, self._clock.now_ms())
         if progress.role is None:
             progress.role = previous.role if previous is not None else None
         if progress.role is None:
-            progress.role = self._rest.user_role(wallet, priority=Priority.SCORING)
+            progress.role = self._ask(
+                wallet, progress, _Call("userRole", ""), lambda: self._rest.user_role(wallet, priority=Priority.SCORING)
+            )
         for coin in sorted({f.coin for f in fills if is_core_perp(f.coin)}):
             if coin not in progress.candles:
-                progress.candles[coin] = self._bars_for(coin)
-        candles_fetched_ms = self._clock.now_ms()
+                progress.candles[coin] = self._bars_for(wallet, progress, coin)
+        return fills, progress.portfolio, progress.clearinghouse
 
+    def _finish(
+        self,
+        wallet: str,
+        progress: _Progress,
+        previous: sc.WalletInputs | None,
+        outcome: _FillsOutcome,
+        state: tuple[tuple[sc.Fill, ...], sc.PortfolioSnapshot, sc.ClearinghouseState],
+    ) -> sc.WalletInputs:
+        """Every call of the wallet is complete: the inputs, the logs and the counters."""
+        fills, portfolio, clearinghouse = state
+        fills_fetched_ms: int | None = progress.last_page_ms
+        candles_fetched_ms = self._clock.now_ms()
         if outcome is _FillsOutcome.STUCK:
             _log.warning(
                 "fills backfill did not reach the present, the wallet stays stale: wallet=%s pages=%d fills=%d",
@@ -722,8 +846,8 @@ class Backfiller:
             fills=fills,
             fills_fetched_ms=fills_fetched_ms,
             funding=(),
-            portfolios=(progress.portfolio,),
-            clearinghouse=(progress.clearinghouse,),
+            portfolios=(portfolio,),
+            clearinghouse=(clearinghouse,),
             own_snapshots=(),
             candles_1h=progress.candles,
             candles_fetched_ms=candles_fetched_ms,
@@ -833,7 +957,13 @@ class Backfiller:
         while progress.pages < _MAX_FILL_PAGES:
             if requested == allowance:
                 return _FillsOutcome.PAUSED
-            page = self._rest.user_fills_by_time(wallet, progress.cursor, None, priority=Priority.SCORING)
+            cursor = progress.cursor
+            page = self._ask(
+                wallet,
+                progress,
+                _Call("userFillsByTime", f"window={cursor}.."),
+                partial(self._rest.user_fills_by_time, wallet, cursor, None, priority=Priority.SCORING),
+            )
             requested += 1
             if judge_first_page and requested == 1 and self._first_page_exit(wallet, page):
                 return _FillsOutcome.DROPPED
@@ -843,7 +973,7 @@ class Backfiller:
                 return outcome
         return _FillsOutcome.CAPPED
 
-    def _bars_for(self, coin: str) -> tuple[sc.Candle, ...]:
+    def _bars_for(self, wallet: str, progress: _Progress, coin: str) -> tuple[sc.Candle, ...]:
         """The coin's 1h bars of the window, fetched when the coin has not been fetched in the current UTC hour.
 
         The window is asked for in chunks of at most ``_MAX_BARS_PER_REQUEST`` bars (a request is a small, quick one).
@@ -872,7 +1002,12 @@ class Backfiller:
             chunk_start = fetch.next_ms
             chunk_end = min(chunk_start + _MAX_BARS_PER_REQUEST * _HOUR_MS - 1, fetch.end_ms)
             try:
-                raws = self._candle_source.fetch(coin, _CANDLE_INTERVAL, chunk_start, chunk_end)
+                raws = self._ask(
+                    wallet,
+                    progress,
+                    _Call("candles", f"coin={coin} window={chunk_start}..{chunk_end}"),
+                    partial(self._candle_source.fetch, coin, _CANDLE_INTERVAL, chunk_start, chunk_end),
+                )
             except HlError as exc:
                 status = _http_status(exc)
                 if status is None or status == _HTTP_TOO_MANY_REQUESTS:
