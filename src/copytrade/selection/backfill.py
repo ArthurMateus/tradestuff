@@ -13,6 +13,7 @@ from enum import Enum
 from typing import NamedTuple
 
 from copytrade.core.clock import Clock
+from copytrade.core.coins import is_core_perp
 from copytrade.core.config import Config
 from copytrade.hl import models as hl
 from copytrade.hl.budget import Priority
@@ -20,7 +21,6 @@ from copytrade.hl.errors import HlBudgetError, HlError, HlRateLimitedError, HlSc
 from copytrade.hl.rest import HlRestClient
 from copytrade.recorder.ports import CandleSource
 from copytrade.scoring import models as sc
-from copytrade.scoring.reconstruct import is_core_perp
 from copytrade.selection.models import FILLS_PER_PAGE, HL_FILLS_LIMIT, CandidateList, ScreenRow
 from copytrade.selection.prefilter import (
     EMPTY_COOLDOWN_H,

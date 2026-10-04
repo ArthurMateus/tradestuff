@@ -19,8 +19,8 @@ def select_universe(
 ) -> tuple[str, ...]:
     """The coins to record, sorted by name.
 
-    Candidates: ``traded_coins`` (core perps only; ``#N`` pseudo-coins, spot names starting ``@`` or containing ``/`` and ``dex:``
-    names are dropped from this input), ``ALWAYS_RECORDED`` and every name in ``hip3_markets``. When there are
+    Candidates: ``traded_coins`` (core perps only; ``#N`` pseudo-coins, spot names starting ``@`` or containing ``/``
+    and ``dex:`` names are dropped from this input), ``ALWAYS_RECORDED`` and every name in ``hip3_markets``. When there are
     more than ``max_coins`` candidates the lowest 24h volume is dropped first (a missing volume counts as 0; a
     tie drops the name that sorts last). ``ALWAYS_RECORDED`` is never dropped.
 
