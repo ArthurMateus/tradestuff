@@ -42,3 +42,16 @@ bar-less share of trips above a threshold must be ineligible (a threshold would 
 ## Not covered here
 Live HL behaviour of `#N` (QA/explore on testnet-read), mutation testing of the predicate (money-path run), real wall-clock
 retry timing (simulation gate).
+
+## R4.AC4 (CTO ruling on the escalation): shrinkage n = measured trips
+Fail closed, no gate change, no new config key: a trip in a bar-less coin (`replay_r` None) does not count toward the
+copy-R shrinkage n; G2's `n_rt` keeps its definition. File `tests/scoring/test_r4_ac4_measured_trips_shrinkage.py`.
+| Part | Test |
+|---|---|
+| (a) | `barless_trips_do_not_enter_the_shrinkage_n` (score and components equal those of the wallet without the extra zero-P&L SOL trips, `n_rt` 100 vs 80), `more_barless_trips_still_change_nothing` (1, 7, 25 extra trips) |
+| (b) | `a_wallet_with_no_measurable_trip_stays_ineligible_by_the_existing_gates` (G10 and G12, existing gates only) |
+| (c) | `all_bars_present_scores_are_unchanged_golden` (golden values taken from current src: score 0.65735718..., copy_mean_r x 0.0688286...) |
+Run: 4 tests, 2 fail (AssertionError: score 0.6645 vs 0.6574 today), 2 pass (guards (b), (c)).
+Limit: with `n_rt` unchanged, a wallet with only SOME measured trips (fewer than `gate.min_round_trips`) is not made
+ineligible by any existing gate; (b) pins only the case where none is measurable. Copy_edge_ratio (M15) still uses all
+closed trips and is not asserted.
