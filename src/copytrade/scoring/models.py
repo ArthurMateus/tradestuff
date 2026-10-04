@@ -208,6 +208,13 @@ class Metrics:
     account_value: Decimal | None  # AV from clearinghouseState (G11)
     open_loss_fraction: Decimal | None  # open unrealised loss / AV (BU8)
     liquidation_fills: int = 0  # liquidation fills on core perps in the window (BU6)
+    n_measured: int | None = None  # closed trips with an R_copy (M14); None = every closed trip counts
+
+    @property
+    def shrink_n(self) -> int:
+        """The n of the copy-R shrinkage: the trips that were measured, so a trip in a coin without bars (no R) adds no
+        confidence. ``n_rt`` (G2) keeps counting every closed trip."""
+        return self.n_rt if self.n_measured is None else self.n_measured
 
 
 @dataclass(frozen=True)
