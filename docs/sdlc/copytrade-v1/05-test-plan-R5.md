@@ -45,3 +45,17 @@ timeout test in `r5_world` is deterministic, a fake time). Real Hyperliquid cand
 bar) are the fake's assumption: QA on testnet/replay. The PO's live run (49 wallets) is the /qa and /verify check.
 Potential tension with R4.AC3 (a chunk failing with an HTTP status still caches the coin as failing, wallet completes without it):
 unchanged, not weakened.
+
+## R5 round-1 pins
+
+Senior-dev hand-mutation score was 9/17. `tests/selection/test_r5_round1_pins.py` pins the five real survivors of `selection/backfill.py` (each confirmed on a copy: fails on the mutant, passes on the real src):
+
+| Mutant | Test | Result on mutant |
+|---|---|---|
+| (a) `fetch.hour != hour` -> `fetch is None` (hour rolls over mid-fetch) | `test_R5_r1_a_a_fetch_that_spans_an_hour_boundary_...` | fails |
+| (b1) `progress.stalled == call` -> `True` | `test_R5_r1_b1_timeouts_of_different_calls_in_a_row_do_not_cool_the_wallet` | fails (also kills (a)) |
+| (b2) counter not reset on a non-timeout outcome | `test_R5_r1_b2_an_http_error_between_timeouts_...` (guard: `..._m_timeouts_of_the_same_call_...`) | fails |
+| (c) `_stalled_until` left out of `_own_until` | `test_R5_r1_c_the_progress_line_waits_for_the_end_of_the_stall_cooldown` | fails |
+
+Equivalent survivors, no test needed: the first-call guard `self._step_calls and`, the `>=` boundary of the 1 s gate, the missing `del self._fetches[coin]`.
+Optional R5-SD3 pin skipped (the draft did not pass on the real src; not a mutant kill).
