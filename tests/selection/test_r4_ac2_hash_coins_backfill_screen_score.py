@@ -10,7 +10,6 @@ is below the minimum still fails it whatever ``#N`` adds.
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
