@@ -1,0 +1,3 @@
+[restart]
+max_reconstruct_gap_h = 72
+candle_interval = "1m"

@@ -1,0 +1,57 @@
+{
+ "channel": "userFills",
+ "data": {
+  "isSnapshot": true,
+  "user": "0x1111111111111111111111111111111111111111",
+  "fills": [
+   {
+    "coin": "BTC",
+    "px": "67000.5",
+    "sz": "0.01",
+    "side": "A",
+    "time": 1789990000000,
+    "startPosition": "0.0",
+    "dir": "Open Long",
+    "closedPnl": "0.0",
+    "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "oid": 900000,
+    "crossed": false,
+    "fee": "0.0123",
+    "tid": 700000000000,
+    "feeToken": "USDC"
+   },
+   {
+    "coin": "ETH",
+    "px": "3401.25",
+    "sz": "0.5",
+    "side": "B",
+    "time": 1789990001000,
+    "startPosition": "0.0",
+    "dir": "Close Long",
+    "closedPnl": "-1.25",
+    "hash": "0x0000000000000000000000000000000000000000000000000000000000000001",
+    "oid": 900001,
+    "crossed": true,
+    "fee": "0.0123",
+    "tid": 700000000001,
+    "feeToken": "USDC"
+   },
+   {
+    "coin": "BTC",
+    "px": "67002.5",
+    "sz": "0.01",
+    "side": "B",
+    "time": 1789990002000,
+    "startPosition": "0.0",
+    "dir": "Open Short",
+    "closedPnl": "0.0",
+    "hash": "0x0000000000000000000000000000000000000000000000000000000000000002",
+    "oid": 900002,
+    "crossed": false,
+    "fee": "0.0123",
+    "tid": 700000000002,
+    "feeToken": "USDC"
+   }
+  ]
+ }
+}

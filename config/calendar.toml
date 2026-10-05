@@ -1,0 +1,13 @@
+[calendar]
+file = "data/inputs/macro_calendar"
+timezone = "America/New_York"
+blocking_classes = ["FOMC", "CPI", "PCE", "NFP"]
+min_coverage_days = 67
+
+[calendar.window_fomc_min]
+before = 30
+after = 60
+
+[calendar.window_tier1_min]
+before = 15
+after = 30

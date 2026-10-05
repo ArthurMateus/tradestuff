@@ -1,0 +1,12 @@
+[baseline]
+dm_exclude_downtime = true
+dm_discretionary_pause_rule = "max_all_outside_pause"
+dm_costs = "own_time_no_decay"
+dm_min_admissible_hours = 24
+dm_max_missing_share = 0.10
+dm_missing_rule = "min_r_0_partial"
+dm_max_book_gap_s = 5
+dm_max_mid_gap_s = 60
+dm_reps = 1000
+random_reps = 1000
+top_roi_n = 9

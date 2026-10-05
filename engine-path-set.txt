@@ -1,0 +1,9 @@
+# Engine path set (F1.AC7, edge-hypothesis A2.2): every file whose content decides what the engine does.
+# One pattern per line, relative POSIX paths. "dir/**" covers everything below dir; a plain path covers that file.
+# Never list docs/, research/, tests/ or the storage directories (storage.ledger_dir, storage.recordings_dir, storage.cache_dir).
+src/copytrade/**
+uv.lock
+pyproject.toml
+config/**
+data/inputs/**
+engine-path-set.txt

@@ -1,0 +1,15 @@
+[exits]
+stop_atr_mult = 2.0
+atr_period = 14
+atr_candle_interval = "1h"
+tp_enabled = true
+tp1_r = 2.0
+tp1_fraction = 0.5
+trail_start_r = 1.0
+trail_atr_mult = 2.0
+missed_exit_max_lag_s = 60
+retry_interval_s = 1
+alert_after_s = 10
+
+[reconcile]
+interval_s = 300
