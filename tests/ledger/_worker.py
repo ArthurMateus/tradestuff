@@ -33,11 +33,12 @@ def _replay(directory: Path, total: int) -> None:
 
 
 def _fsize(directory: Path, limit: int) -> None:
-    import resource
-    import signal
+    if sys.platform != "win32":  # POSIX only; the test importorskips "resource" on Windows
+        import resource
+        import signal
 
-    signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
-    resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
     ledger = Ledger.open(directory, clock=SystemClock())
     appended = 0
     try:
