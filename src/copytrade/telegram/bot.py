@@ -25,6 +25,7 @@ from copytrade.risk.gate import RiskGate
 from copytrade.telegram.api import TelegramApi, TelegramError, TelegramRateLimited, Update
 from copytrade.telegram.outbox import Backoff, Outbox, Outgoing
 from copytrade.telegram.pin import PinGuard
+from copytrade.telegram.selection_view import SelectionView
 from copytrade.telegram.posts import LedgerFacts, Post, live_views, render
 
 _log = logging.getLogger(__name__)
@@ -53,7 +54,9 @@ class TelegramBot:
         pin_hash: SecretValue | None,
         pin_salt: SecretValue | None,
         run_id: str,
+        selection: SelectionView | None = None,
     ) -> None:
+        self._selection = selection
         self._config = config
         self._api = api
         self._gate = gate
@@ -109,6 +112,10 @@ class TelegramBot:
             self._outbox.put(Outgoing("send", self._alerts_chat, text))
         except Exception:
             _log.exception("an alert could not be queued", extra={"event": "telegram_alert_failed"})
+
+    def sync_selection(self) -> None:
+        """U4 stub: post each new selection event once to the alerts chat. Never raises."""
+        raise NotImplementedError
 
     def flush(self) -> None:
         """One delivery pass of the queue."""
