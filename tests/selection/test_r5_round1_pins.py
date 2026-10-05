@@ -63,7 +63,9 @@ def chain_candles(r: R5World, first: Any) -> None:
 # --- (a) hour rollover in the middle of a coin's candle fetch --------------------------------------------------------
 
 
-def test_R5_r1_a_a_fetch_that_spans_an_hour_boundary_restarts_for_the_new_hour_and_ends_with_the_new_hours_bar() -> None:
+def test_R5_r1_a_a_fetch_that_spans_an_hour_boundary_restarts_for_the_new_hour_and_ends_with_the_new_hours_bar() -> (
+    None
+):
     r = make_r5(latency=lambda c: 0.6 if c.body["type"] == "candleSnapshot" else 0.0)
     r.serve_wallet(A, ["BTC"])
     r.backfiller.set_candidates([A])
